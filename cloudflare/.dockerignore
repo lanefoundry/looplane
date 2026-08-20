@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!pca-sandbox-run
+!.artifacts/
+!.artifacts/*.whl
+!.artifacts/requirements.txt

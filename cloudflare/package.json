@@ -1,0 +1,26 @@
+{
+  "name": "python-coding-agent-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:runtime": "node ./scripts/package-runtime.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types ./src/worker-configuration.d.ts",
+    "types:check": "wrangler types --check ./src/worker-configuration.d.ts",
+    "dry-run": "npm run build:runtime && wrangler deploy --dry-run --outdir .wrangler/dry-run"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.12.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "typescript": "5.9.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.125.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
