@@ -1,6 +1,6 @@
 # M4: Provider completion and subscription boundaries
 
-> Status: implementation complete; app-owned Codex live authorization is an external dependency.
+> Status: complete and committed; app-owned Codex live authorization is a named external dependency.
 > Date: 2026-08-21
 > Baseline: M3 commit `6bb4b5a`
 
@@ -132,6 +132,10 @@ git diff --check              passed
 pca --help                    global executable and all command groups rendered
 ```
 
+The exact Git index tree `ecf588febfb1d25ebe4b19ac5e9ae297c63fc2ca` was exported to
+`/private/tmp/pca-m4-stage.5OR031`. Its fresh uv environment independently passed all 165 tests in
+20.51 seconds, Ruff, source/wheel builds, and dependency installation.
+
 Independent review reproduced the initial fail-open result, cancellation, documentation, and
 evidence-durability findings. Their fixes added positive result classification, prompt process-tree
 cancellation, an exact auth boundary, and all five raw bundles plus compact hashes. Final verdict is
@@ -161,8 +165,8 @@ recorded in `.research/m4-release-review.md`.
 
 ## Commit
 
-- Implementation commit: PENDING
-- Documentation commit: PENDING
+- Implementation commit: `11b2dfe` (`feat(providers): 完成日常 CLI 的遠端與訂閱邊界`).
+- The implementation commit is the exact staged tree independently exported and verified above.
 - QuidProQuo practice article is drafted at
   `quidproquo/src/content/posts/ai/2026-08-21-python-coding-agent-provider-boundaries.md` and
   remains uncommitted for user review.
