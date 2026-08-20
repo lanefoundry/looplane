@@ -595,7 +595,7 @@ function validateSandboxResponse(
     value.ok !== expectedSuccess ||
     !isObject(value.result)
   ) {
-    throw new RequestProblem(502, "invalid_sandbox_response");
+    throw new RequestProblem(502, "sandbox_response_envelope_invalid");
   }
   const runResult = value.result;
   const resultKeys = [
@@ -632,9 +632,14 @@ function validateSandboxResponse(
       }
     })
   ) {
-    throw new RequestProblem(502, "invalid_sandbox_response");
+    throw new RequestProblem(502, "sandbox_result_invalid");
   }
-  const verification = validateVerification(runResult.verification);
+  let verification: Record<string, unknown>[];
+  try {
+    verification = validateVerification(runResult.verification);
+  } catch {
+    throw new RequestProblem(502, "sandbox_verification_invalid");
+  }
   const seenChecks = new Set<number>();
   for (const item of verification) {
     const name = item.name as string;
@@ -649,7 +654,7 @@ function validateSandboxResponse(
       argv.length !== expectedArgv.length ||
       !expectedArgv.every((part, position) => part === argv[position])
     ) {
-      throw new RequestProblem(502, "invalid_sandbox_response");
+      throw new RequestProblem(502, "sandbox_verification_mismatch");
     }
     seenChecks.add(index);
   }
@@ -658,7 +663,7 @@ function validateSandboxResponse(
     (verification.length !== expected.checks.length ||
       verification.some((item) => item.ok !== true || item.exit_code !== 0))
   ) {
-    throw new RequestProblem(502, "invalid_sandbox_response");
+    throw new RequestProblem(502, "sandbox_verification_mismatch");
   }
   const changedFiles = runResult.changed_files as string[];
   if (
@@ -671,18 +676,28 @@ function validateSandboxResponse(
         ),
     )
   ) {
-    throw new RequestProblem(502, "invalid_sandbox_response");
+    throw new RequestProblem(502, "sandbox_changed_files_mismatch");
+  }
+  let usage: Record<string, number | null>;
+  let resultArtifacts: Record<string, string>;
+  let bundledArtifacts: Record<string, string>;
+  try {
+    usage = validateUsage(runResult.usage);
+    resultArtifacts = validateArtifactMap(runResult.artifacts, { contents: false });
+    bundledArtifacts = validateArtifactMap(value.artifacts, { contents: true });
+  } catch {
+    throw new RequestProblem(502, "sandbox_artifacts_invalid");
   }
   const validatedResult = {
     ...runResult,
     verification,
-    usage: validateUsage(runResult.usage),
-    artifacts: validateArtifactMap(runResult.artifacts, { contents: false }),
+    usage,
+    artifacts: resultArtifacts,
   };
   return {
     ok: expectedSuccess,
     result: validatedResult,
-    artifacts: validateArtifactMap(value.artifacts, { contents: true }),
+    artifacts: bundledArtifacts,
   };
 }
 
