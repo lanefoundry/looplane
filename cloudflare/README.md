@@ -134,6 +134,10 @@ npm run types:check
 npm run dry-run
 ```
 
+Use `npm run deploy`, not a bare `wrangler deploy`, for a real release. The deploy script rebuilds
+the wheel and locked runtime artifacts first so the uploaded container matches the current Python
+source.
+
 The dry run builds the current repository wheel into the digest-pinned Sandbox Python image but does
 not deploy or create external resources. `build:runtime` exports a hash-locked Python requirement
 set and a CycloneDX dependency manifest before building the wheel. On Apple Silicon, an explicit

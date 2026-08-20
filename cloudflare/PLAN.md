@@ -10,6 +10,8 @@
       Durable Object request budget/revocation, streamed result read, and bounded cleanup.
 - [x] Pin the Sandbox base by digest, export hash-locked Python dependencies plus CycloneDX,
       and prove two clean builds produce the same image ID.
+- [x] Make the deploy lifecycle rebuild the current Python wheel before Wrangler packages the
+      container, preventing a stale local artifact from being released.
 
 Deployment and a bounded real provider run are milestone evidence steps performed only after the
 local release review is GO.
