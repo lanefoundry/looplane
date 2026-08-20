@@ -428,6 +428,145 @@ def test_native_provider_rejects_custom_endpoint_without_explicit_opt_in(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://gateway.example.test/openai/v1",
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:11434/v1/",
+        "http://[::1]:11434/v1",
+    ],
+)
+async def test_openai_compatible_accepts_https_and_loopback_http_urls(
+    base_url: str,
+) -> None:
+    model = OpenAICompatibleModel(
+        model="fake",
+        api_key="test",
+        base_url=base_url,
+    )
+
+    try:
+        assert str(model._client.base_url).rstrip("/") == base_url.rstrip("/")
+    finally:
+        await model.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_uses_dummy_key_for_keyless_loopback_ollama() -> None:
+    model = OpenAICompatibleModel(
+        model="qwen3-coder",
+        base_url="http://127.0.0.1:11434/v1",
+    )
+
+    try:
+        assert model._client.api_key == "local-openai-compatible"
+    finally:
+        await model.aclose()
+
+
+@pytest.mark.parametrize(
+    ("base_url", "message"),
+    [
+        ("http://models.example.test/v1", "only allowed for a loopback host"),
+        ("http://127.0.0.1.example.test/v1", "only allowed for a loopback host"),
+        ("https://user:secret@models.example.test/v1", "must not contain credentials"),
+        ("https://models.example.test/v1?tenant=one", "query or fragment"),
+        ("https://models.example.test/v1?", "query or fragment"),
+        ("https://models.example.test/v1#route", "query or fragment"),
+        ("models.example.test/v1", "absolute HTTP\\(S\\) URL"),
+        ("https://models.example.test:invalid/v1", "invalid port"),
+    ],
+)
+def test_openai_compatible_rejects_unsafe_or_malformed_urls(
+    base_url: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        OpenAICompatibleModel(
+            model="fake",
+            api_key="test",
+            base_url=base_url,
+        )
+
+
+def test_openai_compatible_still_requires_key_for_remote_endpoint() -> None:
+    with pytest.raises(ValueError, match="key or api_key is required"):
+        OpenAICompatibleModel(
+            model="fake",
+            base_url="https://gateway.example.test/v1",
+        )
+
+
+def test_openai_compatible_validates_url_even_with_injected_client() -> None:
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions(None)))
+
+    with pytest.raises(ValueError, match="only allowed for a loopback host"):
+        OpenAICompatibleModel(
+            model="fake",
+            client=client,
+            base_url="http://models.example.test/v1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_passes_bounded_provider_options() -> None:
+    completions = FakeCompletions(
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="done", tool_calls=[]),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+    )
+    fake_openai = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model = OpenAICompatibleModel(
+        model="qwen3:4b",
+        client=fake_openai,
+        supports_tool_calling=True,
+        extra_body={"think": False},
+        max_tokens=1_024,
+        user_message_prefix="/no_think\n",
+    )
+
+    await model.complete([Message(role="user", content="test")])
+
+    assert completions.requests[0]["extra_body"] == {"think": False}
+    assert completions.requests[0]["max_tokens"] == 1_024
+    assert completions.requests[0]["messages"][0]["content"].startswith("/no_think\n")
+
+
+def test_openai_compatible_provider_options_cannot_override_core_fields() -> None:
+    with pytest.raises(ValueError, match="cannot override canonical"):
+        OpenAICompatibleModel(
+            model="fake",
+            client=SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions(None))),
+            extra_body={"model": "different"},
+        )
+
+
+def test_openai_compatible_rejects_nonpositive_output_limit() -> None:
+    with pytest.raises(ValueError, match="max_tokens must be positive"):
+        OpenAICompatibleModel(
+            model="fake",
+            client=SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions(None))),
+            max_tokens=0,
+        )
+
+
+def test_openai_compatible_rejects_blank_user_prefix() -> None:
+    with pytest.raises(ValueError, match="user_message_prefix cannot be blank"):
+        OpenAICompatibleModel(
+            model="fake",
+            client=SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions(None))),
+            user_message_prefix="   ",
+        )
+
+
+@pytest.mark.asyncio
 async def test_workers_ai_7505_is_classified_with_provider_diagnostics() -> None:
     client = make_json_client(
         {

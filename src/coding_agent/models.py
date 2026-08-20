@@ -15,6 +15,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from coding_agent.contracts import (
     ConversationItem,
     ModelCapabilities,
+    ModelProtocol,
     ModelTurn,
     ToolCall,
     ToolDefinition,
@@ -66,6 +67,7 @@ class ModelProvider(Protocol):
 
     provider_name: str
     model_id: str
+    protocol: ModelProtocol
     capabilities: ModelCapabilities
 
     async def complete(
@@ -115,9 +117,24 @@ def _validated_openai_base_url(base_url: str | None) -> str | None:
         return None
     normalized = base_url.rstrip("/")
     parsed = urlsplit(normalized)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("base_url must be an absolute HTTPS URL")
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not parsed.hostname:
+        raise ValueError("base_url must be an absolute HTTP(S) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("base_url must not contain credentials")
+    if "?" in normalized or "#" in normalized:
+        raise ValueError("base_url must not contain a query or fragment")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("base_url contains an invalid port") from exc
+    if parsed.scheme == "http" and not _is_loopback_base_url(normalized):
+        raise ValueError("HTTP base_url is only allowed for a loopback host")
     return normalized
+
+
+def _is_loopback_base_url(base_url: str) -> bool:
+    hostname = urlsplit(base_url).hostname
+    return hostname is not None and hostname.lower() in {"localhost", "127.0.0.1", "::1"}
 
 
 def _error_kind(status_code: int | None) -> ProviderErrorKind:
@@ -275,6 +292,7 @@ class ScriptedModel:
     """Deterministic provider for contract tests and offline agent runs."""
 
     provider_name = "scripted"
+    protocol = ModelProtocol.SCRIPTED
     capabilities = ModelCapabilities(
         tool_calling=True,
         streaming=False,
@@ -316,6 +334,7 @@ class OpenAICompatibleModel:
     """Adapter for OpenAI and compatible Chat Completions endpoints."""
 
     provider_name = "openai-compatible"
+    protocol = ModelProtocol.OPENAI_CHAT
 
     def __init__(
         self,
@@ -328,16 +347,40 @@ class OpenAICompatibleModel:
         capabilities: ModelCapabilities | None = None,
         supports_tool_calling: bool | None = None,
         provider_name: str = "openai-compatible",
+        extra_body: Mapping[str, Any] | None = None,
+        max_tokens: int | None = None,
+        user_message_prefix: str | None = None,
     ) -> None:
-        if not key and not api_key and client is None:
+        validated_base_url = _validated_openai_base_url(base_url)
+        supplied_api_key = key or api_key
+        is_loopback = (
+            validated_base_url is not None
+            and _is_loopback_base_url(validated_base_url)
+        )
+        if not supplied_api_key and client is None and not is_loopback:
             raise ValueError("key or api_key is required when client is not supplied")
         self.provider_name = provider_name
         self.model_id = model
         self.capabilities = _capabilities(capabilities, supports_tool_calling)
+        self._extra_body = dict(extra_body or {})
+        if max_tokens is not None and max_tokens < 1:
+            raise ValueError("max_tokens must be positive")
+        self._max_tokens = max_tokens
+        if user_message_prefix is not None and not user_message_prefix.strip():
+            raise ValueError("user_message_prefix cannot be blank")
+        self._user_message_prefix = user_message_prefix
+        reserved = {"model", "messages", "tools"}.intersection(self._extra_body)
+        if reserved:
+            raise ValueError(
+                f"extra_body cannot override canonical request fields: {sorted(reserved)}"
+            )
         self._owns_client = client is None
         self._client = client or AsyncOpenAI(
-            api_key=key or api_key,
-            base_url=_validated_openai_base_url(base_url),
+            # OpenAI-compatible local servers such as Ollama do not authenticate,
+            # while the SDK requires a non-empty value. This placeholder is only
+            # synthesized for an explicit loopback endpoint.
+            api_key=supplied_api_key or "local-openai-compatible",
+            base_url=validated_base_url,
         )
 
     async def complete(
@@ -345,12 +388,22 @@ class OpenAICompatibleModel:
         messages: Sequence[ConversationItem],
         tools: Sequence[ToolDefinition] = (),
     ) -> ModelTurn:
+        native_messages = _openai_messages(messages)
+        if self._user_message_prefix:
+            for message in native_messages:
+                if message.get("role") == "user" and isinstance(message.get("content"), str):
+                    message["content"] = f"{self._user_message_prefix}{message['content']}"
+                    break
         request: dict[str, Any] = {
             "model": self.model_id,
-            "messages": _openai_messages(messages),
+            "messages": native_messages,
         }
         if tools:
             request["tools"] = _openai_tools(tools)
+        if self._extra_body:
+            request["extra_body"] = self._extra_body
+        if self._max_tokens is not None:
+            request["max_tokens"] = self._max_tokens
         try:
             response = await self._client.chat.completions.create(**request)
         except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
@@ -425,6 +478,7 @@ class AnthropicModel(_HttpModel):
     """Native Anthropic Messages API adapter."""
 
     provider_name = "anthropic"
+    protocol = ModelProtocol.ANTHROPIC_MESSAGES
 
     def __init__(
         self,
@@ -563,6 +617,7 @@ class GeminiModel(_HttpModel):
     """Native Google Gemini generateContent adapter."""
 
     provider_name = "gemini"
+    protocol = ModelProtocol.GEMINI_GENERATE_CONTENT
 
     def __init__(
         self,
@@ -722,6 +777,7 @@ class WorkersAIModel(_HttpModel):
     """Cloudflare Workers AI REST adapter for text-generation models."""
 
     provider_name = "workers-ai"
+    protocol = ModelProtocol.WORKERS_AI_RUN
 
     def __init__(
         self,

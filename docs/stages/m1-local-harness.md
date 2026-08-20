@@ -1,6 +1,6 @@
 # M1: Local Python coding-agent harness
 
-> Status: implementation and independent review complete; final commit pending.
+> Status: complete and committed.
 > Date: 2026-08-21
 > Engineering name: `python-coding-agent` (temporary)
 
@@ -189,5 +189,7 @@ Final release-gate result:
 
 ## Commit
 
-Pending independent review, user review of the QuidProQuo article draft, and format-commit
-confirmation. The final commit SHA will be appended without rewriting the verification record.
+- Commit: `859db23` (`feat(harness): 建立可驗證的 Python coding agent 核心`)
+- The commit was verified from an isolated checkout of the staged snapshot: Ruff passed and all
+  55 M1 tests passed before the root commit was created.
+- The QuidProQuo practice article remains a reviewable draft outside this repository.

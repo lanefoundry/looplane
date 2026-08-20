@@ -13,6 +13,7 @@ dependencies = [
   "openai>=1.68.0",
   "pydantic>=2.10.0",
   "typer>=0.15.0",
+  "uvicorn>=0.30.0",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,7 @@ dev = [
 
 [project.scripts]
 coding-agent = "coding_agent.cli:app"
+pca = "coding_agent.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/coding_agent"]

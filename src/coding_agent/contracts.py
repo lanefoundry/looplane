@@ -178,6 +178,17 @@ class ModelCapabilities(ContractModel):
     structured_output: bool
 
 
+class ModelProtocol(StrEnum):
+    """Wire protocol selected independently from provider identity and endpoint."""
+
+    SCRIPTED = "scripted"
+    OPENAI_CHAT = "openai_chat"
+    OPENAI_CODEX_RESPONSES = "openai_codex_responses"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
+    GEMINI_GENERATE_CONTENT = "gemini_generate_content"
+    WORKERS_AI_RUN = "workers_ai_run"
+
+
 class ModelTurn(ContractModel):
     """Canonical output from one non-streaming model invocation."""
 

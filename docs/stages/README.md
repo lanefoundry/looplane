@@ -27,3 +27,8 @@ must include commands and results, not only a statement that testing was perform
 
 The commit SHA is filled after the milestone commit. If a follow-up correction is needed, append
 the corrective commit rather than rewriting the historical result.
+
+## Records
+
+- [M1: Local Python coding-agent harness](m1-local-harness.md)
+- [M2: Interactive CLI and provider gateway](m2-interactive-cli-provider-gateway.md)

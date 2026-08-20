@@ -12,6 +12,7 @@ from coding_agent.contracts import (
     Limits,
     Message,
     ModelCapabilities,
+    ModelProtocol,
     ModelTurn,
     RunResult,
     RunStatus,
@@ -222,6 +223,7 @@ async def test_three_identical_actions_trigger_repetition_guard(
 class SlowModel:
     provider_name = "slow-test"
     model_id = "slow-test"
+    protocol = ModelProtocol.SCRIPTED
     capabilities = ModelCapabilities(
         tool_calling=True,
         streaming=False,
@@ -358,6 +360,43 @@ async def test_failed_final_verification_is_fed_back_then_retried(
     assert "failed" in test_log
     assert "passed" in test_log
     assert events[-1]["event_type"] == "run.completed"
+
+
+@pytest.mark.asyncio
+async def test_truncated_model_turn_continues_without_running_verification(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=3, wall_time_seconds=30))
+    model = ScriptedModel(
+        [
+            ModelTurn(content="", finish_reason="length"),
+            ModelTurn(
+                tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)
+            ),
+            ModelTurn(content="Fixed after the truncated turn."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED
+    assert len(model.calls) == 3
+    assert any(
+        isinstance(item, Message)
+        and item.role == "user"
+        and item.content is not None
+        and "output limit" in item.content
+        for item in model.calls[1][0]
+    )
+    verification_events = [
+        event for event in read_events(result) if event["event_type"] == "verification.completed"
+    ]
+    assert len(verification_events) == 1
 
 
 @pytest.mark.asyncio

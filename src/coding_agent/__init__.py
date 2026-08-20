@@ -1,11 +1,20 @@
 """Public typed API for the Python coding-agent harness."""
 
+from coding_agent.codex_oauth import (
+    CodexAuthorization,
+    CodexCredentialManager,
+    CodexCredentials,
+    CodexCredentialStore,
+    CodexOAuthClient,
+    OpenAICodexResponsesModel,
+)
 from coding_agent.contracts import (
     Checkpoint,
     ConversationItem,
     Limits,
     Message,
     ModelCapabilities,
+    ModelProtocol,
     ModelTurn,
     RunResult,
     RunStatus,
@@ -34,6 +43,11 @@ __all__ = [
     "AnthropicModel",
     "AgentRunner",
     "Checkpoint",
+    "CodexAuthorization",
+    "CodexCredentialManager",
+    "CodexCredentials",
+    "CodexCredentialStore",
+    "CodexOAuthClient",
     "ConversationItem",
     "EventWriter",
     "GeminiModel",
@@ -41,6 +55,7 @@ __all__ = [
     "Message",
     "ModelCapabilities",
     "ModelProvider",
+    "ModelProtocol",
     "ModelTurn",
     "RunEvent",
     "RunResult",
@@ -54,6 +69,7 @@ __all__ = [
     "VerificationCommand",
     "VerificationOutcome",
     "OpenAICompatibleModel",
+    "OpenAICodexResponsesModel",
     "ProviderError",
     "ProviderErrorKind",
     "ScriptedModel",

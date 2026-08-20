@@ -4,7 +4,11 @@
 
 ## Goal
 
-Build a Python-first coding-agent MVP that copies a fixed local Git repository into a disposable workspace, lets a model use a small bounded tool set, runs deterministic checks, and returns a patch plus an auditable run bundle without changing the source worktree.
+Build a Python-first coding agent that is usable as an interactive daily CLI while keeping a
+bounded, auditable headless mode for CI and future Cloudflare execution. The agent owns its
+loop, approvals, sessions, tools, and verification. Model access is provided through explicit
+protocol adapters and configurable API endpoints rather than by delegating the experience to
+another coding-agent CLI.
 
 ## Current milestone: M1 local harness
 
@@ -20,10 +24,45 @@ Build a Python-first coding-agent MVP that copies a fixed local Git repository i
 - [x] Test path traversal, forbidden commands, patch bounds, real-worktree isolation, and artifacts.
 - [x] Run `uv run pytest`, `uv run ruff check .`, and an end-to-end fixture smoke test.
 
-## Explicitly deferred
+## Active milestone: M2 interactive CLI and provider bridge
+
+- [x] Make bare `pca` start our own interactive agent in the current repository.
+- [x] Stream model/tool/verification events while a turn is running.
+- [x] Require explicit approval before patches and local command execution.
+- [x] Persist sessions and support safe `pca resume` after process restart.
+- [x] Preserve `pca run` as deterministic, non-interactive headless mode.
+- [x] Support explicit provider protocols and custom API URLs, including loopback Ollama.
+- [x] Validate a real provider path without changing the provider-neutral agent core.
+- [x] Document how OMP, OpenCode, and Pi informed the provider boundary and where this
+      implementation deliberately differs.
+
+### Live provider evidence
+
+- Ollama `qwen3:4b` returned real text and a correctly structured `read_file` tool call through
+  `OpenAICompatibleModel` at `http://127.0.0.1:11434/v1`.
+- `pca gateway` translated a real `/v1/chat/completions` request through the same adapter and
+  returned `GATEWAY_OK`; shutdown now closes the provider on the serving event loop.
+- A full tiny-bug agent run did not pass: the 4B model read the correct source but produced an
+  invalid unified diff and later exhausted output limits. Approval, `git apply --check`, durable
+  cancellation, resume, and the truncated-turn guard all behaved correctly. Do not report this as
+  a successful coding eval.
+
+### Provider boundary decision
+
+- The Python agent loop consumes the canonical `ModelProvider` interface only.
+- OpenAI-compatible, native Anthropic/Gemini/Workers AI, and future Responses adapters are
+  transports behind that interface.
+- A configurable API URL is an upstream endpoint, not permission to scrape credentials from
+  another application's files.
+- Official Codex/Claude CLIs are reference implementations and optional external tools, not the
+  default UI or the owner of this agent's loop.
+- Subscription OAuth support is accepted only when the provider explicitly supports third-party
+  clients; otherwise use an approved API key or a user-controlled compatible endpoint.
+
+## Explicitly deferred after M2
 
 - Cloudflare Worker/Sandbox deployment.
-- Multi-agent, MCP, RAG, long-term memory, TUI, LSP, GitHub writes, push, PR, deploy.
+- Multi-agent, MCP, RAG, long-term memory, full-screen TUI, LSP, GitHub writes, push, PR, deploy.
 - Public product/package naming.
 
 ## Required artifacts per run

@@ -6,10 +6,21 @@ import asyncio
 import hashlib
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
 from uuid import uuid4
 
+from coding_agent.approvals import (
+    ApprovalDecision,
+    ApprovalPolicy,
+    ApprovalReason,
+    ApprovalRequest,
+    HeadlessApprovalPolicy,
+    ToolEffect,
+    effect_for_tool,
+)
+from coding_agent.console import CompositeEventSink, EventSink, JsonlEventSink
 from coding_agent.contracts import (
     Checkpoint,
     ConversationItem,
@@ -18,7 +29,9 @@ from coding_agent.contracts import (
     RunStatus,
     TaskContract,
     ToolCall,
+    ToolObservation,
     Usage,
+    VerificationCommand,
     VerificationOutcome,
 )
 from coding_agent.events import EventWriter, RunEvent, atomic_write_json
@@ -27,8 +40,17 @@ from coding_agent.policy import SafePathPolicy
 from coding_agent.runtime import (
     LocalGitWorkspace,
     WorkspacePreparationError,
+    bounded_text,
     run_bounded_command,
     sanitized_subprocess_env,
+)
+from coding_agent.session import (
+    ApprovalAuditRecord,
+    SessionManifest,
+    SessionPhase,
+    SessionStore,
+    SessionValidationError,
+    SessionWriterLease,
 )
 from coding_agent.tools import ToolExecutionError, ToolExecutor
 
@@ -56,6 +78,8 @@ class AgentRunner:
         run_id: str | None = None,
         durable_events: bool = True,
         allow_unsafe_local_exec: bool = False,
+        approval_policy: ApprovalPolicy | None = None,
+        event_sink: EventSink | None = None,
     ) -> None:
         self.task = task
         self.model = model
@@ -76,6 +100,15 @@ class AgentRunner:
         self.run_dir = self.run_root / self.run_id
         self.events = EventWriter(self.run_dir / "events.jsonl", durable=durable_events)
         self.allow_unsafe_local_exec = allow_unsafe_local_exec
+        self.approvals = approval_policy or HeadlessApprovalPolicy(
+            allow_modify=True,
+            allow_execute=allow_unsafe_local_exec,
+        )
+        self._interactive_approvals = approval_policy is not None
+        durable_sink = JsonlEventSink(self.events)
+        self._event_sink: EventSink = (
+            CompositeEventSink((durable_sink, event_sink)) if event_sink else durable_sink
+        )
         self._run_dir_initialized = False
         self._sequence = 0
         self._writer_token = uuid4().hex
@@ -87,6 +120,71 @@ class AgentRunner:
         self._test_log: list[str] = []
         self._executor: ToolExecutor | None = None
         self._last_verification: tuple[VerificationOutcome, ...] = ()
+        self._active_wall_time_base = 0.0
+        self._run_started_monotonic: float | None = None
+        self._active_started_at: datetime | None = None
+        self._session_store: SessionStore | None = None
+        self._session_lease: SessionWriterLease | None = None
+        self._manifest: SessionManifest | None = None
+        self._resume_ready = False
+
+    @classmethod
+    async def resume(
+        cls,
+        run_dir: str | Path,
+        model: ModelProvider,
+        *,
+        approval_policy: ApprovalPolicy,
+        event_sink: EventSink | None = None,
+        durable_events: bool = True,
+    ) -> AgentRunner:
+        """Open a non-terminal persisted session after strict workspace/event validation."""
+
+        resolved = Path(run_dir).resolve(strict=True)
+        store = SessionStore(resolved, durable=durable_events)
+        lease = store.acquire_writer()
+        try:
+            manifest, task = await store.claim_and_validate_resume(lease)
+            if (
+                manifest.provider_name != model.provider_name
+                or manifest.model_id != model.model_id
+                or manifest.protocol != str(model.protocol)
+            ):
+                raise SessionValidationError(
+                    "resume provider/protocol/model must match the persisted session"
+                )
+            runner = cls(
+                task,
+                model,
+                resolved.parent,
+                run_id=resolved.name,
+                durable_events=durable_events,
+                approval_policy=approval_policy,
+                event_sink=event_sink,
+            )
+            runner._session_store = store
+            runner._session_lease = lease
+            runner._manifest = manifest
+            runner._sequence = manifest.last_event_sequence + 1
+            runner._messages = list(manifest.messages)
+            runner._usage = manifest.usage
+            runner._step = manifest.step
+            runner._last_fingerprint = manifest.last_action_fingerprint
+            runner._repeat_count = manifest.repeat_count
+            runner._last_verification = manifest.verification
+            runner._run_dir_initialized = True
+            workspace = resolved / "workspace"
+            runner._executor = ToolExecutor(
+                workspace=workspace,
+                policy=SafePathPolicy(workspace, task.allowed_paths),
+                verification_commands=task.verification,
+                limits=task.limits,
+            )
+            runner._resume_ready = True
+            return runner
+        except BaseException:
+            lease.release()
+            raise
 
     async def _event(self, event_type: str, **data: Any) -> None:
         event = RunEvent(
@@ -96,8 +194,189 @@ class AgentRunner:
             sequence=self._sequence,
             data=data,
         )
+        if self._manifest is not None:
+            self._manifest = self._manifest.model_copy(
+                update={
+                    "last_event_sequence": event.sequence,
+                    "step": self._step,
+                    "messages": tuple(self._messages),
+                    "usage": self._usage,
+                    "last_action_fingerprint": self._last_fingerprint,
+                    "repeat_count": self._repeat_count,
+                    "verification": self._last_verification,
+                    "active_wall_time_seconds": self._active_wall_time_base,
+                    "active_started_at": self._active_started_at,
+                }
+            )
+            await self._save_manifest()
+        await self._event_sink.emit(event)
         self._sequence += 1
-        await self.events.append(event)
+
+    async def _save_manifest(self) -> None:
+        if self._session_store is None or self._session_lease is None or self._manifest is None:
+            return
+        self._manifest = await self._session_store.save(self._manifest, self._session_lease)
+
+    @staticmethod
+    def _session_phase(status: RunStatus) -> SessionPhase:
+        return {
+            RunStatus.CREATED: SessionPhase.CREATED,
+            RunStatus.PREPARING: SessionPhase.PREPARING,
+            RunStatus.INSPECTING: SessionPhase.RUNNING,
+            RunStatus.PLANNING: SessionPhase.RUNNING,
+            RunStatus.IMPLEMENTING: SessionPhase.RUNNING,
+            RunStatus.VERIFYING: SessionPhase.VERIFYING,
+            RunStatus.COMPLETED: SessionPhase.COMPLETED,
+            RunStatus.FAILED: SessionPhase.FAILED,
+            RunStatus.CANCELLED: SessionPhase.CANCELLED,
+        }[status]
+
+    async def _approval(
+        self,
+        *,
+        action_id: str,
+        effect: ToolEffect,
+        reason: ApprovalReason,
+        preview: str,
+        tool_call: ToolCall | None = None,
+        command: VerificationCommand | None = None,
+    ) -> ApprovalDecision:
+        request = ApprovalRequest(
+            run_id=self.run_id,
+            action_id=action_id,
+            effect=effect,
+            reason=reason,
+            preview=bounded_text(preview, 16_000),
+            tool_call=tool_call,
+            command=command,
+        )
+        if self._manifest is not None and effect in self._manifest.granted_effects:
+            self._manifest = self._manifest.model_copy(
+                update={
+                    "phase": SessionPhase.RUNNING,
+                    "pending_action": request,
+                }
+            )
+            await self._save_manifest()
+            await self._event(
+                "approval.reused",
+                request_id=request.request_id,
+                action_id=action_id,
+                effect=effect.value,
+                reason=reason.value,
+            )
+            return ApprovalDecision.ALLOW_ONCE
+        if self._manifest is not None:
+            self._manifest = self._manifest.model_copy(
+                update={
+                    "phase": SessionPhase.WAITING_APPROVAL,
+                    "pending_action": request,
+                }
+            )
+            await self._save_manifest()
+        await self._event(
+            "approval.requested",
+            request_id=request.request_id,
+            action_id=action_id,
+            effect=effect.value,
+            reason=reason.value,
+            preview=request.preview,
+        )
+        decision = await self.approvals.decide(request)
+        if self._manifest is not None:
+            granted_effects = self._manifest.granted_effects
+            if decision == ApprovalDecision.ALLOW_SESSION:
+                granted_effects = frozenset((*granted_effects, effect))
+            pending_action = request
+            if decision in {ApprovalDecision.DENY, ApprovalDecision.CANCEL}:
+                pending_action = None
+            self._manifest = self._manifest.model_copy(
+                update={
+                    "phase": SessionPhase.RUNNING,
+                    "pending_action": pending_action,
+                    "granted_effects": granted_effects,
+                    "approval_history": (
+                        *self._manifest.approval_history,
+                        ApprovalAuditRecord(request=request, decision=decision),
+                    ),
+                }
+            )
+            await self._save_manifest()
+        await self._event(
+            "approval.resolved",
+            request_id=request.request_id,
+            action_id=action_id,
+            effect=effect.value,
+            reason=reason.value,
+            decision=decision.value,
+        )
+        return decision
+
+    async def _mark_approved_action_started(self, request_id: str) -> None:
+        """Clear an approved action only after its started event is durable."""
+
+        if self._manifest is None:
+            return
+        pending = self._manifest.pending_action
+        if pending is None or pending.request_id != request_id:
+            raise SessionValidationError("approved action no longer matches session state")
+        self._manifest = self._manifest.model_copy(update={"pending_action": None})
+        await self._save_manifest()
+
+    async def _reconcile_interrupted_approval(self) -> None:
+        """Fail closed when a process stopped after requesting but before resolving approval.
+
+        No side effect has started at this point.  Resume records that fact and gives the model a
+        canonical failure/user message so it can request the action again.  This avoids both
+        silently executing a stale approval and sending an orphaned tool call to the provider.
+        """
+
+        if self._manifest is None or self._manifest.pending_action is None:
+            return
+        pending = self._manifest.pending_action
+        if pending.tool_call is not None:
+            self._messages.append(
+                ToolObservation(
+                    tool_call_id=pending.tool_call.tool_call_id,
+                    name=pending.tool_call.name,
+                    ok=False,
+                    error=(
+                        "approval was interrupted before execution; the action was not performed"
+                    ),
+                )
+            )
+        else:
+            self._messages.append(
+                Message(
+                    role="user",
+                    content=(
+                        "Final verification approval was interrupted before the command ran. "
+                        "Continue the task and finish again when ready; verification will require "
+                        "a new approval."
+                    ),
+                )
+            )
+        self._manifest = self._manifest.model_copy(
+            update={
+                "phase": SessionPhase.RUNNING,
+                "pending_action": None,
+                "messages": tuple(self._messages),
+            }
+        )
+        await self._save_manifest()
+        await self._event(
+            "approval.abandoned",
+            request_id=pending.request_id,
+            action_id=pending.action_id,
+            effect=pending.effect.value,
+            reason="process_interrupted_before_decision",
+        )
+
+    @staticmethod
+    def _tool_preview(call: ToolCall) -> str:
+        if call.name == "apply_patch":
+            return str(call.arguments.get("patch", ""))
+        return json.dumps(call.arguments, ensure_ascii=False, sort_keys=True, indent=2)
 
     async def _checkpoint(self, status: RunStatus, **metadata: Any) -> None:
         checkpoint = Checkpoint(
@@ -115,6 +394,22 @@ class AgentRunner:
             metadata=metadata,
         )
         await atomic_write_json(self.run_dir / "checkpoint.json", checkpoint)
+        if self._manifest is not None:
+            phase = self._session_phase(status)
+            self._manifest = self._manifest.model_copy(
+                update={
+                    "phase": phase,
+                    "terminal": phase
+                    in {SessionPhase.COMPLETED, SessionPhase.FAILED, SessionPhase.CANCELLED},
+                    "step": self._step,
+                    "messages": tuple(self._messages),
+                    "usage": self._usage,
+                    "last_action_fingerprint": self._last_fingerprint,
+                    "repeat_count": self._repeat_count,
+                    "verification": self._last_verification,
+                }
+            )
+            await self._save_manifest()
 
     @staticmethod
     def _add_usage(left: Usage, right: Usage) -> Usage:
@@ -210,6 +505,41 @@ class AgentRunner:
         assert self._executor is not None
         outcomes: list[VerificationOutcome] = []
         for command in self.task.verification:
+            decision = await self._approval(
+                action_id=f"verification:{command.name}",
+                effect=ToolEffect.EXECUTE,
+                reason=ApprovalReason.FINAL_VERIFICATION,
+                preview=f"$ {' '.join(command.argv)}",
+                command=command,
+            )
+            if decision == ApprovalDecision.CANCEL:
+                raise asyncio.CancelledError("final verification cancelled by user")
+            if decision == ApprovalDecision.DENY:
+                outcome = VerificationOutcome(
+                    name=command.name,
+                    argv=command.argv,
+                    ok=False,
+                    output="verification denied by user",
+                )
+                outcomes.append(outcome)
+                await self._event(
+                    "verification.completed",
+                    name=outcome.name,
+                    ok=False,
+                    exit_code=None,
+                    duration_seconds=0.0,
+                    error="approval denied",
+                )
+                continue
+            await self._event(
+                "verification.started",
+                name=command.name,
+                argv=command.argv,
+            )
+            if self._manifest is not None and self._manifest.pending_action is not None:
+                await self._mark_approved_action_started(
+                    self._manifest.pending_action.request_id
+                )
             outcome = await asyncio.to_thread(
                 self._executor.run_check,
                 command.name,
@@ -300,9 +630,32 @@ class AgentRunner:
     async def run(self) -> RunResult:
         """Execute until verified success or a deterministic terminal guard fires."""
 
-        deadline = time.monotonic() + self.task.limits.wall_time_seconds
+        self._active_wall_time_base = (
+            self._manifest.active_wall_time_seconds if self._manifest is not None else 0.0
+        )
+        now = datetime.now(UTC)
+        if self._manifest is not None and self._manifest.active_started_at is not None:
+            self._active_wall_time_base += max(
+                0.0,
+                (now - self._manifest.active_started_at).total_seconds(),
+            )
+        self._run_started_monotonic = time.monotonic()
+        self._active_started_at = now
+        if self._manifest is not None:
+            self._manifest = self._manifest.model_copy(
+                update={
+                    "active_wall_time_seconds": self._active_wall_time_base,
+                    "active_started_at": self._active_started_at,
+                }
+            )
+            await self._save_manifest()
+        remaining_wall_time = max(
+            0.0,
+            self.task.limits.wall_time_seconds - self._active_wall_time_base,
+        )
+        deadline = self._run_started_monotonic + remaining_wall_time
         try:
-            if not self.allow_unsafe_local_exec:
+            if not self.allow_unsafe_local_exec and not self._interactive_approvals:
                 raise UnsafeLocalExecutionError(
                     "local verification executes repository code without an OS sandbox; "
                     "set allow_unsafe_local_exec=True only for a trusted repository"
@@ -312,40 +665,71 @@ class AgentRunner:
                     f"model {self.model.provider_name}/{self.model.model_id} does not advertise "
                     "tool calling"
                 )
-            self._validate_run_location()
-            base_sha = self._resolve_base_sha(deadline)
-            self.run_dir.mkdir(parents=True, exist_ok=False)
-            self._run_dir_initialized = True
-            effective_task = self.task.model_copy(update={"base_sha": base_sha})
-            await atomic_write_json(self.run_dir / "request.json", effective_task)
-            await self._event(
-                "run.created",
-                provider=self.model.provider_name,
-                model=self.model.model_id,
-                base_sha=base_sha,
-            )
+            if self._resume_ready:
+                if self.task.base_sha is None or self._manifest is None:
+                    raise SessionValidationError("resumed session has no pinned base commit")
+                base_sha = self.task.base_sha
+                final_summary = self._manifest.final_summary
+                await self._event(
+                    "session.resumed",
+                    provider=self.model.provider_name,
+                    model=self.model.model_id,
+                    base_sha=base_sha,
+                    resumed_step=self._step,
+                )
+                await self._reconcile_interrupted_approval()
+            else:
+                self._validate_run_location()
+                base_sha = self._resolve_base_sha(deadline)
+                self.run_dir.mkdir(parents=True, exist_ok=False)
+                self._run_dir_initialized = True
+                self._session_store = SessionStore(
+                    self.run_dir,
+                    durable=self.events.durable,
+                )
+                self._session_lease = self._session_store.acquire_writer()
+                effective_task = self.task.model_copy(update={"base_sha": base_sha})
+                self.task = effective_task
+                await atomic_write_json(self.run_dir / "request.json", effective_task)
+                self._manifest = await self._session_store.initialize(
+                    SessionManifest.new(
+                        run_id=self.run_id,
+                        task_id=self.task.task_id,
+                        provider_name=self.model.provider_name,
+                        model_id=self.model.model_id,
+                        protocol=str(self.model.protocol),
+                        base_sha=base_sha,
+                    ),
+                    self._session_lease,
+                )
+                await self._event(
+                    "run.created",
+                    provider=self.model.provider_name,
+                    model=self.model.model_id,
+                    base_sha=base_sha,
+                )
 
-            workspace = LocalGitWorkspace(
-                source_repo=self.task.repository,
-                run_dir=self.run_dir,
-                base_sha=base_sha,
-            )
-            workspace_path = await asyncio.to_thread(
-                workspace.prepare,
-                timeout_seconds=self._remaining(deadline),
-            )
-            policy = SafePathPolicy(workspace_path, self.task.allowed_paths)
-            self._executor = ToolExecutor(
-                workspace=workspace,
-                policy=policy,
-                verification_commands=self.task.verification,
-                limits=self.task.limits,
-            )
-            await self._event("workspace.prepared", workspace="workspace", base_sha=base_sha)
+                workspace = LocalGitWorkspace(
+                    source_repo=self.task.repository,
+                    run_dir=self.run_dir,
+                    base_sha=base_sha,
+                )
+                workspace_path = await asyncio.to_thread(
+                    workspace.prepare,
+                    timeout_seconds=self._remaining(deadline),
+                )
+                policy = SafePathPolicy(workspace_path, self.task.allowed_paths)
+                self._executor = ToolExecutor(
+                    workspace=workspace,
+                    policy=policy,
+                    verification_commands=self.task.verification,
+                    limits=self.task.limits,
+                )
+                await self._event("workspace.prepared", workspace="workspace", base_sha=base_sha)
 
-            self._messages = self._initial_messages(base_sha)
-            await self._checkpoint(RunStatus.INSPECTING)
-            final_summary = ""
+                self._messages = self._initial_messages(base_sha)
+                await self._checkpoint(RunStatus.INSPECTING)
+                final_summary = ""
 
             while self._step < self.task.limits.max_steps:
                 try:
@@ -371,6 +755,7 @@ class AgentRunner:
                     step=self._step,
                     finish_reason=turn.finish_reason,
                     tool_calls=[call.name for call in turn.tool_calls],
+                    content=bounded_text(turn.content or "", 2_000),
                     usage=turn.usage.model_dump(mode="json"),
                 )
 
@@ -382,12 +767,58 @@ class AgentRunner:
                                 terminal_reason="repeated_action",
                                 summary=turn.content or final_summary,
                             )
+                        effect = effect_for_tool(call.name)
+                        await self._event(
+                            "tool.requested",
+                            tool_call_id=call.tool_call_id,
+                            name=call.name,
+                            effect=effect.value,
+                            arguments=self._event_arguments(call.arguments),
+                        )
+                        decision = await self._approval(
+                            action_id=call.tool_call_id,
+                            effect=effect,
+                            reason=ApprovalReason.MODEL_TOOL,
+                            preview=self._tool_preview(call),
+                            tool_call=call,
+                        )
+                        if decision == ApprovalDecision.CANCEL:
+                            return await self._finish(
+                                status=RunStatus.CANCELLED,
+                                terminal_reason="approval_cancelled",
+                                summary="Run cancelled by user before executing a tool.",
+                            )
+                        if decision == ApprovalDecision.DENY:
+                            observation = ToolObservation(
+                                tool_call_id=call.tool_call_id,
+                                name=call.name,
+                                ok=False,
+                                error="action denied by user",
+                            )
+                            self._messages.append(observation)
+                            await self._event(
+                                "tool.completed",
+                                tool_call_id=call.tool_call_id,
+                                name=call.name,
+                                ok=False,
+                                error=observation.error,
+                            )
+                            await self._checkpoint(
+                                RunStatus.IMPLEMENTING,
+                                last_tool=call.name,
+                                approval="denied",
+                            )
+                            continue
                         await self._event(
                             "tool.started",
                             tool_call_id=call.tool_call_id,
                             name=call.name,
-                            arguments=self._event_arguments(call.arguments),
+                            effect=effect.value,
                         )
+                        if self._manifest is not None and self._manifest.pending_action is not None:
+                            await self._mark_approved_action_started(
+                                self._manifest.pending_action.request_id
+                            )
                         observation = await asyncio.to_thread(
                             self._executor.execute,
                             call,
@@ -400,12 +831,39 @@ class AgentRunner:
                             name=call.name,
                             ok=observation.ok,
                             error=observation.error,
+                            preview=bounded_text(observation.content, 2_000),
                         )
                         await self._checkpoint(RunStatus.IMPLEMENTING, last_tool=call.name)
                     continue
 
+                if turn.finish_reason == "length":
+                    self._messages.append(
+                        Message(
+                            role="user",
+                            content=(
+                                "Your previous response reached the provider output limit before "
+                                "a complete action or final answer. Continue concisely. Use the "
+                                "available tools instead of repeating analysis."
+                            ),
+                        )
+                    )
+                    await self._checkpoint(RunStatus.PLANNING, output_truncated=True)
+                    continue
+
                 final_summary = turn.content or final_summary
-                outcomes = await self._verify_all(deadline)
+                if self._manifest is not None:
+                    self._manifest = self._manifest.model_copy(
+                        update={"final_summary": final_summary}
+                    )
+                    await self._save_manifest()
+                try:
+                    outcomes = await self._verify_all(deadline)
+                except asyncio.CancelledError:
+                    return await self._finish(
+                        status=RunStatus.CANCELLED,
+                        terminal_reason="verification_cancelled",
+                        summary=final_summary or "Final verification cancelled by user.",
+                    )
                 if all(outcome.ok for outcome in outcomes):
                     return await self._finish(
                         status=RunStatus.COMPLETED,
@@ -465,3 +923,22 @@ class AgentRunner:
                     summary=str(exc),
                 )
             raise
+        finally:
+            if (
+                self._manifest is not None
+                and self._session_lease is not None
+                and self._session_lease.active
+                and self._run_started_monotonic is not None
+            ):
+                elapsed = time.monotonic() - self._run_started_monotonic
+                self._active_wall_time_base += max(0.0, elapsed)
+                self._active_started_at = None
+                self._manifest = self._manifest.model_copy(
+                    update={
+                        "active_wall_time_seconds": self._active_wall_time_base,
+                        "active_started_at": None,
+                    }
+                )
+                await asyncio.shield(self._save_manifest())
+            if self._session_lease is not None:
+                self._session_lease.release()
