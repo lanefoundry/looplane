@@ -45,6 +45,8 @@ class ToolExecutor:
         policy: SafePathPolicy,
         verification_commands: Sequence[VerificationCommand],
         limits: object | None = None,
+        *,
+        git_dir: Path | None = None,
     ) -> None:
         self.workspace = (
             workspace.workspace_path
@@ -53,6 +55,9 @@ class ToolExecutor:
         ).resolve(strict=True)
         if self.workspace != policy.workspace_root:
             raise ValueError("ToolExecutor workspace and SafePathPolicy root must match")
+        self.git_dir = Path(git_dir).resolve(strict=True) if git_dir is not None else None
+        if self.git_dir is not None and not self.git_dir.is_dir():
+            raise ValueError("git_dir must be an existing directory")
         self.policy = policy
         self.max_output_chars = self._limit_alias(
             limits,
@@ -374,8 +379,18 @@ class ToolExecutor:
         timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
     ):
+        prefix: tuple[str, ...] = ()
+        if self.git_dir is not None:
+            prefix = (
+                f"--git-dir={self.git_dir}",
+                f"--work-tree={self.workspace}",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            )
         return run_bounded_command(
-            ("git", *argv),
+            ("git", *prefix, *argv),
             cwd=self.workspace,
             timeout_seconds=self._effective_timeout(30.0, timeout_seconds),
             max_output_chars=max_output_bytes or self.max_output_chars,
@@ -627,7 +642,14 @@ class ToolExecutor:
             return value
 
         result = self._git(
-            ("diff", "--no-ext-diff", "--no-color", "--no-renames", "--"),
+            (
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--no-renames",
+                "--",
+            ),
             timeout_seconds=remaining(),
             max_output_bytes=self.max_patch_bytes + 1,
         )

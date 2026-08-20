@@ -7,6 +7,7 @@ External agent backends own their model loop and are deliberately separate from
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import Field, field_validator
@@ -79,5 +80,6 @@ class ExternalAgentBackend(Protocol):
         self,
         task: ExternalAgentTask,
         *,
+        working_directory: Path | None = None,
         event_sink: ExternalEventSink | None = None,
     ) -> ExternalAgentResult: ...

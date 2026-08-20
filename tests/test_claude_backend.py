@@ -56,6 +56,35 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
 
 
 @pytest.mark.asyncio
+async def test_claude_backend_coding_mode_uses_only_bounded_file_tools(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = _fake_claude(
+        tmp_path,
+        """
+import json, os, sys
+assert os.getcwd().endswith("workspace")
+assert os.environ["PYTHONDONTWRITEBYTECODE"] == "1"
+tools = sys.argv[sys.argv.index("--tools") + 1]
+assert tools == "Read,Glob,Grep,Edit"
+assert "--tools=" not in sys.argv
+assert sys.argv[sys.argv.index("--permission-mode") + 1] == "acceptEdits"
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                  "result": "edited"}))
+""",
+    )
+
+    result = await ClaudeCodeBackend(executable=executable).run(
+        ExternalAgentTask(task_id="coding", instruction="edit one file"),
+        working_directory=workspace,
+    )
+
+    assert result.status is ExternalRunStatus.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_claude_backend_normalizes_cli_error_without_raw_stderr(tmp_path: Path) -> None:
     executable = _fake_claude(
         tmp_path,

@@ -109,6 +109,7 @@ class ClaudeCodeBackend:
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                 "GIT_ASKPASS": "/usr/bin/false",
                 "GIT_TERMINAL_PROMPT": "0",
+                "PYTHONDONTWRITEBYTECODE": "1",
                 "TMPDIR": str(temporary_home / "tmp"),
                 "XDG_CACHE_HOME": str(temporary_home / "cache"),
             }
@@ -136,8 +137,8 @@ class ClaudeCodeBackend:
             raise ValueError("external-agent input exceeds max_input_bytes")
         return payload
 
-    def _argv(self, executable: str) -> tuple[str, ...]:
-        return (
+    def _argv(self, executable: str, *, coding: bool) -> tuple[str, ...]:
+        argv = (
             executable,
             "--print",
             "--safe-mode",
@@ -148,10 +149,16 @@ class ClaudeCodeBackend:
             "stream-json",
             "--verbose",
             "--no-session-persistence",
-            "--tools=",
-            "--permission-mode",
-            "plan",
         )
+        if coding:
+            return (
+                *argv,
+                "--tools",
+                "Read,Glob,Grep,Edit",
+                "--permission-mode",
+                "acceptEdits",
+            )
+        return (*argv, "--tools=", "--permission-mode", "plan")
 
     def _normalize(self, stdout: str) -> tuple[tuple[ExternalAgentEvent, ...], bool]:
         events: list[ExternalAgentEvent] = []
@@ -245,6 +252,7 @@ class ClaudeCodeBackend:
         self,
         task: ExternalAgentTask,
         *,
+        working_directory: Path | None = None,
         event_sink: ExternalEventSink | None = None,
     ) -> ExternalAgentResult:
         payload = self._input(task)
@@ -260,12 +268,19 @@ class ClaudeCodeBackend:
 
         with tempfile.TemporaryDirectory(prefix="pca-claude-") as raw_directory:
             directory = Path(raw_directory)
+            child_directory = (
+                working_directory.resolve(strict=True)
+                if working_directory is not None
+                else directory
+            )
+            if not child_directory.is_dir():
+                raise ValueError("working_directory must be a directory")
             cancel_event = threading.Event()
             command_task = asyncio.create_task(
                 asyncio.to_thread(
                     run_bounded_command,
-                    self._argv(executable),
-                    cwd=directory,
+                    self._argv(executable, coding=working_directory is not None),
+                    cwd=child_directory,
                     timeout_seconds=self.timeout_seconds,
                     max_output_chars=self.max_output_bytes,
                     env=self._controlled_env(directory),

@@ -8,9 +8,8 @@ from typer.testing import CliRunner
 
 from coding_agent import cli
 from coding_agent.approvals import HeadlessApprovalPolicy
-from coding_agent.backends import ExternalAgentResult, ExternalRunStatus
 from coding_agent.codex_oauth import CodexCredentials, CodexCredentialStore
-from coding_agent.contracts import ModelTurn, ToolCall
+from coding_agent.contracts import ModelTurn, RunResult, RunStatus, ToolCall
 from coding_agent.models import ScriptedModel
 
 FIX_PATCH = """\
@@ -131,24 +130,34 @@ def test_remote_ollama_uses_explicit_key_but_loopback_never_receives_it(monkeypa
     assert captured[1]["api_key"] is None
 
 
-def test_claude_backend_requires_explicit_boundary_and_emits_json(monkeypatch) -> None:
+def test_claude_backend_requires_explicit_coding_boundaries(
+    monkeypatch, tiny_bug_repo: Path, tmp_path: Path
+) -> None:
     captured: dict[str, object] = {}
 
     class FakeBackend:
         def __init__(self, *, timeout_seconds: float) -> None:
             captured["timeout"] = timeout_seconds
 
-        async def run(self, task):
+    class FakeRunner:
+        def __init__(self, task, backend, run_root, **kwargs) -> None:
             captured["task"] = task
-            return ExternalAgentResult(
-                backend_name="claude-code",
-                task_id=task.task_id,
-                status=ExternalRunStatus.COMPLETED,
+            captured["backend"] = backend
+            captured["run_root"] = run_root
+            captured.update(kwargs)
+
+        async def run(self):
+            return RunResult(
+                run_id="delegated-run",
+                task_id="delegated-1",
+                status=RunStatus.COMPLETED,
                 summary="delegated",
-                terminal_reason="completed",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
             )
 
     monkeypatch.setattr(cli, "ClaudeCodeBackend", FakeBackend)
+    monkeypatch.setattr(cli, "ExternalCodingRunner", FakeRunner)
 
     rejected = CliRunner().invoke(
         cli.app,
@@ -161,19 +170,44 @@ def test_claude_backend_requires_explicit_boundary_and_emits_json(monkeypatch) -
             "claude-code",
             "--task",
             "inspect this",
+            "--repo",
+            str(tiny_bug_repo),
             "--task-id",
             "delegated-1",
             "--timeout",
             "45",
             "--experimental-subscription",
+            "--check",
+            "pytest -q",
+            "--allow-external-modify",
+            "--unsafe-local-exec",
         ],
     )
 
     assert rejected.exit_code == 2
     assert accepted.exit_code == 0, accepted.output
-    assert '"backend_name": "claude-code"' in accepted.output
+    assert "completed: delegated" in accepted.output
     assert captured["timeout"] == 45
     assert captured["task"].task_id == "delegated-1"
+    assert captured["allow_external_modify"] is True
+    assert captured["allow_unsafe_local_exec"] is True
+
+    missing_check = CliRunner().invoke(
+        cli.app,
+        [
+            "backend",
+            "claude-code",
+            "--task",
+            "inspect this",
+            "--repo",
+            str(tiny_bug_repo),
+            "--experimental-subscription",
+            "--allow-external-modify",
+            "--unsafe-local-exec",
+        ],
+    )
+    assert missing_check.exit_code == 2
+    assert "requires at least one explicit --check" in missing_check.output
 
 
 def test_codex_login_closes_oauth_client_when_callback_fails(monkeypatch) -> None:

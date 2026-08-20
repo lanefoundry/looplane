@@ -28,9 +28,9 @@ execution contract is proven.
   because the process cannot prove whether that side effect completed.
 - Explicit model protocols, loopback Ollama, custom OpenAI-compatible API URLs, an experimental
   app-owned ChatGPT/Codex OAuth transport, and an optional bounded local model gateway.
-- A separate local-only `ExternalAgentBackend` for restricted delegation to the installed official
-  Claude Code CLI. It never becomes a `ModelProvider`; PCA does not parse or forward Claude
-  tokens, while the official child resolves the auth state it owns through the user's `HOME`.
+- A PCA-audited `ExternalCodingRunner` for local delegation to the installed official Codex and
+  Claude Code CLIs. They edit only a pinned disposable clone; PCA independently checks the full
+  path-bounded patch and runs exact final verification. They never become `ModelProvider`s.
 
 ## Set up with uv
 
@@ -137,17 +137,47 @@ remains experimental until this project has its own registration and current aut
 
 Anthropic's current Agent SDK policy says third-party products may not offer `claude.ai` login or
 subscription rate limits without prior approval. PCA therefore keeps its own loop on the native
-Anthropic API-key adapter. For local experiments only, a sharply separated backend can ask the
-installed official Claude Code CLI to perform a restricted, tool-free delegated task:
+Anthropic API-key adapter. For local/private experiments only, the installed official Claude Code
+CLI can edit a disposable clone with only `Read`, `Glob`, `Grep`, and `Edit`; PCA runs the final
+check separately:
 
 ```bash
-pca backend claude-code --experimental-subscription \
-  --task 'Summarize this design constraint in one paragraph.'
+pca backend claude-code \
+  --repo /path/to/trusted/repo \
+  --task 'Fix the failing test.' \
+  --allowed-path 'src/**' \
+  --check 'pytest -q' \
+  --experimental-subscription \
+  --allow-external-modify \
+  --unsafe-local-exec
 ```
 
 That command uses the official CLI's own login (and therefore permits that official child to read
-its own auth state), but does not edit a repository and is not evidence for PCA's coding loop. A
-hosted Claude subscription proxy is intentionally not implemented.
+its own auth state), but PCA never reads or copies the login. Bash, Write, WebFetch, WebSearch,
+MCP, subagent tools, and session persistence are not enabled. This is not evidence for PCA's own
+agent loop, and a hosted Claude subscription proxy is intentionally not implemented.
+
+The separately installed official Codex CLI can be used through the same outer harness. It owns
+its ChatGPT login and agent loop, runs ephemeral with user config/rules ignored, and receives only
+the disposable clone through Codex's `workspace-write` sandbox:
+
+```bash
+pca backend codex-cli \
+  --repo /path/to/trusted/repo \
+  --task 'Fix the failing test.' \
+  --allowed-path 'src/**' \
+  --check 'pytest -q' \
+  --experimental-subscription \
+  --allow-external-modify \
+  --unsafe-local-exec
+```
+
+The two explicit acknowledgements are separate: one permits the external CLI to modify only the
+clone; the other permits PCA to execute repository verification code on the host. New untracked
+files are rejected in this initial external-coding milestone; use PCA's own `apply_patch` path for
+reviewable create/delete work. The source repository must start clean. PCA removes Git metadata
+from the child working tree, rejects index/config mutation, hashes all source entries outside
+`.git` (including ignored files), and rechecks both source and patch after final verification.
 
 ## Local model gateway
 
@@ -231,8 +261,12 @@ Model text alone cannot mark a run successful.
 
 The local runtime does not provide an OS/container sandbox. The disposable clone and Python policy
 layer protect the source worktree and narrow tool behavior, but they are not a substitute for
-process isolation. Do not use the local backend on hostile repositories. The next cloud milestone
-will put the same Python runtime behind a thin Cloudflare Worker and Cloudflare Sandbox.
+process isolation. Codex CLI adds its own `workspace-write` sandbox; the local Claude Code path has
+an exact file-tool allowlist and post-run patch enforcement, but the official child still receives
+the user's `HOME` for its own authentication and is not filesystem-isolated by PCA. Do not use
+these local backends on hostile repositories. The next cloud milestone will put the project-owned
+Python runtime behind a thin Cloudflare Worker and Cloudflare Sandbox; consumer subscription
+logins will not be relayed there.
 
 See [progress.md](progress.md) for current acceptance criteria and
 [docs/stages](docs/stages/README.md) for milestone evidence.

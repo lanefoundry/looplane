@@ -17,8 +17,8 @@ import typer
 import uvicorn
 
 from coding_agent.approvals import TTYApprovalPolicy
-from coding_agent.backends import ExternalAgentTask
 from coding_agent.claude_backend import ClaudeCodeBackend
+from coding_agent.codex_backend import CodexCliBackend
 from coding_agent.codex_oauth import (
     CodexCredentialManager,
     CodexCredentialStore,
@@ -27,6 +27,11 @@ from coding_agent.codex_oauth import (
 )
 from coding_agent.console import ConsoleEventSink, LiveEventProjection
 from coding_agent.contracts import Limits, RunResult, TaskContract, VerificationCommand
+from coding_agent.external_runner import (
+    ExternalCodingRunner,
+    ExternalModificationApprovalError,
+    UnsafeExternalVerificationError,
+)
 from coding_agent.gateway import ModelGateway
 from coding_agent.loop import AgentRunner, UnsafeLocalExecutionError
 from coding_agent.models import (
@@ -249,6 +254,17 @@ def _model_from_env(
 @backend_app.command("claude-code")
 def run_claude_code_backend(
     instruction: Annotated[str, typer.Option("--task", "-t")],
+    repository: Annotated[
+        Path, typer.Option("--repo", exists=True, file_okay=False)
+    ] = DEFAULT_REPOSITORY,
+    check: Annotated[
+        list[str] | None, typer.Option("--check", help="Exact final verification argv; repeatable")
+    ] = None,
+    allowed_path: Annotated[
+        list[str] | None,
+        typer.Option("--allowed-path", help="Allowed changed path or glob; repeatable"),
+    ] = None,
+    run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
     task_id: Annotated[str, typer.Option("--task-id")] = "claude-code-task",
     timeout_seconds: Annotated[
         float, typer.Option("--timeout", min=1, help="Maximum delegated runtime in seconds.")
@@ -260,23 +276,141 @@ def run_claude_code_backend(
             help="Acknowledge this local-only official Claude Code delegation boundary.",
         ),
     ] = False,
+    allow_external_modify: Annotated[
+        bool,
+        typer.Option(
+            "--allow-external-modify",
+            help="Approve this external CLI editing only PCA's disposable clone.",
+        ),
+    ] = False,
+    unsafe_local_exec: Annotated[
+        bool,
+        typer.Option(
+            "--unsafe-local-exec",
+            help="Allow exact final checks from this trusted repository to run on the host.",
+        ),
+    ] = False,
 ) -> None:
-    """Delegate one local task to official Claude Code; this is not PCA's agent loop."""
+    """Let official Claude Code edit a disposable clone, then audit it with PCA."""
 
     if not experimental_subscription:
         raise typer.BadParameter(
             "Claude Code delegation is local-only and experimental; pass "
             "--experimental-subscription"
         )
+    if not check:
+        raise typer.BadParameter(
+            "external coding requires at least one explicit --check command"
+        )
     backend = ClaudeCodeBackend(timeout_seconds=timeout_seconds)
     try:
         result = asyncio.run(
-            backend.run(ExternalAgentTask(task_id=task_id, instruction=instruction))
+            ExternalCodingRunner(
+                TaskContract(
+                    repository=repository,
+                    instruction=instruction,
+                    allowed_paths=tuple(allowed_path or ("**",)),
+                    verification=_commands(check),
+                    limits=Limits(wall_time_seconds=timeout_seconds),
+                    task_id=task_id,
+                ),
+                backend,
+                run_root,
+                allow_external_modify=allow_external_modify,
+                allow_unsafe_local_exec=unsafe_local_exec,
+            ).run()
         )
-    except (OSError, ValueError) as exc:
+    except (
+        ExternalModificationApprovalError,
+        UnsafeExternalVerificationError,
+        OSError,
+        ValueError,
+    ) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
-    typer.echo(result.model_dump_json(indent=2))
+    _show_result(result)
+    if result.status != "completed":
+        raise typer.Exit(code=1)
+
+
+@backend_app.command("codex-cli")
+def run_codex_cli_backend(
+    instruction: Annotated[str, typer.Option("--task", "-t")],
+    repository: Annotated[
+        Path, typer.Option("--repo", exists=True, file_okay=False)
+    ] = DEFAULT_REPOSITORY,
+    check: Annotated[
+        list[str] | None, typer.Option("--check", help="Exact final verification argv; repeatable")
+    ] = None,
+    allowed_path: Annotated[
+        list[str] | None,
+        typer.Option("--allowed-path", help="Allowed changed path or glob; repeatable"),
+    ] = None,
+    run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
+    task_id: Annotated[str, typer.Option("--task-id")] = "codex-cli-task",
+    timeout_seconds: Annotated[
+        float, typer.Option("--timeout", min=1, help="Maximum delegated runtime in seconds.")
+    ] = 300.0,
+    experimental_subscription: Annotated[
+        bool,
+        typer.Option(
+            "--experimental-subscription",
+            help="Acknowledge use of the separately authenticated official Codex CLI.",
+        ),
+    ] = False,
+    allow_external_modify: Annotated[
+        bool,
+        typer.Option(
+            "--allow-external-modify",
+            help="Approve this external CLI editing only PCA's disposable clone.",
+        ),
+    ] = False,
+    unsafe_local_exec: Annotated[
+        bool,
+        typer.Option(
+            "--unsafe-local-exec",
+            help="Allow exact final checks from this trusted repository to run on the host.",
+        ),
+    ] = False,
+) -> None:
+    """Let official Codex CLI edit a sandboxed clone, then audit it with PCA."""
+
+    if not experimental_subscription:
+        raise typer.BadParameter(
+            "Codex CLI delegation is local-only and experimental; pass "
+            "--experimental-subscription"
+        )
+    if not check:
+        raise typer.BadParameter(
+            "external coding requires at least one explicit --check command"
+        )
+    backend = CodexCliBackend(timeout_seconds=timeout_seconds)
+    try:
+        result = asyncio.run(
+            ExternalCodingRunner(
+                TaskContract(
+                    repository=repository,
+                    instruction=instruction,
+                    allowed_paths=tuple(allowed_path or ("**",)),
+                    verification=_commands(check),
+                    limits=Limits(wall_time_seconds=timeout_seconds),
+                    task_id=task_id,
+                ),
+                backend,
+                run_root,
+                allow_external_modify=allow_external_modify,
+                allow_unsafe_local_exec=unsafe_local_exec,
+            ).run()
+        )
+    except (
+        ExternalModificationApprovalError,
+        UnsafeExternalVerificationError,
+        OSError,
+        ValueError,
+    ) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    _show_result(result)
     if result.status != "completed":
         raise typer.Exit(code=1)
 
