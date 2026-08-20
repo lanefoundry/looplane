@@ -96,6 +96,22 @@ another coding-agent CLI.
 - [x] Close M4 with stage documentation, one QuidProQuo practice article, independent review,
       isolated staged-snapshot verification, and complete commits.
 
+## Completed milestone: M5 subscription-backed external coding
+
+- [x] Define one external coding-run contract that always operates on a pinned disposable clone,
+      validates the resulting paths and cumulative patch, and runs exact final checks through PCA.
+- [x] Add an official Codex CLI backend that uses the CLI-owned ChatGPT login without reading or
+      copying its credential store, with workspace-write sandboxing and bounded JSONL output.
+- [x] Add the narrowest policy-compatible Claude Code path for local/private use: explicit file
+      tools only, no shell/network/MCP tools, disposable clone, and PCA-owned final verification.
+- [x] Expose both backends as explicit experimental subscription CLI commands while keeping the
+      project-owned `AgentRunner` as the default interactive and headless path.
+- [x] Complete real tiny-repository coding runs for the available logged-in subscription CLIs;
+      retain reviewable artifacts, verify the source worktree is unchanged, and state any external
+      dependency or policy limitation without upgrading a sentinel smoke test into coding proof.
+- [x] Close M5 with stage documentation, one QuidProQuo practice article, independent review,
+      isolated staged-snapshot verification, and complete commits.
+
 ## Explicitly deferred after M2
 
 - Cloudflare Worker/Sandbox deployment.
