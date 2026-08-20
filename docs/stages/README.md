@@ -33,3 +33,4 @@ the corrective commit rather than rewriting the historical result.
 - [M1: Local Python coding-agent harness](m1-local-harness.md)
 - [M2: Interactive CLI and provider gateway](m2-interactive-cli-provider-gateway.md)
 - [M3: Reliable exact editing and real-provider eval](m3-reliable-editing-real-provider-eval.md)
+- [M4: Provider completion and subscription boundaries](m4-provider-completion.md)

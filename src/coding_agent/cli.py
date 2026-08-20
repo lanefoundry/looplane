@@ -7,14 +7,18 @@ import json
 import os
 import shlex
 import sys
+import time
 import webbrowser
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 
 import typer
 import uvicorn
 
 from coding_agent.approvals import TTYApprovalPolicy
+from coding_agent.backends import ExternalAgentTask
+from coding_agent.claude_backend import ClaudeCodeBackend
 from coding_agent.codex_oauth import (
     CodexCredentialManager,
     CodexCredentialStore,
@@ -33,7 +37,7 @@ from coding_agent.models import (
     ProviderError,
     WorkersAIModel,
 )
-from coding_agent.oauth_login import wait_for_codex_callback
+from coding_agent.oauth_login import parse_codex_callback, wait_for_codex_callback
 from coding_agent.session import SessionStore, SessionValidationError
 
 app = typer.Typer(
@@ -42,7 +46,9 @@ app = typer.Typer(
     help="Interactive coding agent with a bounded headless harness.",
 )
 auth_app = typer.Typer(help="Manage provider credentials owned by this application.")
+backend_app = typer.Typer(help="Run a clearly separated external agent backend.")
 app.add_typer(auth_app, name="auth")
+app.add_typer(backend_app, name="backend")
 
 
 def _default_run_root() -> Path:
@@ -159,6 +165,10 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _loopback_url(value: str) -> bool:
+    return urlsplit(value).hostname in {"localhost", "127.0.0.1", "::1"}
+
+
 def _model_from_env(
     *,
     provider: str,
@@ -176,9 +186,13 @@ def _model_from_env(
             supports_tool_calling=tool_calling,
         )
     if provider == "ollama":
+        ollama_url = base_url or os.environ.get(
+            "OLLAMA_HOST", "http://127.0.0.1:11434/v1"
+        )
         return OpenAICompatibleModel(
             model=model,
-            base_url=base_url or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434/v1"),
+            base_url=ollama_url,
+            api_key=None if _loopback_url(ollama_url) else os.environ.get("OLLAMA_API_KEY"),
             supports_tool_calling=tool_calling,
             provider_name="ollama",
             extra_body={"think": False},
@@ -232,19 +246,85 @@ def _model_from_env(
     raise typer.BadParameter(f"unsupported provider: {provider}")
 
 
+@backend_app.command("claude-code")
+def run_claude_code_backend(
+    instruction: Annotated[str, typer.Option("--task", "-t")],
+    task_id: Annotated[str, typer.Option("--task-id")] = "claude-code-task",
+    timeout_seconds: Annotated[
+        float, typer.Option("--timeout", min=1, help="Maximum delegated runtime in seconds.")
+    ] = 300.0,
+    experimental_subscription: Annotated[
+        bool,
+        typer.Option(
+            "--experimental-subscription",
+            help="Acknowledge this local-only official Claude Code delegation boundary.",
+        ),
+    ] = False,
+) -> None:
+    """Delegate one local task to official Claude Code; this is not PCA's agent loop."""
+
+    if not experimental_subscription:
+        raise typer.BadParameter(
+            "Claude Code delegation is local-only and experimental; pass "
+            "--experimental-subscription"
+        )
+    backend = ClaudeCodeBackend(timeout_seconds=timeout_seconds)
+    try:
+        result = asyncio.run(
+            backend.run(ExternalAgentTask(task_id=task_id, instruction=instruction))
+        )
+    except (OSError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(result.model_dump_json(indent=2))
+    if result.status != "completed":
+        raise typer.Exit(code=1)
+
+
 @auth_app.command("login-codex")
-def login_codex() -> None:
+def login_codex(
+    timeout_seconds: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            min=1,
+            help="Seconds to wait for the loopback browser callback.",
+        ),
+    ] = 300.0,
+    manual: Annotated[
+        bool,
+        typer.Option(
+            "--manual",
+            help="Print the authorization URL and securely paste the final callback URL.",
+        ),
+    ] = False,
+) -> None:
     """Create this application's own experimental ChatGPT/Codex OAuth grant."""
 
     oauth = CodexOAuthClient()
     exchange_started = False
     try:
         authorization = oauth.begin_login(originator="python-coding-agent")
-        typer.echo("Opening the ChatGPT/Codex authorization page in your browser.")
         typer.echo("This creates a separate grant; it does not read the Codex CLI credential.")
-        if not webbrowser.open(authorization.url):
+        if manual:
             typer.echo(authorization.url)
-        code = wait_for_codex_callback(authorization)
+            callback_url = typer.prompt(
+                "Paste the final localhost callback URL",
+                hide_input=True,
+            )
+            code = parse_codex_callback(callback_url, expected_state=authorization.state)
+        else:
+            def open_browser(_: tuple[str, int]) -> None:
+                typer.echo("Opening the ChatGPT/Codex authorization page in your browser.")
+                if not webbrowser.open(authorization.url):
+                    typer.echo("The browser did not open. Open this URL manually:")
+                    typer.echo(authorization.url)
+
+            code = wait_for_codex_callback(
+                authorization,
+                timeout_seconds=timeout_seconds,
+                on_listening=open_browser,
+            )
         exchange_started = True
         credentials = asyncio.run(_exchange_codex_code(oauth, code, authorization.verifier))
         CodexCredentialStore(_codex_credential_path()).save(credentials)
@@ -255,6 +335,40 @@ def login_codex() -> None:
         if not exchange_started:
             asyncio.run(oauth.aclose())
     typer.echo("ChatGPT/Codex authorization saved for python-coding-agent.")
+
+
+@auth_app.command("status-codex")
+def status_codex() -> None:
+    """Report redacted status for this application's Codex grant."""
+
+    try:
+        credentials = CodexCredentialStore(_codex_credential_path()).load()
+    except (OSError, PermissionError, ValueError) as exc:
+        typer.echo(f"error: Codex authorization is unreadable: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if credentials is None:
+        typer.echo("ChatGPT/Codex authorization: not configured")
+        raise typer.Exit(code=1)
+    expiry = "expired" if credentials.expires_at <= time.time() else "valid"
+    typer.echo(f"ChatGPT/Codex authorization: configured ({expiry})")
+
+
+@auth_app.command("logout-codex")
+def logout_codex() -> None:
+    """Delete this application's Codex grant without touching another CLI."""
+
+    path = _codex_credential_path()
+    store = CodexCredentialStore(path)
+    try:
+        credentials = store.load()
+        if credentials is None:
+            typer.echo("ChatGPT/Codex authorization was not configured.")
+            return
+        path.unlink()
+    except (OSError, PermissionError, ValueError) as exc:
+        typer.echo(f"error: Codex authorization could not be removed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo("ChatGPT/Codex authorization removed from python-coding-agent.")
 
 
 async def _exchange_codex_code(
@@ -393,7 +507,10 @@ def run(
         typer.Option("--allowed-path", help="Allowed repository glob; repeatable"),
     ] = None,
     base_sha: Annotated[str | None, typer.Option("--base-sha")] = None,
-    base_url: Annotated[str | None, typer.Option("--base-url")] = None,
+    base_url: Annotated[
+        str | None,
+        typer.Option("--api-url", "--base-url", envvar="PCA_API_URL"),
+    ] = None,
     run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
     max_steps: Annotated[int, typer.Option("--max-steps", min=1)] = 12,
     wall_time_seconds: Annotated[float, typer.Option("--wall-time", min=1)] = 900,
@@ -422,7 +539,7 @@ def run(
         ),
     ] = False,
 ) -> None:
-    """Run one local task; provider credentials are read only from environment variables."""
+    """Run one local task using configured environment or app-owned provider credentials."""
 
     commands = _commands(check)
     task = TaskContract(

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hmac
+import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -35,8 +37,14 @@ def wait_for_codex_callback(
     authorization: CodexAuthorization,
     *,
     timeout_seconds: float = 300.0,
+    on_listening: Callable[[tuple[str, int]], None] | None = None,
+    bind_host: str = "127.0.0.1",
+    bind_port: int = 1455,
 ) -> str:
-    """Listen for exactly one browser callback on the fixed loopback redirect."""
+    """Bind first, announce readiness, then wait until one valid callback or timeout."""
+
+    if timeout_seconds <= 0:
+        raise ValueError("OAuth callback timeout must be positive")
 
     captured: dict[str, str] = {}
 
@@ -62,10 +70,18 @@ def wait_for_codex_callback(
         def log_message(self, format: str, *args: object) -> None:
             return
 
-    server = HTTPServer(("127.0.0.1", 1455), Handler)
+    server = HTTPServer((bind_host, bind_port), Handler)
     try:
-        server.timeout = timeout_seconds
-        server.handle_request()
+        deadline = time.monotonic() + timeout_seconds
+        if on_listening is not None:
+            address = server.server_address
+            on_listening((str(address[0]), int(address[1])))
+        while "code" not in captured:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            server.timeout = remaining
+            server.handle_request()
     finally:
         server.server_close()
     code = captured.get("code")

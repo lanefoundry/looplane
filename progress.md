@@ -79,6 +79,23 @@ another coding-agent CLI.
 - [x] Close M3 with stage documentation, a QuidProQuo draft article, independent review, isolated
       staged-snapshot verification, and complete commits.
 
+## Active milestone: M4 subscription and provider completion
+
+- [x] Re-audit the current interactive/headless CLI and every requested provider path from source
+      and live evidence; do not treat constructor or mock coverage as provider E2E.
+- [x] Recheck current Anthropic policy and official Claude Code/Agent SDK authentication boundaries
+      before implementing any Claude Pro/Max bridge.
+- [x] Preserve the project-owned `AgentRunner` as the default loop; distinguish a model transport
+      from an optional external coding-agent backend instead of pretending both have one contract.
+- [ ] Complete an app-owned ChatGPT/Codex browser grant and real tool-calling E2E, or retain it as a
+      named external dependency with an exact verification command if user authorization is needed.
+- [x] Prove at least one configured remote API-key provider through the canonical model adapter and
+      full coding loop without copying credentials into run artifacts or repository subprocesses.
+- [x] Decide and implement the closest policy-supported Claude path: native API, operator-approved
+      proxy, or explicitly isolated external backend. Do not scrape another CLI's credential files.
+- [ ] Close M4 with stage documentation, one QuidProQuo practice article, independent review,
+      isolated staged-snapshot verification, and complete commits.
+
 ## Explicitly deferred after M2
 
 - Cloudflare Worker/Sandbox deployment.

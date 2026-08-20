@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import runpy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,8 @@ from typer.testing import CliRunner
 
 from coding_agent import cli
 from coding_agent.approvals import HeadlessApprovalPolicy
+from coding_agent.backends import ExternalAgentResult, ExternalRunStatus
+from coding_agent.codex_oauth import CodexCredentials, CodexCredentialStore
 from coding_agent.contracts import ModelTurn, ToolCall
 from coding_agent.models import ScriptedModel
 
@@ -96,6 +99,81 @@ def test_ollama_preset_retains_a_bounded_tool_turn_budget(monkeypatch) -> None:
     assert captured["max_tokens"] == 4_096
     assert captured["extra_body"] == {"think": False}
     assert captured["user_message_prefix"] == "/no_think\n"
+    assert captured["api_key"] is None
+
+
+def test_remote_ollama_uses_explicit_key_but_loopback_never_receives_it(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    def fake_model(**kwargs):
+        captured.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(cli, "OpenAICompatibleModel", fake_model)
+    monkeypatch.setenv("OLLAMA_API_KEY", "remote-only-secret")
+
+    cli._model_from_env(
+        provider="ollama",
+        model="remote-model",
+        base_url="https://ollama.com/v1",
+        tool_calling=True,
+        allow_custom_provider_endpoint=False,
+    )
+    cli._model_from_env(
+        provider="ollama",
+        model="local-model",
+        base_url="http://127.0.0.1:11434/v1",
+        tool_calling=True,
+        allow_custom_provider_endpoint=False,
+    )
+
+    assert captured[0]["api_key"] == "remote-only-secret"
+    assert captured[1]["api_key"] is None
+
+
+def test_claude_backend_requires_explicit_boundary_and_emits_json(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeBackend:
+        def __init__(self, *, timeout_seconds: float) -> None:
+            captured["timeout"] = timeout_seconds
+
+        async def run(self, task):
+            captured["task"] = task
+            return ExternalAgentResult(
+                backend_name="claude-code",
+                task_id=task.task_id,
+                status=ExternalRunStatus.COMPLETED,
+                summary="delegated",
+                terminal_reason="completed",
+            )
+
+    monkeypatch.setattr(cli, "ClaudeCodeBackend", FakeBackend)
+
+    rejected = CliRunner().invoke(
+        cli.app,
+        ["backend", "claude-code", "--task", "inspect this"],
+    )
+    accepted = CliRunner().invoke(
+        cli.app,
+        [
+            "backend",
+            "claude-code",
+            "--task",
+            "inspect this",
+            "--task-id",
+            "delegated-1",
+            "--timeout",
+            "45",
+            "--experimental-subscription",
+        ],
+    )
+
+    assert rejected.exit_code == 2
+    assert accepted.exit_code == 0, accepted.output
+    assert '"backend_name": "claude-code"' in accepted.output
+    assert captured["timeout"] == 45
+    assert captured["task"].task_id == "delegated-1"
 
 
 def test_codex_login_closes_oauth_client_when_callback_fails(monkeypatch) -> None:
@@ -112,13 +190,160 @@ def test_codex_login_closes_oauth_client_when_callback_fails(monkeypatch) -> Non
 
     monkeypatch.setattr(cli, "CodexOAuthClient", FakeOAuth)
     monkeypatch.setattr(cli.webbrowser, "open", lambda _: True)
+
+    def fail_after_listening(_, *, on_listening, **__) -> None:
+        on_listening(("127.0.0.1", 1455))
+        raise TimeoutError("callback timed out")
+
     monkeypatch.setattr(
         cli,
         "wait_for_codex_callback",
-        lambda _: (_ for _ in ()).throw(TimeoutError("callback timed out")),
+        fail_after_listening,
     )
 
     result = CliRunner().invoke(cli.app, ["auth", "login-codex"])
 
     assert result.exit_code == 2
     assert closed is True
+
+
+def test_codex_login_opens_browser_only_after_listener_is_ready(monkeypatch) -> None:
+    ready = False
+    closed = False
+
+    class FakeOAuth:
+        def begin_login(self, *, originator: str):
+            return SimpleNamespace(url="https://example.test/login", state="state")
+
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed = True
+
+    def open_browser(_: str) -> bool:
+        assert ready is True
+        return True
+
+    def fail_after_listening(_, *, on_listening, **__) -> None:
+        nonlocal ready
+        ready = True
+        on_listening(("127.0.0.1", 1455))
+        raise TimeoutError("callback timed out")
+
+    monkeypatch.setattr(cli, "CodexOAuthClient", FakeOAuth)
+    monkeypatch.setattr(cli.webbrowser, "open", open_browser)
+    monkeypatch.setattr(cli, "wait_for_codex_callback", fail_after_listening)
+
+    result = CliRunner().invoke(cli.app, ["auth", "login-codex", "--timeout", "1"])
+
+    assert result.exit_code == 2
+    assert ready is True
+    assert closed is True
+
+
+def test_codex_manual_login_hides_callback_and_never_opens_browser(
+    tmp_path: Path, monkeypatch
+) -> None:
+    credential_path = tmp_path / "auth" / "openai-codex.json"
+    prompt_options: dict[str, object] = {}
+
+    class FakeOAuth:
+        def begin_login(self, *, originator: str):
+            return SimpleNamespace(
+                url="https://example.test/login",
+                state="expected",
+                verifier="verifier",
+            )
+
+        async def exchange_code(self, *, code: str, verifier: str) -> CodexCredentials:
+            assert code == "short-lived"
+            assert verifier == "verifier"
+            return CodexCredentials(
+                access_token="access-secret",
+                refresh_token="refresh-secret",
+                expires_at=4_000_000_000,
+                account_id="account-secret",
+            )
+
+        async def aclose(self) -> None:
+            return
+
+    def prompt(_: str, **kwargs) -> str:
+        prompt_options.update(kwargs)
+        return (
+            "http://localhost:1455/auth/callback?"
+            "code=short-lived&state=expected"
+        )
+
+    monkeypatch.setattr(cli, "CodexOAuthClient", FakeOAuth)
+    monkeypatch.setattr(cli, "_codex_credential_path", lambda: credential_path)
+    monkeypatch.setattr(cli.typer, "prompt", prompt)
+    monkeypatch.setattr(
+        cli.webbrowser,
+        "open",
+        lambda _: (_ for _ in ()).throw(AssertionError("browser must not open")),
+    )
+
+    result = CliRunner().invoke(cli.app, ["auth", "login-codex", "--manual"])
+
+    assert result.exit_code == 0, result.output
+    assert prompt_options["hide_input"] is True
+    assert "short-lived" not in result.output
+    assert credential_path.is_file()
+
+
+def test_codex_status_is_redacted_and_logout_removes_only_app_grant(
+    tmp_path: Path, monkeypatch
+) -> None:
+    credential_path = tmp_path / "auth" / "openai-codex.json"
+    CodexCredentialStore(credential_path).save(
+        CodexCredentials(
+            access_token="access-secret",
+            refresh_token="refresh-secret",
+            expires_at=4_000_000_000,
+            account_id="account-secret",
+        )
+    )
+    monkeypatch.setattr(cli, "_codex_credential_path", lambda: credential_path)
+
+    status = CliRunner().invoke(cli.app, ["auth", "status-codex"])
+    logout = CliRunner().invoke(cli.app, ["auth", "logout-codex"])
+
+    assert status.exit_code == 0
+    assert "configured (valid)" in status.output
+    assert "secret" not in status.output
+    assert logout.exit_code == 0
+    assert not credential_path.exists()
+
+
+def test_live_eval_requires_explicit_subscription_opt_in() -> None:
+    script = Path(__file__).parents[1] / "scripts" / "eval_live_provider.py"
+    build_agent_command = runpy.run_path(str(script))["build_agent_command"]
+    config = {
+        "task": "Fix it",
+        "check": "pytest -q",
+        "max_steps": 3,
+        "wall_time_seconds": 30,
+        "allowed_paths": ["src/**"],
+    }
+
+    disabled = build_agent_command(
+        config=config,
+        source=Path("/tmp/source"),
+        run_root=Path("/tmp/runs"),
+        provider="openai-codex",
+        model="codex-test",
+        base_url=None,
+        experimental_subscription=False,
+    )
+    enabled = build_agent_command(
+        config=config,
+        source=Path("/tmp/source"),
+        run_root=Path("/tmp/runs"),
+        provider="openai-codex",
+        model="codex-test",
+        base_url=None,
+        experimental_subscription=True,
+    )
+
+    assert "--experimental-subscription" not in disabled
+    assert enabled[-1] == "--experimental-subscription"

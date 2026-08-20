@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-20T20:58:00.251586+00:00",
+  "eval_id": "tiny-python-bug-live-v1",
+  "provider": "openai-compatible",
+  "model": "openai/gpt-oss-120b",
+  "base_url": "https://api.groq.com/openai/v1",
+  "experimental_subscription": false,
+  "attempts": 5,
+  "required_successes": 4,
+  "successes": 5,
+  "daily_ready": true,
+  "records": [
+    {
+      "attempt": 1,
+      "passed": true,
+      "duration_seconds": 11.863238916033879,
+      "process_returncode": 0,
+      "parse_error": null,
+      "checks": {
+        "process_exit_zero": true,
+        "result_json": true,
+        "verified_completion": true,
+        "changed_files": true,
+        "patch_contract": true,
+        "required_tool": true,
+        "source_head_unchanged": true,
+        "source_status_clean": true,
+        "source_bytes_unchanged": true
+      },
+      "run_id": "1c412bfe918b41828f94fe872ae90273",
+      "usage": {
+        "input_tokens": 6696,
+        "output_tokens": 269,
+        "cached_input_tokens": 1280,
+        "reasoning_tokens": 72,
+        "provider_total_tokens": 6965,
+        "total_tokens": 6965
+      },
+      "tools": [
+        "list_files",
+        "read_file",
+        "replace_text",
+        "run_check"
+      ],
+      "attempt_root": "/private/tmp/pca-m4-groq-release.hNFU3y/eval/attempt-01"
+    },
+    {
+      "attempt": 2,
+      "passed": true,
+      "duration_seconds": 40.86304487497546,
+      "process_returncode": 0,
+      "parse_error": null,
+      "checks": {
+        "process_exit_zero": true,
+        "result_json": true,
+        "verified_completion": true,
+        "changed_files": true,
+        "patch_contract": true,
+        "required_tool": true,
+        "source_head_unchanged": true,
+        "source_status_clean": true,
+        "source_bytes_unchanged": true
+      },
+      "run_id": "d658c13d71cc4411bf1cd6bbb3725125",
+      "usage": {
+        "input_tokens": 6292,
+        "output_tokens": 258,
+        "cached_input_tokens": 1536,
+        "reasoning_tokens": 84,
+        "provider_total_tokens": 6550,
+        "total_tokens": 6550
+      },
+      "tools": [
+        "list_files",
+        "read_file",
+        "replace_text",
+        "run_check"
+      ],
+      "attempt_root": "/private/tmp/pca-m4-groq-release.hNFU3y/eval/attempt-02"
+    },
+    {
+      "attempt": 3,
+      "passed": true,
+      "duration_seconds": 41.487933917029295,
+      "process_returncode": 0,
+      "parse_error": null,
+      "checks": {
+        "process_exit_zero": true,
+        "result_json": true,
+        "verified_completion": true,
+        "changed_files": true,
+        "patch_contract": true,
+        "required_tool": true,
+        "source_head_unchanged": true,
+        "source_status_clean": true,
+        "source_bytes_unchanged": true
+      },
+      "run_id": "ee729280a37143459f18855022017018",
+      "usage": {
+        "input_tokens": 6289,
+        "output_tokens": 254,
+        "cached_input_tokens": 512,
+        "reasoning_tokens": 76,
+        "provider_total_tokens": 6543,
+        "total_tokens": 6543
+      },
+      "tools": [
+        "list_files",
+        "read_file",
+        "replace_text",
+        "run_check"
+      ],
+      "attempt_root": "/private/tmp/pca-m4-groq-release.hNFU3y/eval/attempt-03"
+    },
+    {
+      "attempt": 4,
+      "passed": true,
+      "duration_seconds": 42.013901750033256,
+      "process_returncode": 0,
+      "parse_error": null,
+      "checks": {
+        "process_exit_zero": true,
+        "result_json": true,
+        "verified_completion": true,
+        "changed_files": true,
+        "patch_contract": true,
+        "required_tool": true,
+        "source_head_unchanged": true,
+        "source_status_clean": true,
+        "source_bytes_unchanged": true
+      },
+      "run_id": "d10155c3fbb1479cbd1a27a0fdc10455",
+      "usage": {
+        "input_tokens": 6310,
+        "output_tokens": 267,
+        "cached_input_tokens": 2048,
+        "reasoning_tokens": 79,
+        "provider_total_tokens": 6577,
+        "total_tokens": 6577
+      },
+      "tools": [
+        "list_files",
+        "read_file",
+        "replace_text",
+        "run_check"
+      ],
+      "attempt_root": "/private/tmp/pca-m4-groq-release.hNFU3y/eval/attempt-04"
+    },
+    {
+      "attempt": 5,
+      "passed": true,
+      "duration_seconds": 46.11253437498817,
+      "process_returncode": 0,
+      "parse_error": null,
+      "checks": {
+        "process_exit_zero": true,
+        "result_json": true,
+        "verified_completion": true,
+        "changed_files": true,
+        "patch_contract": true,
+        "required_tool": true,
+        "source_head_unchanged": true,
+        "source_status_clean": true,
+        "source_bytes_unchanged": true
+      },
+      "run_id": "603c6587ac5a4868bb1606ee6b7abb2d",
+      "usage": {
+        "input_tokens": 7939,
+        "output_tokens": 321,
+        "cached_input_tokens": 1024,
+        "reasoning_tokens": 110,
+        "provider_total_tokens": 8260,
+        "total_tokens": 8260
+      },
+      "tools": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "replace_text",
+        "run_check"
+      ],
+      "attempt_root": "/private/tmp/pca-m4-groq-release.hNFU3y/eval/attempt-05"
+    }
+  ]
+}

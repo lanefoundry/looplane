@@ -465,6 +465,27 @@ async def test_openai_compatible_uses_dummy_key_for_keyless_loopback_ollama() ->
         await model.aclose()
 
 
+@pytest.mark.asyncio
+async def test_remote_ollama_compatible_endpoint_uses_explicit_api_key() -> None:
+    model = OpenAICompatibleModel(
+        model="remote-tool-model",
+        api_key="fake-ollama-api-key",
+        base_url="https://ollama-gateway.example.test/v1",
+        provider_name="ollama",
+        supports_tool_calling=True,
+    )
+
+    try:
+        assert model.provider_name == "ollama"
+        assert model.capabilities.tool_calling is True
+        assert model._client.api_key == "fake-ollama-api-key"
+        assert str(model._client.base_url).rstrip("/") == (
+            "https://ollama-gateway.example.test/v1"
+        )
+    finally:
+        await model.aclose()
+
+
 @pytest.mark.parametrize(
     ("base_url", "message"),
     [
@@ -495,6 +516,25 @@ def test_openai_compatible_still_requires_key_for_remote_endpoint() -> None:
         OpenAICompatibleModel(
             model="fake",
             base_url="https://gateway.example.test/v1",
+        )
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        {"api_key": ""},
+        {"api_key": "   "},
+        {"key": "legacy", "api_key": "canonical"},
+    ],
+)
+def test_openai_compatible_rejects_ambiguous_or_blank_credentials(
+    credentials: dict[str, str],
+) -> None:
+    with pytest.raises(ValueError, match="not both|cannot be blank"):
+        OpenAICompatibleModel(
+            model="fake",
+            base_url="https://gateway.example.test/v1",
+            **credentials,
         )
 
 

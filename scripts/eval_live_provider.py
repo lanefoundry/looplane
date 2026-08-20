@@ -84,22 +84,17 @@ def successful_tool_names(path: Path) -> list[str]:
     return names
 
 
-def evaluate_attempt(
+def build_agent_command(
     *,
-    attempt: int,
     config: dict[str, Any],
-    output_root: Path,
+    source: Path,
+    run_root: Path,
     provider: str,
     model: str,
     base_url: str | None,
-) -> dict[str, Any]:
-    attempt_root = output_root / f"attempt-{attempt:02d}"
-    source = attempt_root / "source"
-    run_root = attempt_root / "runs"
-    attempt_root.mkdir(parents=True)
-    fixture = PROJECT_ROOT / str(config["fixture"])
-    base_sha, source_digest = prepare_source(fixture, source)
-    run_root.mkdir()
+    experimental_subscription: bool,
+) -> list[str]:
+    """Build the public headless CLI invocation retained in each eval record."""
 
     command = [
         sys.executable,
@@ -129,6 +124,38 @@ def evaluate_attempt(
         command.extend(("--allowed-path", str(allowed_path)))
     if base_url:
         command.extend(("--base-url", base_url))
+    if experimental_subscription:
+        command.append("--experimental-subscription")
+    return command
+
+
+def evaluate_attempt(
+    *,
+    attempt: int,
+    config: dict[str, Any],
+    output_root: Path,
+    provider: str,
+    model: str,
+    base_url: str | None,
+    experimental_subscription: bool,
+) -> dict[str, Any]:
+    attempt_root = output_root / f"attempt-{attempt:02d}"
+    source = attempt_root / "source"
+    run_root = attempt_root / "runs"
+    attempt_root.mkdir(parents=True)
+    fixture = PROJECT_ROOT / str(config["fixture"])
+    base_sha, source_digest = prepare_source(fixture, source)
+    run_root.mkdir()
+
+    command = build_agent_command(
+        config=config,
+        source=source,
+        run_root=run_root,
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        experimental_subscription=experimental_subscription,
+    )
 
     started = time.monotonic()
     process = run_command(
@@ -202,6 +229,11 @@ def main() -> int:
     parser.add_argument("--provider", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--base-url")
+    parser.add_argument(
+        "--experimental-subscription",
+        action="store_true",
+        help="Explicitly enable the experimental ChatGPT/Codex subscription transport.",
+    )
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--attempts", type=int)
     parser.add_argument("--required-successes", type=int)
@@ -225,6 +257,7 @@ def main() -> int:
             provider=args.provider,
             model=args.model,
             base_url=args.base_url,
+            experimental_subscription=args.experimental_subscription,
         )
         records.append(record)
         print(
@@ -241,6 +274,7 @@ def main() -> int:
         "provider": args.provider,
         "model": args.model,
         "base_url": args.base_url,
+        "experimental_subscription": args.experimental_subscription,
         "attempts": attempts,
         "required_successes": required,
         "successes": successes,

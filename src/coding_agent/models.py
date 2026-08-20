@@ -352,7 +352,11 @@ class OpenAICompatibleModel:
         user_message_prefix: str | None = None,
     ) -> None:
         validated_base_url = _validated_openai_base_url(base_url)
-        supplied_api_key = key or api_key
+        if key is not None and api_key is not None:
+            raise ValueError("pass key or api_key, not both")
+        supplied_api_key = api_key if api_key is not None else key
+        if supplied_api_key is not None and not supplied_api_key.strip():
+            raise ValueError("api_key cannot be blank")
         is_loopback = (
             validated_base_url is not None
             and _is_loopback_base_url(validated_base_url)

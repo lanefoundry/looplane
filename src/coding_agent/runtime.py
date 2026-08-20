@@ -192,6 +192,7 @@ def run_bounded_command(
     max_output_chars: int,
     env: Mapping[str, str] | None = None,
     stdin: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> CommandResult:
     if not argv or not all(isinstance(item, str) and item for item in argv):
         raise ValueError("argv must be a non-empty sequence of non-empty strings")
@@ -235,16 +236,26 @@ def run_bounded_command(
         threading.Thread(target=_write_stdin, args=(process.stdin, stdin), daemon=True).start()
 
     timed_out = False
-    try:
-        returncode = process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _stop_process_tree(process)
-        returncode = 124
-    else:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            _stop_process_tree(process)
+            returncode = 130
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            _stop_process_tree(process)
+            returncode = 124
+            break
+        try:
+            returncode = process.wait(timeout=min(remaining, 0.05))
+        except subprocess.TimeoutExpired:
+            continue
         # Do not leave background descendants holding pipes or mutating the host.
         if os.name == "posix":
             _stop_process_tree(process)
+        break
     for reader in readers:
         reader.join(timeout=1.0)
     if any(reader.is_alive() for reader in readers):

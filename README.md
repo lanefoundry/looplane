@@ -28,6 +28,9 @@ execution contract is proven.
   because the process cannot prove whether that side effect completed.
 - Explicit model protocols, loopback Ollama, custom OpenAI-compatible API URLs, an experimental
   app-owned ChatGPT/Codex OAuth transport, and an optional bounded local model gateway.
+- A separate local-only `ExternalAgentBackend` for restricted delegation to the installed official
+  Claude Code CLI. It never becomes a `ModelProvider`; PCA does not parse or forward Claude
+  tokens, while the official child resolves the auth state it owns through the user's `HOME`.
 
 ## Set up with uv
 
@@ -39,6 +42,13 @@ uv run ruff check .
 
 The `.venv/` directory is created and managed by `uv`; dependencies are defined in
 `pyproject.toml` and locked in `uv.lock`. There is no separate `requirements.txt`.
+
+Install the editable daily command once:
+
+```bash
+uv tool install --editable /Users/xiaoxu/Projects/python-coding-agent
+pca --help
+```
 
 ## Offline proof
 
@@ -112,13 +122,32 @@ it never reads `~/.codex`, Claude Code, Pi, OpenCode, or OMP credential files.
 
 ```bash
 uv run pca auth login-codex
+uv run pca auth status-codex
 uv run pca --provider openai-codex --model <supported-codex-model> \
   --experimental-subscription --repo /path/to/repo --task '...' --check 'pytest -q'
 ```
 
+If the browser callback cannot reach localhost, use `pca auth login-codex --manual`; the pasted
+callback is hidden and only the PCA-owned credential store is written. `pca auth logout-codex`
+removes that store without touching the official Codex CLI.
+
 This path is deliberately opt-in because upstream authorization and protocol behavior can change.
-Claude Pro/Max subscription reuse is not implemented: current third-party-policy evidence is
-conflicting, so Anthropic uses an API key or an explicitly approved compatible endpoint.
+Its current public OAuth client identity is borrowed from a pinned ecosystem implementation, so it
+remains experimental until this project has its own registration and current authorization proof.
+
+Anthropic's current Agent SDK policy says third-party products may not offer `claude.ai` login or
+subscription rate limits without prior approval. PCA therefore keeps its own loop on the native
+Anthropic API-key adapter. For local experiments only, a sharply separated backend can ask the
+installed official Claude Code CLI to perform a restricted, tool-free delegated task:
+
+```bash
+pca backend claude-code --experimental-subscription \
+  --task 'Summarize this design constraint in one paragraph.'
+```
+
+That command uses the official CLI's own login (and therefore permits that official child to read
+its own auth state), but does not edit a repository and is not evidence for PCA's coding loop. A
+hosted Claude subscription proxy is intentionally not implemented.
 
 ## Local model gateway
 
@@ -165,11 +194,15 @@ trusted repository. Untrusted work requires the later Docker/Cloudflare Sandbox 
 | Provider | CLI value | Credential environment |
 |---|---|---|
 | OpenAI or compatible endpoint | `openai-compatible` | `OPENAI_API_KEY`, optional `OPENAI_BASE_URL` |
-| Local Ollama | `ollama` | none; optional loopback `PCA_API_URL` |
+| Ollama | `ollama` | local: none; remote HTTPS: `OLLAMA_API_KEY`; optional `PCA_API_URL` |
 | ChatGPT/Codex subscription | `openai-codex` | app-owned OAuth via `pca auth login-codex` |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_BASE_URL` |
 | Gemini | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | Cloudflare Workers AI | `workers-ai` | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` |
+
+For `pca run`, `--api-url` is the preferred spelling and `--base-url` remains a compatibility
+alias. Remote endpoints require HTTPS and an explicit provider credential; a local Ollama process
+never receives `OLLAMA_API_KEY` even when it exists in the parent environment.
 
 Model capabilities vary across every provider. Tool calling remains fail-closed unless the
 configured model/API path has been verified and `--tool-calling` is supplied. Native Anthropic,
