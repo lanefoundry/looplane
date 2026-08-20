@@ -112,9 +112,23 @@ another coding-agent CLI.
 - [x] Close M5 with stage documentation, one QuidProQuo practice article, independent review,
       isolated staged-snapshot verification, and complete commits.
 
+## Active milestone: M6 Cloudflare Sandbox service
+
+- [x] Keep HTTP coordination and provider credentials in a Worker; pass only a short-lived,
+      run-scoped model capability into the Sandbox container.
+- [x] Package the Python agent runtime in Cloudflare Sandbox and accept a bounded uploaded source
+      tree instead of Git/provider credentials.
+- [x] Add an authenticated Worker run endpoint plus a narrow OpenAI-compatible internal model
+      proxy with request, model, lifetime, and response bounds.
+- [x] Prove local contract tests, Docker build, Wrangler types/dry-run, and a disposable sandbox
+      execution path; attempt remote deployment only when account/container entitlement succeeds.
+- [x] Retain Cloudflare capability/evidence gaps honestly: no consumer subscription relay, no
+      unbounded egress, and no production claim without a real deployed run.
+- [x] Close M6 with stage documentation, one QuidProQuo practice article, independent review,
+      verification, and complete commits.
+
 ## Explicitly deferred after M2
 
-- Cloudflare Worker/Sandbox deployment.
 - Multi-agent, MCP, RAG, long-term memory, full-screen TUI, LSP, GitHub writes, push, PR, deploy.
 - Public product/package naming.
 

@@ -35,3 +35,4 @@ the corrective commit rather than rewriting the historical result.
 - [M3: Reliable exact editing and real-provider eval](m3-reliable-editing-real-provider-eval.md)
 - [M4: Provider completion and subscription boundaries](m4-provider-completion.md)
 - [M5: Subscription-backed external coding](m5-subscription-backed-external-coding.md)
+- [M6: Deployed Cloudflare Sandbox service](m6-cloudflare-sandbox-service.md)

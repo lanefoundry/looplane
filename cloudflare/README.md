@@ -149,10 +149,9 @@ uploaded project dependencies are not installed automatically.
 Two clean builds from the same source and lockfiles must produce the same image ID. The image also
 retains a sorted `/opt/pca/python-packages.txt` inventory for later provenance checks.
 
-Until the live evidence document says otherwise, this repository has local contract, type, image,
-containment, and dry-run evidence only. A deployed health check, real remote Sandbox execution, and
-provider call remain live evidence gaps. The synchronous endpoint and ephemeral result bundle are
-not a production durability claim.
+The M6 live evidence retains one completed Worker to Sandbox to Groq coding run with a verified
+patch and check. The synchronous endpoint and ephemeral result bundle are still not a production
+durability or hostile-code containment claim.
 
 ## Durable Object configuration
 

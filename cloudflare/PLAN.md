@@ -16,8 +16,8 @@
 Deployment and a bounded real provider run are milestone evidence steps performed only after the
 local release review is GO.
 
-Verified 2026-08-21: 35 Vitest cases across Worker and capability DO contracts, strict TypeScript,
+Verified 2026-08-21: 44 Vitest cases across Worker and capability DO contracts, strict TypeScript,
 generated binding drift check, `wrangler deploy --dry-run`, and image smoke proving the wrapper is
 root-owned `0555`, drops to non-root `pca`, consumes the token file, and writes owner-only output.
-The final local image ID is `sha256:c658b3ed4175369952156d61108081e1aea9d9f46af3ae25b28bca2d43238501`
+The deployed local image ID is `sha256:25a65f1f9a03bd6b9c764d3781aada90b18a71ee2cb8c975ea43f52428e2dd50`
 for two independent builds from the same source and lockfiles.
