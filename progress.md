@@ -76,7 +76,7 @@ another coding-agent CLI.
       tool-use, edit, verification, and task-completion results.
 - [x] Recheck whether an app-owned Codex credential exists without reading its value. If absent,
       retain Codex live authorization as an explicit external dependency rather than claiming E2E.
-- [ ] Close M3 with stage documentation, a QuidProQuo draft article, independent review, isolated
+- [x] Close M3 with stage documentation, a QuidProQuo draft article, independent review, isolated
       staged-snapshot verification, and complete commits.
 
 ## Explicitly deferred after M2

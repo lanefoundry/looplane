@@ -1,6 +1,6 @@
 # M3: Reliable exact editing and real-provider coding eval
 
-> Status: implementation complete; commit SHA pending final staged verification.
+> Status: complete and committed.
 > Date: 2026-08-21
 > Baseline: M2 commit `8151447`
 
@@ -129,7 +129,8 @@ uv run python scripts/eval_live_provider.py --help
 - Independent review reproduced and closed untracked-file, NUL-output, cumulative structural-limit,
   and eval false-positive findings, then verified the 4096-token Ollama delta and final hashes; its
   final verdict is GO in `.research/m3-release-review.md`.
-- Final isolated staged-snapshot verification and package build: pending.
+- The exact staged snapshot was exported to `/private/tmp/pca-m3-stage.FJfcZV`; from its own fresh
+  `.venv`, Ruff passed, all 144 tests passed in 17.53 seconds, and both distributions built.
 
 ## Known limitations
 
@@ -156,7 +157,8 @@ uv run python scripts/eval_live_provider.py --help
 
 ## Commit
 
-- Implementation commit: pending final independent review and isolated staged-snapshot gate.
+- Implementation commit: `6bb4b5a` (`feat(edit): 建立可驗證的精準編輯與真實模型評測`).
+- The implementation commit is the exact snapshot independently exported and verified above.
 - QuidProQuo practice article is drafted at
   `quidproquo/src/content/posts/ai/2026-08-21-python-coding-agent-exact-edit-real-ollama-eval.md`
   and remains uncommitted for user review.
