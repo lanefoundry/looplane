@@ -1,4 +1,4 @@
-import { getSandbox } from "@cloudflare/sandbox";
+import { getSandbox, streamFile } from "@cloudflare/sandbox";
 import {
   activateCapability,
   consumeCapability,
@@ -20,6 +20,7 @@ const dependencies: WorkerDependencies = {
   consumeCapability: (env, runId, model) =>
     consumeCapability(env.RUN_CAPABILITIES, runId, model),
   revokeCapability: (env, runId) => revokeCapability(env.RUN_CAPABILITIES, runId),
+  decodeFileStream: (stream) => streamFile(stream),
 };
 
 export default {

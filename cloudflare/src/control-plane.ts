@@ -90,6 +90,7 @@ export interface WorkerDependencies {
   ): Promise<void>;
   consumeCapability(env: Env, runId: string, model: string): Promise<CapabilityConsumeResult>;
   revokeCapability(env: Env, runId: string): Promise<void>;
+  decodeFileStream(stream: ReadableStream<Uint8Array>): AsyncIterable<string | Uint8Array>;
 }
 
 export class RequestProblem extends Error {
@@ -399,6 +400,40 @@ async function readStreamBounded(
     }
   } finally {
     reader.releaseLock();
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+async function readSandboxFileBounded(
+  stream: ReadableStream<Uint8Array>,
+  decode: (stream: ReadableStream<Uint8Array>) => AsyncIterable<string | Uint8Array>,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for await (const chunk of decode(stream)) {
+      const bytes = typeof chunk === "string" ? encoder.encode(chunk) : chunk;
+      total += bytes.byteLength;
+      if (total > maxBytes) {
+        try {
+          await stream.cancel("sandbox_response_too_large");
+        } catch {
+          // The decoder may currently hold the stream lock; iterator teardown remains bounded.
+        }
+        throw new RequestProblem(502, "sandbox_response_too_large");
+      }
+      chunks.push(bytes);
+    }
+  } catch (error) {
+    if (error instanceof RequestProblem) throw error;
+    throw new RequestProblem(502, "sandbox_response_stream_invalid");
   }
   const result = new Uint8Array(total);
   let offset = 0;
@@ -785,17 +820,16 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
     } catch {
       throw new RequestProblem(502, "sandbox_read_failed");
     }
-    const resultBytes = await readStreamBounded(
+    const resultBytes = await readSandboxFileBounded(
       resultStream,
+      dependencies.decodeFileStream,
       LIMITS.runResponseBytes,
-      502,
-      "invalid_sandbox_response",
     );
     let result: unknown;
     try {
       result = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(resultBytes));
     } catch {
-      throw new RequestProblem(502, "invalid_sandbox_response");
+      throw new RequestProblem(502, "sandbox_response_json_invalid");
     }
     const output = validateSandboxResponse(result, runId, terminalSuccess, input);
     return json(

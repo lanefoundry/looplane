@@ -131,6 +131,18 @@ function dependencies(handle: SandboxHandle): WorkerDependencies {
     activateCapability: vi.fn().mockResolvedValue(undefined),
     consumeCapability: vi.fn().mockResolvedValue("ok"),
     revokeCapability: vi.fn().mockResolvedValue(undefined),
+    decodeFileStream: async function* (stream) {
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          yield value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    },
   };
 }
 
@@ -317,6 +329,41 @@ describe("POST /v1/runs", () => {
 
     expect(response.status).toBe(502);
     expect(handle.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("decodes the Sandbox SDK SSE stream before parsing the response JSON", async () => {
+    const handle = sandbox();
+    handle.readFileStream.mockResolvedValue(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("event: file_chunk\ndata: encoded\n\n"));
+          controller.close();
+        },
+      }),
+    );
+    const deps = dependencies(handle);
+    deps.decodeFileStream = vi.fn().mockImplementation(async function* () {
+      yield new TextEncoder().encode(JSON.stringify(validSandboxResponse()));
+    });
+
+    const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
+
+    expect(response.status).toBe(201);
+    expect(deps.decodeFileStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds the decoded Sandbox file rather than its transport framing", async () => {
+    const handle = sandbox();
+    const deps = dependencies(handle);
+    deps.decodeFileStream = vi.fn().mockImplementation(async function* () {
+      yield new Uint8Array(LIMITS.runResponseBytes);
+      yield new Uint8Array(1);
+    });
+
+    const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "sandbox_response_too_large" });
   });
 
   it.each(["sandbox_entrypoint_failed", "sandbox_agent_failed"])(
