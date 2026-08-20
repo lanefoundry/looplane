@@ -24,7 +24,7 @@ another coding-agent CLI.
 - [x] Test path traversal, forbidden commands, patch bounds, real-worktree isolation, and artifacts.
 - [x] Run `uv run pytest`, `uv run ruff check .`, and an end-to-end fixture smoke test.
 
-## Active milestone: M2 interactive CLI and provider bridge
+## Completed milestone: M2 interactive CLI and provider bridge
 
 - [x] Make bare `pca` start our own interactive agent in the current repository.
 - [x] Stream model/tool/verification events while a turn is running.

@@ -1,6 +1,6 @@
 # M2: Interactive CLI, resumable sessions, and provider gateway
 
-> Status: implementation, release gate, and independent review complete; commit pending.
+> Status: complete and committed.
 > Date: 2026-08-21
 > Baseline: M1 commit `859db23`
 
@@ -162,8 +162,10 @@ git diff --check
 
 ## Commit
 
-The practice article is drafted at
-`quidproquo/src/content/posts/ai/2026-08-21-python-coding-agent-interactive-cli-provider-gateway.md`
-and remains uncommitted for user review. The independent release review reached GO after three
-fault-injection fixes; its report is `.research/m2-release-review.md`. The M2 commit SHA will be
-appended after isolated staged-snapshot verification.
+- Implementation commit: `8151447` (`feat(cli): 建立可恢復的互動 coding agent`).
+- The exact staged snapshot passed Ruff, all 128 tests, and package build before this commit.
+- The independent release review reached GO after approval, journal, budget, and credential
+  lifecycle fault-injection fixes; its report is `.research/m2-release-review.md`.
+- The practice article is drafted at
+  `quidproquo/src/content/posts/ai/2026-08-21-python-coding-agent-interactive-cli-provider-gateway.md`
+  and remains uncommitted for user review.
