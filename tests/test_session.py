@@ -9,6 +9,7 @@ import pytest
 
 from coding_agent.contracts import TaskContract, VerificationCommand
 from coding_agent.events import RunEvent
+from coding_agent.prompts import CODING_AGENT_PROMPT_VERSION
 from coding_agent.session import (
     SessionBusyError,
     SessionManifest,
@@ -60,6 +61,30 @@ def make_run(tmp_path: Path) -> tuple[SessionStore, SessionManifest, TaskContrac
         base_sha=sha,
     )
     return SessionStore(run_dir, durable=False), manifest, task
+
+
+def test_legacy_manifest_does_not_claim_the_m3_prompt_version() -> None:
+    manifest = SessionManifest.model_validate(
+        {
+            "schema_version": 1,
+            "run_id": "legacy-run",
+            "task_id": "legacy-task",
+            "provider_name": "scripted",
+            "model_id": "fixture",
+            "protocol": "scripted",
+            "base_sha": "a" * 40,
+        }
+    )
+
+    assert manifest.prompt_version == "m2-unversioned-patch"
+    assert SessionManifest.new(
+        run_id="new-run",
+        task_id="new-task",
+        provider_name="scripted",
+        model_id="fixture",
+        protocol="scripted",
+        base_sha="b" * 40,
+    ).prompt_version == CODING_AGENT_PROMPT_VERSION
 
 
 @pytest.mark.asyncio

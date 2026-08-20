@@ -25,6 +25,7 @@ from coding_agent.contracts import (
     VerificationOutcome,
 )
 from coding_agent.events import RunEvent, atomic_write_json
+from coding_agent.prompts import CODING_AGENT_PROMPT_VERSION
 from coding_agent.runtime import sanitized_subprocess_env
 
 _MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -77,6 +78,9 @@ class SessionManifest(ContractModel):
     provider_name: str = Field(min_length=1)
     model_id: str = Field(min_length=1)
     protocol: str = Field(min_length=1)
+    # Schema-v1 manifests written before M3 did not record a prompt version. Keep that
+    # migration value distinct instead of relabelling an old in-flight session as M3.
+    prompt_version: str = Field(default="m2-unversioned-patch", min_length=1)
     base_sha: str = Field(pattern=r"^[0-9a-fA-F]{40}$")
     phase: SessionPhase = SessionPhase.CREATED
     step: int = Field(default=0, ge=0)
@@ -126,6 +130,7 @@ class SessionManifest(ContractModel):
         model_id: str,
         protocol: str,
         base_sha: str,
+        prompt_version: str = CODING_AGENT_PROMPT_VERSION,
     ) -> SessionManifest:
         return cls(
             run_id=run_id,
@@ -133,6 +138,7 @@ class SessionManifest(ContractModel):
             provider_name=provider_name,
             model_id=model_id,
             protocol=protocol,
+            prompt_version=prompt_version,
             base_sha=base_sha,
         )
 

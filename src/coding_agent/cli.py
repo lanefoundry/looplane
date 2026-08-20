@@ -182,7 +182,10 @@ def _model_from_env(
             supports_tool_calling=tool_calling,
             provider_name="ollama",
             extra_body={"think": False},
-            max_tokens=1_024,
+            # Qwen can spend more than 1K generated tokens on hidden reasoning before it emits
+            # a tool call even with no-think hints. Keep a finite bound, but avoid turning each
+            # useful action into several truncated agent steps.
+            max_tokens=4_096,
             user_message_prefix="/no_think\n",
         )
     if provider == "openai-codex":

@@ -15,7 +15,8 @@ execution contract is proven.
 - Adapters for OpenAI-compatible APIs, Anthropic, Gemini, Cloudflare Workers AI, and deterministic
   scripted tests.
 - Disposable Git clone pinned to a full base commit.
-- Bounded `list_files`, `read_file`, `search_text`, `apply_patch`, `run_check`, and `git_diff` tools.
+- Bounded `list_files`, `read_file`, `search_text`, `replace_text`, `apply_patch`, `run_check`, and
+  `git_diff` tools.
 - Segment-aware path allowlists, traversal/symlink protection, exact command argv, process-group
   timeouts, bounded output capture, and a subprocess environment without model/GitHub credentials.
 - JSONL events, atomic checkpoints, final patch, test log, and result artifacts.
@@ -48,6 +49,24 @@ uv run python scripts/demo_fixture.py
 ```
 
 The command prints a completed `RunResult` and retains the run bundle below `runs/`.
+
+## Repeatable real-provider eval
+
+The live eval invokes the public headless CLI in five fresh Git repositories and requires at least
+four verified completions. It checks the exact changed file and patch, the required edit tool, and
+that the source repository's HEAD, status, and bytes remain unchanged:
+
+```bash
+eval_root=$(mktemp -d /tmp/pca-live-eval.XXXXXX)
+uv run python scripts/eval_live_provider.py \
+  --provider ollama \
+  --model qwen3:4b \
+  --output-dir "$eval_root/ollama-qwen3-4b"
+```
+
+The 2026-08-21 M3 gate passed 5/5 attempts against a real local Ollama service. This is evidence
+for the committed tiny-calculator fixture and provider configuration, not a claim that a 4B model
+can reliably complete arbitrary repository tasks.
 
 ## Interactive CLI
 

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import os
 import shlex
+import stat
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .contracts import (
     ToolCall,
@@ -63,6 +66,7 @@ class ToolExecutor:
         self.max_list_files = self._limit(limits, "max_list_files", 500)
         self.max_search_results = self._limit(limits, "max_search_results", 100)
         self._task_home = self.workspace.parent / ".check-task-env"
+        self._read_versions: dict[str, str] = {}
 
         self.verification_commands: dict[str, VerificationCommand] = {}
         self.verification_outcomes: dict[str, VerificationOutcome] = {}
@@ -156,6 +160,23 @@ class ToolExecutor:
                 },
             ),
             ToolDefinition(
+                name="replace_text",
+                description=(
+                    "Replace an exact text fragment in one existing UTF-8 file. Read the file "
+                    "first. Prefer this for small edits; old_text must occur exactly once."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": path,
+                        "old_text": {"type": "string", "minLength": 1},
+                        "new_text": {"type": "string"},
+                    },
+                    "required": ["path", "old_text", "new_text"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolDefinition(
                 name="apply_patch",
                 description="Apply one bounded unified text diff after path and git checks.",
                 input_schema={
@@ -229,7 +250,11 @@ class ToolExecutor:
         with target.open("rb") as handle:
             data = handle.read(self.max_read_bytes + 1)
         truncated = len(data) > self.max_read_bytes
-        text = data[: self.max_read_bytes].decode("utf-8", errors="replace")
+        visible = data[: self.max_read_bytes]
+        text = visible.decode("utf-8", errors="replace")
+        if not truncated:
+            relative = target.relative_to(self.workspace).as_posix()
+            self._read_versions[relative] = hashlib.sha256(visible).hexdigest()
         if truncated:
             text += f"\n... file truncated at {self.max_read_bytes} bytes ..."
         return bounded_text(text, self.max_output_chars)
@@ -409,6 +434,133 @@ class ToolExecutor:
             ) from exc
         return f"applied unified diff to {len(paths)} file(s):\n" + "\n".join(paths)
 
+    @staticmethod
+    def _atomic_replace_file(target: Path, payload: bytes, mode: int) -> None:
+        temporary = target.with_name(f".{target.name}.pca-replace-{uuid4().hex}")
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, mode, follow_symlinks=False)
+            os.replace(temporary, target)
+            directory = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+
+    def replace_text(
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        """Atomically replace an exact fragment and retain a bounded reviewable patch."""
+
+        if not isinstance(old_text, str) or not old_text:
+            raise ToolExecutionError("old_text must be a non-empty string")
+        if not isinstance(new_text, str):
+            raise ToolExecutionError("new_text must be a string")
+        if "\x00" in old_text or "\x00" in new_text:
+            raise ToolExecutionError("replace_text accepts UTF-8 text fragments without NUL")
+        if old_text == new_text:
+            raise ToolExecutionError("old_text and new_text must differ")
+        argument_bytes = len(old_text.encode("utf-8")) + len(new_text.encode("utf-8"))
+        if argument_bytes > self.max_patch_bytes:
+            raise ToolExecutionError(
+                f"replacement arguments exceed {self.max_patch_bytes} bytes"
+            )
+
+        target = self.policy.resolve(path)
+        if not target.is_file():
+            raise ToolExecutionError(f"not a regular file: {path}")
+        with target.open("rb") as handle:
+            original = handle.read(self.max_read_bytes + 1)
+        if len(original) > self.max_read_bytes:
+            raise ToolExecutionError(f"file exceeds {self.max_read_bytes} readable bytes")
+        if b"\x00" in original:
+            raise ToolExecutionError("replace_text accepts UTF-8 text files only")
+        try:
+            source = original.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ToolExecutionError("replace_text accepts UTF-8 text files only") from exc
+        relative = target.relative_to(self.workspace).as_posix()
+        read_version = self._read_versions.get(relative)
+        current_version = hashlib.sha256(original).hexdigest()
+        if read_version is None:
+            raise ToolExecutionError("read_file must be called before replace_text")
+        if read_version != current_version:
+            raise ToolExecutionError("file changed after read_file; read it again before editing")
+        observed = source.count(old_text)
+        if observed != 1:
+            raise ToolExecutionError(
+                f"exact replacement requires one match; observed {observed}"
+            )
+        updated = source.replace(old_text, new_text, 1).encode("utf-8")
+        if len(updated) > self.max_read_bytes:
+            raise ToolExecutionError(f"resulting file exceeds {self.max_read_bytes} bytes")
+
+        mode = stat.S_IMODE(target.stat().st_mode)
+        budget = self._effective_timeout(30.0, timeout_seconds)
+        deadline = time.monotonic() + budget
+
+        def remaining() -> float:
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise ToolExecutionError("replace_text exceeded the harness timeout")
+            return value
+
+        tracked = self._git(
+            ("ls-files", "--error-unmatch", "--", relative),
+            timeout_seconds=remaining(),
+        )
+        if not tracked.ok:
+            raise ToolExecutionError(
+                "replace_text requires a Git-tracked file; use apply_patch to create a file"
+            )
+
+        try:
+            self._atomic_replace_file(target, updated, mode)
+            whitespace = self._git(
+                ("diff", "--check", "--", relative),
+                timeout_seconds=remaining(),
+            )
+            if not whitespace.ok:
+                raise ToolExecutionError(
+                    f"replacement introduces whitespace errors: {whitespace.stderr.strip()}"
+                )
+            self.reviewable_patch(timeout_seconds=remaining())
+        except (OSError, ToolExecutionError) as exc:
+            try:
+                self._atomic_replace_file(target, original, mode)
+            except OSError as rollback_exc:
+                try:
+                    with target.open("rb") as handle:
+                        restored = handle.read(self.max_read_bytes + 1) == original
+                    restored_mode = stat.S_IMODE(target.stat().st_mode) == mode
+                except OSError:
+                    restored = False
+                    restored_mode = False
+                if not restored or not restored_mode:
+                    raise ToolExecutionError(
+                        f"replacement rollback failed: {rollback_exc}"
+                    ) from exc
+            raise ToolExecutionError(
+                f"replacement was refused and rolled back: {exc}"
+            ) from exc
+        self._read_versions[relative] = hashlib.sha256(updated).hexdigest()
+        return f"replaced one exact text fragment in {path}"
+
     def _rollback_patch(self, patch: str, new_paths: Sequence[str]) -> None:
         reversed_patch = self._git(
             ("apply", "--reverse", "--whitespace=nowarn", "-"),
@@ -485,6 +637,10 @@ class ToolExecutor:
             raise ToolExecutionError(
                 f"final patch exceeds {self.max_patch_bytes} bytes; refusing truncated artifact"
             )
+        if len(result.stdout.splitlines()) > self.max_patch_lines:
+            raise ToolExecutionError(
+                f"final patch exceeds {self.max_patch_lines} lines"
+            )
 
         names = self._git(
             ("diff", "--name-only", "--no-renames", "-z", "--"),
@@ -496,6 +652,10 @@ class ToolExecutor:
         if names.stdout_truncated:
             raise ToolExecutionError("changed path list exceeded the tool output limit")
         changed_paths = tuple(sorted(path for path in names.stdout.split("\x00") if path))
+        if len(changed_paths) > self.max_changed_files:
+            raise ToolExecutionError(
+                f"final patch exceeds {self.max_changed_files} changed files"
+            )
         for path in changed_paths:
             self.policy.resolve(path)
         return ReviewablePatch(content=result.stdout, changed_paths=changed_paths)
@@ -514,6 +674,7 @@ class ToolExecutor:
             "list_files": self.list_files,
             "read_file": self.read_file,
             "search_text": self.search_text,
+            "replace_text": self.replace_text,
             "apply_patch": self.apply_patch,
             "run_check": self.run_check,
             "git_diff": self.git_diff,
@@ -531,7 +692,7 @@ class ToolExecutor:
             call_arguments = dict(arguments)
             if "timeout_seconds" in call_arguments:
                 raise ToolExecutionError("timeout_seconds is controlled by the harness")
-            if name in {"apply_patch", "run_check", "git_diff"}:
+            if name in {"replace_text", "apply_patch", "run_check", "git_diff"}:
                 result = handler(**call_arguments, timeout_seconds=timeout_seconds)
             else:
                 result = handler(**call_arguments)

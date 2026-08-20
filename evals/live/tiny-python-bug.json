@@ -1,0 +1,17 @@
+{
+  "eval_id": "tiny-python-bug-live-v1",
+  "fixture": "evals/fixtures/tiny-python-bug",
+  "task": "Fix the calculator implementation so the existing tests pass. Do not change tests.",
+  "check": "pytest -q",
+  "allowed_paths": ["src/**"],
+  "max_steps": 8,
+  "wall_time_seconds": 300,
+  "expected_changed_files": ["src/tiny_python_bug/calculator.py"],
+  "expected_patch_fragments": [
+    "-    return left - right",
+    "+    return left + right"
+  ],
+  "required_tool": "replace_text",
+  "daily_ready_attempts": 5,
+  "daily_ready_successes": 4
+}

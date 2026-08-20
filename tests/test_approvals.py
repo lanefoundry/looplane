@@ -87,6 +87,7 @@ def test_request_requires_exactly_one_action() -> None:
 
 
 def test_tool_effects_are_explicit_and_unknown_tools_fail_closed() -> None:
+    assert effect_for_tool("replace_text") == ToolEffect.MODIFY
     assert effect_for_tool("apply_patch") == ToolEffect.MODIFY
     assert effect_for_tool("run_check") == ToolEffect.EXECUTE
     with pytest.raises(ValueError, match="no approval effect"):

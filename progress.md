@@ -59,6 +59,26 @@ another coding-agent CLI.
 - Subscription OAuth support is accepted only when the provider explicitly supports third-party
   clients; otherwise use an approved API key or a user-controlled compatible endpoint.
 
+## Active milestone: M3 reliable editing and real-provider coding eval
+
+- [x] Add a bounded exact-text replacement tool for small edits to existing UTF-8 files.
+- [x] Reuse the same path policy, cumulative patch limits, approval classification, rollback, and
+      reviewable Git diff as `apply_patch`.
+- [x] Keep unified diff support for multi-file/new/delete changes; do not replace it with an
+      unrestricted whole-file writer.
+- [x] Add fault and contract tests for ambiguous matches, missing text, traversal, binary/oversized
+      files, cumulative patch overflow, atomic rollback, and provider tool schemas.
+- [x] Version the coding-agent prompt and add only the minimal tool-choice guidance justified by
+      the observed malformed-diff failure.
+- [x] Run the tiny Python bug from a real local Ollama provider through the full headless agent loop
+      and require verified completion plus unchanged source worktree.
+- [x] Record a repeatable live-provider eval manifest and exact artifact paths; separate transport,
+      tool-use, edit, verification, and task-completion results.
+- [x] Recheck whether an app-owned Codex credential exists without reading its value. If absent,
+      retain Codex live authorization as an explicit external dependency rather than claiming E2E.
+- [ ] Close M3 with stage documentation, a QuidProQuo draft article, independent review, isolated
+      staged-snapshot verification, and complete commits.
+
 ## Explicitly deferred after M2
 
 - Cloudflare Worker/Sandbox deployment.

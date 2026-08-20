@@ -15,7 +15,7 @@ def make_executor(
     workspace: Path,
     *,
     allowed_paths: tuple[str, ...] = ("src/**",),
-    limits: Limits | None = None,
+    limits: Limits | dict[str, int] | None = None,
     verification_commands: tuple[VerificationCommand, ...] | None = None,
 ) -> ToolExecutor:
     return ToolExecutor(
@@ -89,6 +89,357 @@ diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.
     assert "left - right" in (
         tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
     ).read_text()
+
+
+def test_replace_text_makes_exact_reviewable_edit_and_preserves_mode(
+    tiny_bug_repo: Path,
+) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    target.chmod(0o754)
+    executor = make_executor(tiny_bug_repo)
+    executor.read_file("src/tiny_python_bug/calculator.py")
+
+    observation = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/calculator.py",
+                "old_text": "return left - right",
+                "new_text": "return left + right",
+            },
+        )
+    )
+    review = executor.reviewable_patch()
+
+    assert observation.ok is True
+    assert target.read_text().endswith("return left + right\n")
+    assert target.stat().st_mode & 0o777 == 0o754
+    assert review.changed_paths == ("src/tiny_python_bug/calculator.py",)
+    assert "-    return left - right" in review.content
+    assert "+    return left + right" in review.content
+
+
+@pytest.mark.parametrize(
+    ("old_text", "observed"),
+    [
+        ("text that is absent", 0),
+        ("int", 4),
+    ],
+)
+def test_replace_text_rejects_missing_or_ambiguous_match_without_writing(
+    tiny_bug_repo: Path, old_text: str, observed: int
+) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    before = target.read_bytes()
+    executor = make_executor(tiny_bug_repo)
+    executor.read_file("src/tiny_python_bug/calculator.py")
+
+    observation = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/calculator.py",
+                "old_text": old_text,
+                "new_text": "replacement",
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert observation.error is not None
+    assert f"observed {observed}" in observation.error
+    assert target.read_bytes() == before
+
+
+def test_replace_text_refuses_bulk_replacement(tiny_bug_repo: Path) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "repeated.txt"
+    target.write_text("old\nold\n")
+    executor = make_executor(tiny_bug_repo)
+    executor.read_file("src/tiny_python_bug/repeated.txt")
+
+    observation = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/repeated.txt",
+                "old_text": "old",
+                "new_text": "new",
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert observation.error is not None
+    assert "observed 2" in observation.error
+    assert target.read_text() == "old\nold\n"
+
+
+def test_replace_text_refuses_untracked_existing_file(tiny_bug_repo: Path) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "untracked.py"
+    target.write_text("old\n")
+    executor = make_executor(tiny_bug_repo)
+    executor.read_file("src/tiny_python_bug/untracked.py")
+
+    observation = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/untracked.py",
+                "old_text": "old",
+                "new_text": "new",
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert observation.error is not None and "Git-tracked" in observation.error
+    assert target.read_text() == "old\n"
+    assert executor.reviewable_patch().content == ""
+
+
+def test_replace_text_rejects_path_escape_and_binary_file(tiny_bug_repo: Path) -> None:
+    executor = make_executor(tiny_bug_repo)
+    escaped = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={"path": "../outside", "old_text": "x", "new_text": "y"},
+        )
+    )
+    binary = tiny_bug_repo / "src" / "tiny_python_bug" / "binary.dat"
+    binary.write_bytes(b"before\x00after")
+    executor.read_file("src/tiny_python_bug/binary.dat")
+    binary_result = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/binary.dat",
+                "old_text": "before",
+                "new_text": "changed",
+            },
+        )
+    )
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    before = target.read_bytes()
+    executor.read_file("src/tiny_python_bug/calculator.py")
+    binary_output = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/calculator.py",
+                "old_text": "left - right",
+                "new_text": "left + right\x00",
+            },
+        )
+    )
+
+    assert escaped.ok is False
+    assert binary_result.ok is False
+    assert binary_output.ok is False
+    assert binary.read_bytes() == b"before\x00after"
+    assert target.read_bytes() == before
+
+
+def test_replace_text_rolls_back_when_cumulative_patch_exceeds_limit(
+    tiny_bug_repo: Path,
+) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    before = target.read_bytes()
+    executor = make_executor(tiny_bug_repo, limits=Limits(max_patch_bytes=120))
+    executor.read_file("src/tiny_python_bug/calculator.py")
+
+    observation = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/calculator.py",
+                "old_text": "return left - right",
+                "new_text": "return left + right",
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert observation.error is not None
+    assert "refused and rolled back" in observation.error
+    assert target.read_bytes() == before
+    assert executor.reviewable_patch().content == ""
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit_value", "error_fragment"),
+    [
+        ("max_changed_files", 1, "changed files"),
+        ("max_patch_lines", 8, "lines"),
+    ],
+)
+def test_replace_text_enforces_cumulative_structural_limits(
+    tiny_bug_repo: Path,
+    limit_name: str,
+    limit_value: int,
+    error_fragment: str,
+) -> None:
+    first = tiny_bug_repo / "src" / "tiny_python_bug" / "first.py"
+    second = tiny_bug_repo / "src" / "tiny_python_bug" / "second.py"
+    first.write_text("first = False\n")
+    second.write_text("second = False\n")
+    subprocess.run(["git", "add", str(first), str(second)], cwd=tiny_bug_repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "fixture: cumulative exact edits"],
+        cwd=tiny_bug_repo,
+        check=True,
+    )
+    executor = make_executor(
+        tiny_bug_repo,
+        limits={limit_name: limit_value, "max_patch_bytes": 10_000},
+    )
+    executor.read_file("src/tiny_python_bug/first.py")
+    executor.read_file("src/tiny_python_bug/second.py")
+
+    first_result = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/first.py",
+                "old_text": "False",
+                "new_text": "True",
+            },
+        )
+    )
+    second_result = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/second.py",
+                "old_text": "False",
+                "new_text": "True",
+            },
+        )
+    )
+
+    assert first_result.ok is True
+    assert second_result.ok is False
+    assert second_result.error is not None and error_fragment in second_result.error
+    assert first.read_text() == "first = True\n"
+    assert second.read_text() == "second = False\n"
+    assert executor.reviewable_patch().changed_paths == (
+        "src/tiny_python_bug/first.py",
+    )
+
+
+def test_replace_text_requires_a_current_read(tiny_bug_repo: Path) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    executor = make_executor(tiny_bug_repo)
+
+    unread = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/calculator.py",
+                "old_text": "return left - right",
+                "new_text": "return left + right",
+            },
+        )
+    )
+    executor.read_file("src/tiny_python_bug/calculator.py")
+    target.write_text(target.read_text().replace("Return the sum", "Return a sum"))
+    stale = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/calculator.py",
+                "old_text": "return left - right",
+                "new_text": "return left + right",
+            },
+        )
+    )
+
+    assert unread.ok is False
+    assert unread.error is not None and "read_file" in unread.error
+    assert stale.ok is False
+    assert stale.error is not None and "changed after read_file" in stale.error
+
+
+def test_replace_text_rolls_back_trailing_whitespace(tiny_bug_repo: Path) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    before = target.read_bytes()
+    executor = make_executor(tiny_bug_repo)
+    executor.read_file("src/tiny_python_bug/calculator.py")
+
+    observation = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/calculator.py",
+                "old_text": "return left - right",
+                "new_text": "return left + right   ",
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert observation.error is not None
+    assert "whitespace errors" in observation.error
+    assert target.read_bytes() == before
+
+
+def test_replace_text_reads_large_files_with_a_hard_bound(tiny_bug_repo: Path) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "large.txt"
+    target.write_bytes(b"a" * 9)
+    executor = make_executor(
+        tiny_bug_repo,
+        limits={"max_read_bytes": 8, "max_patch_bytes": 1_000},
+    )
+    executor.read_file("src/tiny_python_bug/large.txt")
+
+    observation = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/large.txt",
+                "old_text": "a",
+                "new_text": "b",
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert observation.error is not None and "exceeds 8" in observation.error
+    assert target.read_bytes() == b"a" * 9
+
+
+def test_replace_text_restores_original_after_post_replace_fsync_failure(
+    tiny_bug_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    before = target.read_bytes()
+    executor = make_executor(tiny_bug_repo)
+    executor.read_file("src/tiny_python_bug/calculator.py")
+    real_fsync = os.fsync
+    calls = 0
+
+    def fail_directory_fsync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls in {2, 4}:
+            raise OSError("injected directory fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_directory_fsync)
+    observation = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/calculator.py",
+                "old_text": "return left - right",
+                "new_text": "return left + right",
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert observation.error is not None and "fsync failure" in observation.error
+    assert target.read_bytes() == before
+    assert not list(target.parent.glob(".*.pca-replace-*"))
 
 
 def test_tool_output_limit_is_a_true_utf8_byte_cap(tiny_bug_repo: Path) -> None:

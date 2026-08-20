@@ -74,6 +74,30 @@ def test_cli_help_exposes_interactive_options_headless_run_and_resume() -> None:
     assert "run" in result.output
 
 
+def test_ollama_preset_retains_a_bounded_tool_turn_budget(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_model(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(cli, "OpenAICompatibleModel", fake_model)
+
+    model = cli._model_from_env(
+        provider="ollama",
+        model="qwen3:4b",
+        base_url=None,
+        tool_calling=True,
+        allow_custom_provider_endpoint=False,
+    )
+
+    assert model is sentinel
+    assert captured["max_tokens"] == 4_096
+    assert captured["extra_body"] == {"think": False}
+    assert captured["user_message_prefix"] == "/no_think\n"
+
+
 def test_codex_login_closes_oauth_client_when_callback_fails(monkeypatch) -> None:
     closed = False
 
