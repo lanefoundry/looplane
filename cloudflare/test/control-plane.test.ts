@@ -319,6 +319,23 @@ describe("POST /v1/runs", () => {
     expect(handle.destroy).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["sandbox_entrypoint_failed", "sandbox_agent_failed"])(
+    "preserves the bounded Sandbox failure class: %s",
+    async (error) => {
+      const handle = sandbox({ ok: false, error });
+      handle.exec.mockResolvedValue({ success: false, exitCode: 1, stdout: "", stderr: "" });
+
+      const response = await handleRequest(
+        request("/v1/runs", requestBody()),
+        env(),
+        dependencies(handle),
+      );
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({ error });
+    },
+  );
+
   it.each([
     { ...validSandboxResponse(), injected: "value" },
     { ok: true, artifacts: validSandboxResponse().artifacts },

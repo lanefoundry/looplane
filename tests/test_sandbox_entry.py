@@ -9,6 +9,7 @@ from coding_agent.contracts import ModelTurn, ToolCall
 from coding_agent.models import ScriptedModel
 from coding_agent.sandbox_entry import (
     SandboxEntrypointError,
+    _main,
     _read_and_remove_run_token,
     run_sandbox_request,
 )
@@ -142,3 +143,25 @@ def test_run_capability_rejects_loose_permissions(tmp_path: Path) -> None:
     with pytest.raises(SandboxEntrypointError, match="unsafe metadata"):
         _read_and_remove_run_token(tmp_path)
     assert token_path.read_text(encoding="utf-8") == "signed-run-capability"
+
+
+@pytest.mark.asyncio
+async def test_main_returns_only_a_bounded_entrypoint_failure_code(tmp_path: Path) -> None:
+    response_path = tmp_path / "response.json"
+
+    async def fail_entrypoint(_request: str) -> dict[str, object]:
+        raise SandboxEntrypointError("sensitive internal detail")
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "coding_agent.sandbox_entry.Path",
+            lambda value: response_path if value == "/workspace/response.json" else Path(value),
+        )
+        monkeypatch.setattr("coding_agent.sandbox_entry.run_sandbox_request", fail_entrypoint)
+        exit_code = await _main(["sandbox_entry", "request.json"])
+
+    assert exit_code == 1
+    assert json.loads(response_path.read_text(encoding="utf-8")) == {
+        "ok": False,
+        "error": "sandbox_entrypoint_failed",
+    }

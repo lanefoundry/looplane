@@ -270,6 +270,9 @@ async def _main(argv: list[str]) -> int:
     try:
         response = await run_sandbox_request(argv[1])
         exit_code = 0 if response["ok"] else 1
+    except SandboxEntrypointError:
+        response = {"ok": False, "error": "sandbox_entrypoint_failed"}
+        exit_code = 1
     except Exception:  # noqa: BLE001 - process boundary returns one non-sensitive failure code
         response = {"ok": False, "error": "sandbox_agent_failed"}
         exit_code = 1

@@ -582,6 +582,14 @@ function validateSandboxResponse(
   expected: Pick<ValidatedRun, "allowedPaths" | "checks">,
 ): Record<string, unknown> {
   if (
+    isObject(value) &&
+    hasExactKeys(value, ["ok", "error"]) &&
+    value.ok === false &&
+    (value.error === "sandbox_entrypoint_failed" || value.error === "sandbox_agent_failed")
+  ) {
+    throw new RequestProblem(502, value.error);
+  }
+  if (
     !isObject(value) ||
     !hasExactKeys(value, ["ok", "result", "artifacts"]) ||
     value.ok !== expectedSuccess ||

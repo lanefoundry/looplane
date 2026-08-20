@@ -3,4 +3,5 @@ node_modules/
 .wrangler/
 coverage/
 .dev.vars
+.control-token
 .DS_Store
