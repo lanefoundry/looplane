@@ -1,0 +1,63 @@
+"""Public typed API for the Python coding-agent harness."""
+
+from coding_agent.contracts import (
+    Checkpoint,
+    ConversationItem,
+    Limits,
+    Message,
+    ModelCapabilities,
+    ModelTurn,
+    RunResult,
+    RunStatus,
+    TaskContract,
+    ToolCall,
+    ToolDefinition,
+    ToolObservation,
+    Usage,
+    VerificationCommand,
+    VerificationOutcome,
+)
+from coding_agent.events import EventWriter, RunEvent, atomic_write_json, write_json_atomic
+from coding_agent.loop import AgentRunner, UnsafeLocalExecutionError
+from coding_agent.models import (
+    AnthropicModel,
+    GeminiModel,
+    ModelProvider,
+    OpenAICompatibleModel,
+    ProviderError,
+    ProviderErrorKind,
+    ScriptedModel,
+    WorkersAIModel,
+)
+
+__all__ = [
+    "AnthropicModel",
+    "AgentRunner",
+    "Checkpoint",
+    "ConversationItem",
+    "EventWriter",
+    "GeminiModel",
+    "Limits",
+    "Message",
+    "ModelCapabilities",
+    "ModelProvider",
+    "ModelTurn",
+    "RunEvent",
+    "RunResult",
+    "RunStatus",
+    "TaskContract",
+    "ToolCall",
+    "ToolDefinition",
+    "ToolObservation",
+    "Usage",
+    "UnsafeLocalExecutionError",
+    "VerificationCommand",
+    "VerificationOutcome",
+    "OpenAICompatibleModel",
+    "ProviderError",
+    "ProviderErrorKind",
+    "ScriptedModel",
+    "WorkersAIModel",
+    "atomic_write_json",
+    "write_json_atomic",
+]

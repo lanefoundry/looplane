@@ -1,0 +1,565 @@
+from __future__ import annotations
+
+import fnmatch
+import os
+import shlex
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .contracts import (
+    ToolCall,
+    ToolDefinition,
+    ToolObservation,
+    VerificationCommand,
+    VerificationOutcome,
+)
+from .policy import PathPolicyError, SafePathPolicy
+from .runtime import (
+    LocalGitWorkspace,
+    bounded_text,
+    run_bounded_command,
+    sanitized_subprocess_env,
+)
+
+
+class ToolExecutionError(RuntimeError):
+    """A bounded, user-visible tool failure."""
+
+
+@dataclass(frozen=True)
+class ReviewablePatch:
+    content: str
+    changed_paths: tuple[str, ...]
+
+
+class ToolExecutor:
+    def __init__(
+        self,
+        workspace: Path | LocalGitWorkspace,
+        policy: SafePathPolicy,
+        verification_commands: Sequence[VerificationCommand],
+        limits: object | None = None,
+    ) -> None:
+        self.workspace = (
+            workspace.workspace_path
+            if isinstance(workspace, LocalGitWorkspace)
+            else Path(workspace)
+        ).resolve(strict=True)
+        if self.workspace != policy.workspace_root:
+            raise ValueError("ToolExecutor workspace and SafePathPolicy root must match")
+        self.policy = policy
+        self.max_output_chars = self._limit_alias(
+            limits,
+            ("max_tool_output_bytes", "max_output_chars"),
+            200_000,
+        )
+        self.max_read_bytes = self._limit(limits, "max_read_bytes", 100_000)
+        self.max_patch_bytes = self._limit(limits, "max_patch_bytes", 100_000)
+        self.max_patch_lines = self._limit(limits, "max_patch_lines", 4_000)
+        self.max_changed_files = self._limit(limits, "max_changed_files", 50)
+        self.max_list_files = self._limit(limits, "max_list_files", 500)
+        self.max_search_results = self._limit(limits, "max_search_results", 100)
+        self._task_home = self.workspace.parent / ".check-task-env"
+
+        self.verification_commands: dict[str, VerificationCommand] = {}
+        self.verification_outcomes: dict[str, VerificationOutcome] = {}
+        for command in verification_commands:
+            name = str(command.name)
+            argv = tuple(command.argv)
+            timeout_seconds = float(command.timeout_seconds)
+            if not name or not argv or not all(isinstance(arg, str) and arg for arg in argv):
+                raise ValueError("verification commands require a name and exact non-empty argv")
+            if timeout_seconds <= 0:
+                raise ValueError("verification command timeout_seconds must be positive")
+            if name in self.verification_commands:
+                raise ValueError(f"duplicate verification command name: {name}")
+            self.verification_commands[name] = command
+        definitions = list(self._tool_definitions())
+        run_check_index = next(
+            index for index, definition in enumerate(definitions) if definition.name == "run_check"
+        )
+        run_check_definition = definitions[run_check_index]
+        run_check_schema = dict(run_check_definition.input_schema)
+        run_check_properties = dict(run_check_schema["properties"])
+        run_check_name = dict(run_check_properties["name"])
+        run_check_name["enum"] = sorted(self.verification_commands)
+        run_check_properties["name"] = run_check_name
+        run_check_schema["properties"] = run_check_properties
+        definitions[run_check_index] = run_check_definition.model_copy(
+            update={"input_schema": run_check_schema}
+        )
+        self.definitions = tuple(definitions)
+
+    @staticmethod
+    def _limit(limits: object | None, name: str, default: int) -> int:
+        if limits is None:
+            return default
+        if isinstance(limits, Mapping):
+            value = limits.get(name, default)
+        else:
+            value = getattr(limits, name, default)
+        value = int(value)
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+        return value
+
+    @classmethod
+    def _limit_alias(cls, limits: object | None, names: tuple[str, ...], default: int) -> int:
+        if limits is None:
+            return default
+        for name in names:
+            if isinstance(limits, Mapping) and name in limits:
+                return cls._limit(limits, name, default)
+            if not isinstance(limits, Mapping) and hasattr(limits, name):
+                return cls._limit(limits, name, default)
+        return default
+
+    @staticmethod
+    def _tool_definitions() -> tuple[ToolDefinition, ...]:
+        path = {"type": "string", "description": "Workspace-relative path."}
+        return (
+            ToolDefinition(
+                name="list_files",
+                description="List allowed files below a workspace-relative path.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"path": {**path, "default": "."}},
+                    "additionalProperties": False,
+                },
+            ),
+            ToolDefinition(
+                name="read_file",
+                description="Read one allowed UTF-8 text file with a bounded result.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"path": path},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolDefinition(
+                name="search_text",
+                description="Search allowed files for a literal text string.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1},
+                        "path": {**path, "default": "."},
+                        "glob": {"type": ["string", "null"]},
+                        "case_sensitive": {"type": "boolean", "default": True},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolDefinition(
+                name="apply_patch",
+                description="Apply one bounded unified text diff after path and git checks.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"patch": {"type": "string", "minLength": 1}},
+                    "required": ["patch"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolDefinition(
+                name="run_check",
+                description=(
+                    "Run one exact argv verification command selected by its allowlisted name."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "enum": [],
+                            "description": "Allowlisted verification command name.",
+                        }
+                    },
+                    "required": ["name"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolDefinition(
+                name="git_diff",
+                description="Return the bounded uncommitted workspace patch.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+        )
+
+    def _walk_files(self, root: Path):
+        if root.is_file():
+            yield root
+            return
+        for current, directories, filenames in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            directories[:] = sorted(
+                directory
+                for directory in directories
+                if directory != ".git" and not (current_path / directory).is_symlink()
+            )
+            for filename in sorted(filenames):
+                path = current_path / filename
+                try:
+                    relative = path.relative_to(self.workspace).as_posix()
+                    self.policy.resolve(relative)
+                except (PathPolicyError, ValueError):
+                    continue
+                yield path
+
+    def list_files(self, path: str = ".") -> str:
+        root = self.policy.resolve(path, allow_workspace_root=True)
+        if not root.exists():
+            raise ToolExecutionError(f"path does not exist: {path}")
+        files: list[str] = []
+        for file_path in self._walk_files(root):
+            files.append(file_path.relative_to(self.workspace).as_posix())
+            if len(files) >= self.max_list_files:
+                files.append(f"... file list truncated at {self.max_list_files} entries ...")
+                break
+        return bounded_text("\n".join(files), self.max_output_chars)
+
+    def read_file(self, path: str) -> str:
+        target = self.policy.resolve(path)
+        if not target.is_file():
+            raise ToolExecutionError(f"not a regular file: {path}")
+        with target.open("rb") as handle:
+            data = handle.read(self.max_read_bytes + 1)
+        truncated = len(data) > self.max_read_bytes
+        text = data[: self.max_read_bytes].decode("utf-8", errors="replace")
+        if truncated:
+            text += f"\n... file truncated at {self.max_read_bytes} bytes ..."
+        return bounded_text(text, self.max_output_chars)
+
+    def search_text(
+        self,
+        query: str,
+        path: str = ".",
+        glob: str | None = None,
+        case_sensitive: bool = True,
+    ) -> str:
+        if not isinstance(query, str) or not query:
+            raise ToolExecutionError("search query must be a non-empty string")
+        root = self.policy.resolve(path, allow_workspace_root=True)
+        if not root.exists():
+            raise ToolExecutionError(f"path does not exist: {path}")
+        needle = query if case_sensitive else query.casefold()
+        matches: list[str] = []
+        for file_path in self._walk_files(root):
+            relative = file_path.relative_to(self.workspace).as_posix()
+            if glob and not fnmatch.fnmatchcase(relative, glob):
+                continue
+            try:
+                with file_path.open("rb") as handle:
+                    data = handle.read(self.max_read_bytes + 1)
+            except OSError:
+                continue
+            if b"\x00" in data:
+                continue
+            for line_number, line in enumerate(
+                data.decode("utf-8", errors="replace").splitlines(), 1
+            ):
+                haystack = line if case_sensitive else line.casefold()
+                if needle in haystack:
+                    matches.append(f"{relative}:{line_number}:{line}")
+                    if len(matches) >= self.max_search_results:
+                        matches.append(
+                            f"... search truncated at {self.max_search_results} matches ..."
+                        )
+                        return bounded_text("\n".join(matches), self.max_output_chars)
+        return bounded_text("\n".join(matches), self.max_output_chars)
+
+    @staticmethod
+    def _header_path(line: str, marker: str) -> str | None:
+        value = line[len(marker) :].strip()
+        if value == "/dev/null":
+            return None
+        try:
+            fields = shlex.split(value)
+        except ValueError as exc:
+            raise ToolExecutionError(f"invalid unified diff header: {line!r}") from exc
+        if not fields:
+            raise ToolExecutionError(f"missing path in unified diff header: {line!r}")
+        path = fields[0]
+        if path.startswith(("a/", "b/")):
+            path = path[2:]
+        return path
+
+    def _validate_unified_diff(self, patch: str) -> tuple[str, ...]:
+        if not isinstance(patch, str) or not patch.strip():
+            raise ToolExecutionError("patch must be a non-empty unified diff")
+        if len(patch.encode("utf-8")) > self.max_patch_bytes:
+            raise ToolExecutionError(f"patch exceeds {self.max_patch_bytes} bytes")
+        lines = patch.splitlines()
+        if len(lines) > self.max_patch_lines:
+            raise ToolExecutionError(f"patch exceeds {self.max_patch_lines} lines")
+        forbidden_markers = (
+            "GIT binary patch",
+            "Binary files ",
+            "literal ",
+            "delta ",
+            "new file mode 120000",
+            "old mode 120000",
+            "rename from ",
+            "rename to ",
+            "copy from ",
+            "copy to ",
+        )
+        if any(line.startswith(forbidden_markers) for line in lines):
+            raise ToolExecutionError("binary, symlink, rename, and copy patches are forbidden")
+
+        old_headers = [line for line in lines if line.startswith("--- ")]
+        new_headers = [line for line in lines if line.startswith("+++ ")]
+        if (
+            not old_headers
+            or len(old_headers) != len(new_headers)
+            or not any(line.startswith("@@ ") for line in lines)
+        ):
+            raise ToolExecutionError("apply_patch accepts unified text diffs only")
+
+        paths: set[str] = set()
+        for line in (*old_headers, *new_headers):
+            marker = "--- " if line.startswith("--- ") else "+++ "
+            path = self._header_path(line, marker)
+            if path is not None:
+                self.policy.resolve(path)
+                paths.add(path)
+        if not paths:
+            raise ToolExecutionError("patch does not name a workspace file")
+        if len(paths) > self.max_changed_files:
+            raise ToolExecutionError(f"patch exceeds {self.max_changed_files} changed files")
+        return tuple(sorted(paths))
+
+    @staticmethod
+    def _effective_timeout(default: float, override: float | None) -> float:
+        if override is None:
+            return default
+        if override <= 0:
+            raise ToolExecutionError("harness timeout budget is exhausted")
+        return min(default, override)
+
+    def _git(
+        self,
+        argv: Sequence[str],
+        *,
+        stdin: str | None = None,
+        timeout_seconds: float | None = None,
+        max_output_bytes: int | None = None,
+    ):
+        return run_bounded_command(
+            ("git", *argv),
+            cwd=self.workspace,
+            timeout_seconds=self._effective_timeout(30.0, timeout_seconds),
+            max_output_chars=max_output_bytes or self.max_output_chars,
+            env=sanitized_subprocess_env(task_home=self._task_home),
+            stdin=stdin,
+        )
+
+    def apply_patch(self, patch: str, *, timeout_seconds: float | None = None) -> str:
+        paths = self._validate_unified_diff(patch)
+        new_paths = tuple(path for path in paths if not (self.workspace / path).exists())
+        budget = self._effective_timeout(30.0, timeout_seconds)
+        deadline = time.monotonic() + budget
+
+        def remaining() -> float:
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise ToolExecutionError("apply_patch exceeded the harness timeout")
+            return value
+
+        checked = self._git(
+            ("apply", "--check", "--whitespace=error-all", "-"),
+            stdin=patch,
+            timeout_seconds=remaining(),
+        )
+        if not checked.ok:
+            raise ToolExecutionError(f"git apply --check failed: {checked.stderr.strip()}")
+        applied = self._git(
+            ("apply", "--whitespace=error-all", "-"),
+            stdin=patch,
+            timeout_seconds=remaining(),
+        )
+        if not applied.ok:
+            raise ToolExecutionError(f"git apply failed: {applied.stderr.strip()}")
+        for path in new_paths:
+            try:
+                intent = self._git(
+                    ("add", "--intent-to-add", "--", path),
+                    timeout_seconds=remaining(),
+                )
+            except ToolExecutionError as exc:
+                self._rollback_patch(patch, new_paths)
+                raise ToolExecutionError(
+                    f"could not register new file for reviewable diff: {exc}"
+                ) from exc
+            if not intent.ok:
+                self._rollback_patch(patch, new_paths)
+                raise ToolExecutionError(
+                    f"could not register new file for reviewable diff: {intent.stderr.strip()}"
+                )
+        try:
+            self.reviewable_patch(timeout_seconds=remaining())
+        except ToolExecutionError as exc:
+            self._rollback_patch(patch, new_paths)
+            raise ToolExecutionError(
+                f"cumulative patch is not reviewable within the task limits: {exc}"
+            ) from exc
+        return f"applied unified diff to {len(paths)} file(s):\n" + "\n".join(paths)
+
+    def _rollback_patch(self, patch: str, new_paths: Sequence[str]) -> None:
+        reversed_patch = self._git(
+            ("apply", "--reverse", "--whitespace=nowarn", "-"),
+            stdin=patch,
+            timeout_seconds=5.0,
+        )
+        reset = self._git(
+            ("reset", "--quiet", "HEAD", "--", *new_paths),
+            timeout_seconds=5.0,
+        )
+        if not reversed_patch.ok or not reset.ok:
+            details = "; ".join(
+                detail
+                for detail in (
+                    reversed_patch.stderr.strip(),
+                    reset.stderr.strip(),
+                )
+                if detail
+            )
+            raise ToolExecutionError(f"patch rollback failed: {details or 'unknown git error'}")
+
+    def run_check(self, name: str, *, timeout_seconds: float | None = None) -> VerificationOutcome:
+        command = self.verification_commands.get(name)
+        if command is None:
+            raise ToolExecutionError(f"verification command is not allowlisted: {name!r}")
+        started_at = time.monotonic()
+        result = run_bounded_command(
+            tuple(command.argv),
+            cwd=self.workspace,
+            timeout_seconds=self._effective_timeout(
+                float(command.timeout_seconds), timeout_seconds
+            ),
+            max_output_chars=self.max_output_chars,
+            env=sanitized_subprocess_env(task_home=self._task_home),
+        )
+        duration = time.monotonic() - started_at
+        status = "passed" if result.ok else "failed"
+        sections = [f"check {name!r} {status} (exit {result.returncode})"]
+        if result.timed_out:
+            sections.append(f"timed out after {command.timeout_seconds} seconds")
+        if result.stdout:
+            sections.append(f"stdout:\n{result.stdout}")
+        if result.stderr:
+            sections.append(f"stderr:\n{result.stderr}")
+        outcome = VerificationOutcome(
+            name=name,
+            argv=tuple(command.argv),
+            ok=result.ok,
+            exit_code=result.returncode,
+            duration_seconds=duration,
+            output=bounded_text("\n".join(sections), self.max_output_chars),
+        )
+        self.verification_outcomes[name] = outcome
+        return outcome
+
+    def reviewable_patch(self, *, timeout_seconds: float | None = None) -> ReviewablePatch:
+        budget = self._effective_timeout(30.0, timeout_seconds)
+        deadline = time.monotonic() + budget
+
+        def remaining() -> float:
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise ToolExecutionError("reviewable_patch exceeded the harness timeout")
+            return value
+
+        result = self._git(
+            ("diff", "--no-ext-diff", "--no-color", "--no-renames", "--"),
+            timeout_seconds=remaining(),
+            max_output_bytes=self.max_patch_bytes + 1,
+        )
+        if not result.ok:
+            raise ToolExecutionError(f"git diff failed: {result.stderr.strip()}")
+        if result.stdout_bytes > self.max_patch_bytes or result.stdout_truncated:
+            raise ToolExecutionError(
+                f"final patch exceeds {self.max_patch_bytes} bytes; refusing truncated artifact"
+            )
+
+        names = self._git(
+            ("diff", "--name-only", "--no-renames", "-z", "--"),
+            timeout_seconds=remaining(),
+            max_output_bytes=self.max_output_chars,
+        )
+        if not names.ok:
+            raise ToolExecutionError(f"git diff --name-only failed: {names.stderr.strip()}")
+        if names.stdout_truncated:
+            raise ToolExecutionError("changed path list exceeded the tool output limit")
+        changed_paths = tuple(sorted(path for path in names.stdout.split("\x00") if path))
+        for path in changed_paths:
+            self.policy.resolve(path)
+        return ReviewablePatch(content=result.stdout, changed_paths=changed_paths)
+
+    def git_diff(self, *, timeout_seconds: float | None = None) -> str:
+        return self.reviewable_patch(timeout_seconds=timeout_seconds).content
+
+    def execute(self, call: ToolCall, *, timeout_seconds: float | None = None) -> ToolObservation:
+        tool_call_id = str(call.tool_call_id)
+        name = str(call.name)
+        arguments: Any = call.arguments
+        if not isinstance(arguments, Mapping):
+            raise TypeError("ToolCall.arguments must be a mapping")
+
+        handlers = {
+            "list_files": self.list_files,
+            "read_file": self.read_file,
+            "search_text": self.search_text,
+            "apply_patch": self.apply_patch,
+            "run_check": self.run_check,
+            "git_diff": self.git_diff,
+        }
+        handler = handlers.get(name)
+        if handler is None:
+            return ToolObservation(
+                tool_call_id=tool_call_id,
+                name=name,
+                ok=False,
+                content="",
+                error=f"unknown tool: {name}",
+            )
+        try:
+            call_arguments = dict(arguments)
+            if "timeout_seconds" in call_arguments:
+                raise ToolExecutionError("timeout_seconds is controlled by the harness")
+            if name in {"apply_patch", "run_check", "git_diff"}:
+                result = handler(**call_arguments, timeout_seconds=timeout_seconds)
+            else:
+                result = handler(**call_arguments)
+        except (PathPolicyError, ToolExecutionError, OSError, TypeError, UnicodeError) as exc:
+            error = bounded_text(f"{type(exc).__name__}: {exc}", self.max_output_chars)
+            return ToolObservation(
+                tool_call_id=tool_call_id,
+                name=name,
+                ok=False,
+                content="",
+                error=error,
+            )
+        if isinstance(result, VerificationOutcome):
+            content = bounded_text(result.model_dump_json(), self.max_output_chars)
+            if not result.ok:
+                return ToolObservation(
+                    tool_call_id=tool_call_id,
+                    name=name,
+                    ok=False,
+                    content=content,
+                    error=f"verification failed: {result.name} (exit {result.exit_code})",
+                )
+        else:
+            content = bounded_text(result, self.max_output_chars)
+        return ToolObservation(
+            tool_call_id=tool_call_id,
+            name=name,
+            ok=True,
+            content=content,
+            error=None,
+        )

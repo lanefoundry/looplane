@@ -1,0 +1,484 @@
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from typing import Any
+
+import httpx
+import pytest
+from openai import APIStatusError
+
+from coding_agent.contracts import (
+    Message,
+    ModelTurn,
+    ToolCall,
+    ToolDefinition,
+    ToolObservation,
+    Usage,
+)
+from coding_agent.models import (
+    AnthropicModel,
+    GeminiModel,
+    OpenAICompatibleModel,
+    ProviderError,
+    ProviderErrorKind,
+    ScriptedModel,
+    WorkersAIModel,
+)
+
+TOOL = ToolDefinition(
+    name="read_file",
+    description="Read one file",
+    input_schema={
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    },
+)
+MESSAGES = (Message(role="system", content="Be precise."), Message(role="user", content="Read it."))
+
+
+def assert_common_turn(turn: ModelTurn) -> None:
+    assert turn.content == "I will inspect the file."
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].name == "read_file"
+    assert turn.tool_calls[0].arguments == {"path": "src/example.py"}
+    assert turn.usage.input_tokens == 11
+    assert turn.usage.output_tokens == 7
+    assert turn.usage.total_tokens == 18
+
+
+@pytest.mark.asyncio
+async def test_scripted_model_preserves_common_contract_and_records_request() -> None:
+    expected = ModelTurn(
+        content="I will inspect the file.",
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "src/example.py"}),),
+        usage=Usage(input_tokens=11, output_tokens=7),
+        finish_reason="tool_calls",
+    )
+    model = ScriptedModel([expected])
+
+    actual = await model.complete(MESSAGES, (TOOL,))
+
+    assert actual is expected
+    assert model.calls == [(MESSAGES, (TOOL,))]
+
+
+class FakeCompletions:
+    def __init__(self, response: Any) -> None:
+        self.response = response
+        self.requests: list[dict[str, Any]] = []
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.requests.append(kwargs)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_text_tool_and_usage_roundtrip() -> None:
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="I will inspect the file.",
+                    tool_calls=[
+                        SimpleNamespace(
+                            id="call-1",
+                            function=SimpleNamespace(
+                                name="read_file",
+                                arguments=json.dumps({"path": "src/example.py"}),
+                            ),
+                        )
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=11,
+            completion_tokens=7,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=3),
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+        ),
+    )
+    completions = FakeCompletions(response)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model = OpenAICompatibleModel(
+        model="fake-model", client=client, supports_tool_calling=True
+    )
+
+    turn = await model.complete(MESSAGES, (TOOL,))
+
+    assert_common_turn(turn)
+    assert turn.tool_calls[0].tool_call_id == "call-1"
+    assert turn.usage.cached_input_tokens == 3
+    assert turn.usage.reasoning_tokens == 2
+    assert completions.requests[0]["tools"][0]["function"]["name"] == "read_file"
+
+
+def make_json_client(payload: dict[str, Any], status_code: int = 200) -> httpx.AsyncClient:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json=payload, request=request)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def make_capturing_json_client(
+    payload: dict[str, Any], status_code: int = 200
+) -> tuple[httpx.AsyncClient, list[dict[str, Any]]]:
+    requests: list[dict[str, Any]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(status_code, json=payload, request=request)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler)), requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["anthropic", "gemini", "workers-ai"])
+async def test_http_adapters_text_tool_and_usage_roundtrip(provider: str) -> None:
+    if provider == "anthropic":
+        payload = {
+            "content": [
+                {"type": "text", "text": "I will inspect the file."},
+                {
+                    "type": "tool_use",
+                    "id": "call-1",
+                    "name": "read_file",
+                    "input": {"path": "src/example.py"},
+                },
+            ],
+            "usage": {"input_tokens": 11, "output_tokens": 7},
+            "stop_reason": "tool_use",
+        }
+        client = make_json_client(payload)
+        model = AnthropicModel(
+            model="fake-model", api_key="test", client=client, supports_tool_calling=True
+        )
+    elif provider == "gemini":
+        payload = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": "I will inspect the file."},
+                            {
+                                "functionCall": {
+                                    "id": "call-1",
+                                    "name": "read_file",
+                                    "args": {"path": "src/example.py"},
+                                }
+                            },
+                        ]
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 7},
+        }
+        client = make_json_client(payload)
+        model = GeminiModel(
+            model="fake-model", api_key="test", client=client, supports_tool_calling=True
+        )
+    else:
+        payload = {
+            "success": True,
+            "result": {
+                "response": "I will inspect the file.",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": {"path": "src/example.py"},
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+                "finish_reason": "tool_calls",
+            },
+        }
+        client = make_json_client(payload)
+        model = WorkersAIModel(
+            account_id="account",
+            api_token="test",
+            model="fake-model",
+            supports_tool_calling=True,
+            client=client,
+        )
+
+    try:
+        turn = await model.complete(MESSAGES, (TOOL,))
+    finally:
+        await client.aclose()
+
+    assert_common_turn(turn)
+    assert turn.tool_calls[0].tool_call_id == "call-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_kind"),
+    [
+        (401, ProviderErrorKind.AUTH),
+        (429, ProviderErrorKind.RATE_LIMIT),
+        (503, ProviderErrorKind.RETRYABLE),
+    ],
+)
+async def test_http_statuses_map_to_stable_provider_errors(
+    status_code: int, expected_kind: ProviderErrorKind
+) -> None:
+    client = make_json_client({"error": "injected failure"}, status_code=status_code)
+    model = AnthropicModel(
+        model="fake-model", api_key="test", client=client, supports_tool_calling=True
+    )
+
+    try:
+        with pytest.raises(ProviderError) as caught:
+            await model.complete(MESSAGES, (TOOL,))
+    finally:
+        await client.aclose()
+
+    assert caught.value.kind == expected_kind
+    assert caught.value.status_code == status_code
+    assert caught.value.provider_name == "anthropic"
+
+
+SECOND_TURN_MESSAGES = (
+    Message(role="system", content="Use tools."),
+    Message(role="user", content="Inspect both files."),
+    Message(
+        role="assistant",
+        content="Checking now.",
+        tool_calls=(
+            ToolCall(
+                tool_call_id="call-ok",
+                name="read_file",
+                arguments={"path": "src/good.py"},
+            ),
+            ToolCall(
+                tool_call_id="call-failed",
+                name="read_file",
+                arguments={"path": "src/missing.py"},
+            ),
+        ),
+    ),
+    ToolObservation(
+        tool_call_id="call-ok",
+        name="read_file",
+        ok=True,
+        content="GOOD = True",
+    ),
+    ToolObservation(
+        tool_call_id="call-failed",
+        name="read_file",
+        ok=False,
+        error="PathPolicyError: denied",
+    ),
+)
+
+
+@pytest.mark.asyncio
+async def test_openai_second_turn_preserves_tool_call_ids_and_failed_observation() -> None:
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="Done.", tool_calls=[]),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+    )
+    completions = FakeCompletions(response)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model = OpenAICompatibleModel(
+        model="fake-model", client=client, supports_tool_calling=True
+    )
+
+    await model.complete(SECOND_TURN_MESSAGES, (TOOL,))
+
+    messages = completions.requests[0]["messages"]
+    assistant = next(message for message in messages if message["role"] == "assistant")
+    observations = [message for message in messages if message["role"] == "tool"]
+    assert [call["id"] for call in assistant["tool_calls"]] == ["call-ok", "call-failed"]
+    assert [message["tool_call_id"] for message in observations] == [
+        "call-ok",
+        "call-failed",
+    ]
+    assert observations[0]["content"] == "GOOD = True"
+    assert "PathPolicyError: denied" in observations[1]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["anthropic", "gemini", "workers-ai"])
+async def test_http_provider_second_turn_preserves_success_and_failure_observations(
+    provider: str,
+) -> None:
+    if provider == "anthropic":
+        response = {
+            "content": [{"type": "text", "text": "Done."}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        client, requests = make_capturing_json_client(response)
+        model = AnthropicModel(
+            model="fake-model", api_key="test", client=client, supports_tool_calling=True
+        )
+    elif provider == "gemini":
+        response = {
+            "candidates": [{"content": {"parts": [{"text": "Done."}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+        }
+        client, requests = make_capturing_json_client(response)
+        model = GeminiModel(
+            model="fake-model", api_key="test", client=client, supports_tool_calling=True
+        )
+    else:
+        response = {"success": True, "result": {"response": "Done."}}
+        client, requests = make_capturing_json_client(response)
+        model = WorkersAIModel(
+            account_id="account",
+            api_token="test",
+            model="fake-model",
+            client=client,
+            supports_tool_calling=True,
+        )
+
+    try:
+        await model.complete(SECOND_TURN_MESSAGES, (TOOL,))
+    finally:
+        await client.aclose()
+
+    serialized = json.dumps(requests[0], ensure_ascii=False)
+    assert "call-ok" in serialized
+    assert "call-failed" in serialized
+    assert "GOOD = True" in serialized
+    assert "PathPolicyError: denied" in serialized
+    if provider == "anthropic":
+        tool_results = [
+            block
+            for message in requests[0]["messages"]
+            for block in message.get("content", [])
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+        assert [block["is_error"] for block in tool_results] == [False, True]
+    elif provider == "gemini":
+        responses = [
+            part["functionResponse"]
+            for content in requests[0]["contents"]
+            for part in content["parts"]
+            if "functionResponse" in part
+        ]
+        assert [response["response"]["ok"] for response in responses] == [True, False]
+    else:
+        tool_messages = [
+            message for message in requests[0]["messages"] if message["role"] == "tool"
+        ]
+        assert [message["tool_call_id"] for message in tool_messages] == [
+            "call-ok",
+            "call-failed",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_real_provider_adapters_default_to_tool_calling_disabled() -> None:
+    fake_openai = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions(None)))
+    http_client = make_json_client({})
+    models = (
+        OpenAICompatibleModel(model="fake", client=fake_openai),
+        AnthropicModel(model="fake", api_key="test", client=http_client),
+        GeminiModel(model="fake", api_key="test", client=http_client),
+        WorkersAIModel(account_id="account", api_token="test", model="fake", client=http_client),
+    )
+
+    try:
+        assert all(model.capabilities.tool_calling is False for model in models)
+    finally:
+        await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_injected_http_client_remains_caller_owned() -> None:
+    client = make_json_client({})
+    model = AnthropicModel(model="fake", api_key="test", client=client)
+
+    await model.aclose()
+
+    assert client.is_closed is False
+    await client.aclose()
+
+
+@pytest.mark.parametrize("model_class", [AnthropicModel, GeminiModel, WorkersAIModel])
+def test_native_provider_rejects_custom_endpoint_without_explicit_opt_in(
+    model_class: type[Any],
+) -> None:
+    common: dict[str, Any] = {
+        "model": "fake",
+        "base_url": "https://proxy.example.invalid",
+    }
+    if model_class is WorkersAIModel:
+        common.update(account_id="account", api_token="test")
+    else:
+        common["api_key"] = "test"
+
+    with pytest.raises(ValueError, match="custom provider endpoint"):
+        model_class(**common)
+
+
+@pytest.mark.asyncio
+async def test_workers_ai_7505_is_classified_with_provider_diagnostics() -> None:
+    client = make_json_client(
+        {
+            "success": False,
+            "errors": [{"code": 7505, "message": "rate limited"}],
+            "request_id": "request-7505",
+        }
+    )
+    model = WorkersAIModel(
+        account_id="account",
+        api_token="test",
+        model="fake",
+        client=client,
+        supports_tool_calling=True,
+    )
+
+    try:
+        with pytest.raises(ProviderError) as caught:
+            await model.complete(MESSAGES)
+    finally:
+        await client.aclose()
+
+    assert caught.value.kind == ProviderErrorKind.RATE_LIMIT
+    assert caught.value.provider_code == 7505
+    assert caught.value.request_id == "request-7505"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_kind"),
+    [
+        (401, ProviderErrorKind.AUTH),
+        (429, ProviderErrorKind.RATE_LIMIT),
+        (503, ProviderErrorKind.RETRYABLE),
+    ],
+)
+async def test_openai_status_errors_are_normalized(
+    status_code: int, expected_kind: ProviderErrorKind
+) -> None:
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(status_code, request=request, headers={"retry-after": "2"})
+    error = APIStatusError("injected failure", response=response, body={"error": "failure"})
+    completions = FakeCompletions(error)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model = OpenAICompatibleModel(
+        model="fake", client=client, supports_tool_calling=True
+    )
+
+    with pytest.raises(ProviderError) as caught:
+        await model.complete(MESSAGES)
+
+    assert caught.value.kind == expected_kind
+    assert caught.value.status_code == status_code
+    assert caught.value.retry_after_seconds == 2
