@@ -4,6 +4,7 @@ import {
   destroySandboxBounded,
   handleRequest,
   LIMITS,
+  revokeCapabilityBounded,
   validatedModelApiUrl,
   type Env,
   type SandboxHandle,
@@ -338,6 +339,62 @@ describe("POST /v1/runs", () => {
     expect(handle.destroy).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    {
+      result: {
+        ...(validSandboxResponse().result as Record<string, unknown>),
+        verification: [],
+      },
+    },
+    {
+      result: {
+        ...(validSandboxResponse().result as Record<string, unknown>),
+        verification: [
+          {
+            name: "check-1",
+            argv: ["python3", "-m", "pytest", "-q"],
+            ok: true,
+            exit_code: 0,
+            duration_seconds: 0.1,
+            output: "",
+          },
+        ],
+      },
+    },
+    {
+      result: {
+        ...(validSandboxResponse().result as Record<string, unknown>),
+        verification: [
+          {
+            name: "check-1",
+            argv: ["git", "diff", "--check"],
+            ok: false,
+            exit_code: 1,
+            duration_seconds: 0.1,
+            output: "failed",
+          },
+        ],
+      },
+    },
+    {
+      result: {
+        ...(validSandboxResponse().result as Record<string, unknown>),
+        changed_files: ["other.py"],
+      },
+    },
+  ])("rejects a completed result that does not match its request contract: %j", async (resultOverride) => {
+    const forged = { ...validSandboxResponse(), ...resultOverride };
+    const handle = sandbox(forged);
+
+    const response = await handleRequest(
+      request("/v1/runs", requestBody()),
+      env(),
+      dependencies(handle),
+    );
+
+    expect(response.status).toBe(502);
+  });
+
   it("does not claim completion when destroy rejects", async () => {
     const handle = sandbox();
     handle.destroy.mockRejectedValue(new Error("destroy failed"));
@@ -355,6 +412,16 @@ describe("POST /v1/runs", () => {
     handle.destroy.mockReturnValue(new Promise<void>(() => undefined));
 
     await expect(destroySandboxBounded(handle, 10)).rejects.toMatchObject({
+      code: "sandbox_cleanup_timeout",
+    });
+  });
+
+  it("bounds a hanging capability revocation before destroying", async () => {
+    const handle = sandbox();
+    const deps = dependencies(handle);
+    deps.revokeCapability = vi.fn().mockReturnValue(new Promise<void>(() => undefined));
+
+    await expect(revokeCapabilityBounded(deps, env(), runId, 10)).rejects.toMatchObject({
       code: "sandbox_cleanup_timeout",
     });
   });

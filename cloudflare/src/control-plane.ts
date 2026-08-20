@@ -476,6 +476,29 @@ export async function destroySandboxBounded(
   }
 }
 
+export async function revokeCapabilityBounded(
+  dependencies: WorkerDependencies,
+  env: Env,
+  runId: string,
+  timeoutMs: number = LIMITS.destroyTimeoutMs,
+): Promise<void> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new RequestProblem(500, "sandbox_cleanup_timeout")),
+      timeoutMs,
+    );
+  });
+  try {
+    await Promise.race([dependencies.revokeCapability(env, runId), timeout]);
+  } catch (error) {
+    if (error instanceof RequestProblem) throw error;
+    throw new RequestProblem(500, "sandbox_cleanup_failed");
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
 const ARTIFACT_KEYS = ["request", "events", "checkpoint", "patch", "test_log", "result"] as const;
 
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
@@ -556,6 +579,7 @@ function validateSandboxResponse(
   value: unknown,
   runId: string,
   expectedSuccess: boolean,
+  expected: Pick<ValidatedRun, "allowedPaths" | "checks">,
 ): Record<string, unknown> {
   if (
     !isObject(value) ||
@@ -602,9 +626,48 @@ function validateSandboxResponse(
   ) {
     throw new RequestProblem(502, "invalid_sandbox_response");
   }
+  const verification = validateVerification(runResult.verification);
+  const seenChecks = new Set<number>();
+  for (const item of verification) {
+    const name = item.name as string;
+    const match = /^check-([1-9][0-9]*)$/u.exec(name);
+    const index = match === null ? -1 : Number(match[1]) - 1;
+    const expectedArgv = expected.checks[index];
+    const argv = item.argv as string[];
+    if (
+      index < 0 ||
+      expectedArgv === undefined ||
+      seenChecks.has(index) ||
+      argv.length !== expectedArgv.length ||
+      !expectedArgv.every((part, position) => part === argv[position])
+    ) {
+      throw new RequestProblem(502, "invalid_sandbox_response");
+    }
+    seenChecks.add(index);
+  }
+  if (
+    expectedSuccess &&
+    (verification.length !== expected.checks.length ||
+      verification.some((item) => item.ok !== true || item.exit_code !== 0))
+  ) {
+    throw new RequestProblem(502, "invalid_sandbox_response");
+  }
+  const changedFiles = runResult.changed_files as string[];
+  if (
+    changedFiles.some(
+      (path) =>
+        !expected.allowedPaths.some((allowed) =>
+          allowed.endsWith("/**")
+            ? path.startsWith(`${allowed.slice(0, -3)}/`)
+            : path === allowed,
+        ),
+    )
+  ) {
+    throw new RequestProblem(502, "invalid_sandbox_response");
+  }
   const validatedResult = {
     ...runResult,
-    verification: validateVerification(runResult.verification),
+    verification,
     usage: validateUsage(runResult.usage),
     artifacts: validateArtifactMap(runResult.artifacts, { contents: false }),
   };
@@ -711,7 +774,7 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
     } catch {
       throw new RequestProblem(502, "invalid_sandbox_response");
     }
-    const output = validateSandboxResponse(result, runId, terminalSuccess);
+    const output = validateSandboxResponse(result, runId, terminalSuccess, input);
     return json(
       {
         runId,
@@ -724,7 +787,7 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
     let cleanupFailed = false;
     if (capabilityActivated) {
       try {
-        await dependencies.revokeCapability(env, runId);
+        await revokeCapabilityBounded(dependencies, env, runId);
       } catch {
         cleanupFailed = true;
       }

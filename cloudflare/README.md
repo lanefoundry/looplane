@@ -41,6 +41,11 @@ exit/result/schema combination is a fail-closed `502`. The route is currently sy
 durable run-artifact/status/cancel API. Capability revocation and Sandbox teardown happen before the
 response returns.
 
+A completed response is accepted only when every requested check appears exactly once with the
+same argv and a passing exit status, and every reported changed file is covered by the request's
+validated `allowedPaths`. Failed/cancelled responses may contain partial checks, but any reported
+entry must still map exactly to the request contract.
+
 Accepted check argv must exactly equal one of:
 
 - `git diff --check`
