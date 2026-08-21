@@ -15,9 +15,17 @@ from urllib.parse import urlsplit
 
 import typer
 import uvicorn
+from typer.core import TyperCommand, TyperGroup
 
 from coding_agent.approvals import TTYApprovalPolicy
 from coding_agent.claude_backend import ClaudeCodeBackend
+from coding_agent.cli_config import (
+    SUPPORTED_PROVIDERS,
+    CliConfig,
+    default_cli_config_path,
+    load_cli_config,
+    save_cli_config,
+)
 from coding_agent.codex_backend import CodexCliBackend
 from coding_agent.codex_oauth import (
     CodexCredentialManager,
@@ -45,10 +53,75 @@ from coding_agent.models import (
 from coding_agent.oauth_login import parse_codex_callback, wait_for_codex_callback
 from coding_agent.session import SessionStore, SessionValidationError
 
+
+class DefaultCommandGroup(TyperGroup):
+    """Route command-less invocations to the hidden interactive command."""
+
+    def get_usage(self, ctx) -> str:
+        return (
+            f"Usage: {ctx.command_path} [OPTIONS] [PROMPT]\n"
+            f"       {ctx.command_path} COMMAND [ARGS]...\n"
+        )
+
+    def parse_args(self, ctx, args: list[str]) -> list[str]:
+        routed = list(args)
+        known_commands = set(self.commands)
+        group_options = {"--help", "-h", "--install-completion", "--show-completion"}
+        completion_active = any(
+            os.environ.get(name)
+            for name in ("_PCA_COMPLETE", "_CODING_AGENT_COMPLETE", "_ROOT_COMPLETE")
+        )
+        if not completion_active and (
+            not routed
+            or (routed[0] not in known_commands and routed[0] not in group_options)
+        ):
+            routed.insert(0, "chat")
+        return super().parse_args(ctx, routed)
+
+    def shell_complete(self, ctx, incomplete: str):
+        results = super().shell_complete(ctx, incomplete)
+        chat_command = self.commands.get("chat")
+        if chat_command is None or not incomplete.startswith("-"):
+            return results
+        combined = [*results, *chat_command.shell_complete(ctx, incomplete)]
+        unique = []
+        seen: set[tuple[str, str | None, str]] = set()
+        for item in combined:
+            identity = (item.value, item.help, item.type)
+            if identity not in seen:
+                seen.add(identity)
+                unique.append(item)
+        return unique
+
+
+class DefaultChatContext(typer.Context):
+    """Present the hidden default command as the root command in diagnostics."""
+
+    @property
+    def command_path(self) -> str:
+        if self.parent is not None:
+            return self.parent.command_path
+        return super().command_path
+
+
+class DefaultChatCommand(TyperCommand):
+    """Hide the internal routing command from public usage text."""
+
+    context_class = DefaultChatContext
+
+    def get_usage(self, ctx) -> str:
+        command_path = ctx.command_path.removesuffix(" chat")
+        return f"Usage: {command_path} [OPTIONS] [PROMPT]\n"
+
 app = typer.Typer(
+    cls=DefaultCommandGroup,
     no_args_is_help=False,
-    invoke_without_command=True,
-    help="Interactive coding agent with a bounded headless harness.",
+    help="A familiar interactive coding agent with a bounded headless harness.",
+    epilog=(
+        "Daily use: pca [PROMPT] | pca -p [PROMPT] | pca exec [PROMPT] | "
+        "pca resume. Primary options: -C/--cd/--repo, -m/--model, --provider, "
+        "--api-url, --check. Save non-secret defaults with pca config."
+    ),
 )
 auth_app = typer.Typer(help="Manage provider credentials owned by this application.")
 backend_app = typer.Typer(help="Run a clearly separated external agent backend.")
@@ -65,7 +138,6 @@ def _default_run_root() -> Path:
 
 
 DEFAULT_RUN_ROOT = _default_run_root()
-DEFAULT_REPOSITORY = Path.cwd()
 
 
 def _codex_credential_path() -> Path:
@@ -88,16 +160,55 @@ def _show_result(result: RunResult) -> None:
     typer.echo(f"patch: {result.artifacts['patch']}")
 
 
-@app.callback(invoke_without_command=True)
-def main(
-    context: typer.Context,
+def _prompt_or_task(prompt: str | None, task: str | None) -> str | None:
+    if prompt is not None and task is not None:
+        raise typer.BadParameter("use either positional PROMPT or --task, not both")
+    return prompt if prompt is not None else task
+
+
+def _resolve_cli_settings(
+    *,
+    provider: str | None,
+    model: str | None,
+    api_url: str | None,
+) -> tuple[str, str | None, str | None]:
+    try:
+        config = load_cli_config()
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
+
+    model_provider: str | None = None
+    if model and "/" in model:
+        candidate, unqualified = model.split("/", 1)
+        if candidate in SUPPORTED_PROVIDERS and unqualified:
+            model_provider = candidate
+            model = unqualified
+    if provider and model_provider and provider != model_provider:
+        raise typer.BadParameter(
+            f"--provider {provider} conflicts with model prefix {model_provider}/"
+        )
+    resolved_provider = provider or model_provider or config.provider or "openai-compatible"
+    use_config_defaults = config.provider is None or resolved_provider == config.provider
+    resolved_api_url = api_url or (config.api_url if use_config_defaults else None)
+    resolved_model = model or (config.model if use_config_defaults else None)
+    return resolved_provider, resolved_model, resolved_api_url
+
+
+@app.command("chat", hidden=True, cls=DefaultChatCommand)
+def chat(
+    prompt: Annotated[str | None, typer.Argument(help="Initial task prompt")] = None,
     repository: Annotated[
-        Path, typer.Option("--repo", exists=True, file_okay=False)
-    ] = DEFAULT_REPOSITORY,
+        Path | None,
+        typer.Option("--cd", "-C", "--repo", exists=True, file_okay=False),
+    ] = None,
     instruction: Annotated[str | None, typer.Option("--task", "-t")] = None,
+    print_mode: Annotated[
+        bool,
+        typer.Option("--print", "-p", help="Run non-interactively and print JSON."),
+    ] = False,
     provider: Annotated[
-        str, typer.Option("--provider", "-p", envvar="PCA_PROVIDER")
-    ] = "openai-compatible",
+        str | None, typer.Option("--provider", envvar="PCA_PROVIDER")
+    ] = None,
     model: Annotated[
         str | None, typer.Option("--model", "-m", envvar="CODING_AGENT_MODEL")
     ] = None,
@@ -116,17 +227,41 @@ def main(
             help="Enable the separately authenticated experimental ChatGPT/Codex transport.",
         ),
     ] = False,
+    allow_custom_provider_endpoint: Annotated[
+        bool,
+        typer.Option(
+            "--allow-custom-provider-endpoint",
+            help="Allow native-provider credentials to be sent to a non-official HTTPS host.",
+        ),
+    ] = False,
+    unsafe_local_exec: Annotated[
+        bool,
+        typer.Option(
+            "--unsafe-local-exec",
+            help="Allow exact checks from this trusted repository to run on the host.",
+        ),
+    ] = False,
 ) -> None:
-    """Start this agent's own interactive loop when no subcommand is supplied."""
+    """Start this agent's own loop in the current repository."""
 
-    if context.invoked_subcommand is not None:
-        return
+    if print_mode and prompt in SUPPORTED_PROVIDERS and provider is None:
+        raise typer.BadParameter(
+            "-p now means --print; select a provider with --provider instead"
+        )
+    instruction = _prompt_or_task(prompt, instruction)
     if not sys.stdin.isatty() and instruction is None:
-        raise typer.BadParameter("--task is required when stdin is not interactive")
+        raise typer.BadParameter("PROMPT is required when stdin is not interactive")
     instruction = instruction or typer.prompt("What should I change?")
-    if not model:
+    provider, model, api_url = _resolve_cli_settings(
+        provider=provider,
+        model=model,
+        api_url=api_url,
+    )
+    if model is None:
         if not sys.stdin.isatty():
-            raise typer.BadParameter("--model is required when stdin is not interactive")
+            raise typer.BadParameter(
+                "--model is required when stdin is not interactive and no config default exists"
+            )
         model = typer.prompt("Model")
     try:
         selected_model = _model_from_env(
@@ -134,11 +269,11 @@ def main(
             model=model,
             base_url=api_url,
             tool_calling=True,
-            allow_custom_provider_endpoint=api_url is not None,
+            allow_custom_provider_endpoint=allow_custom_provider_endpoint,
             experimental_subscription=experimental_subscription,
         )
         task = TaskContract(
-            repository=repository,
+            repository=repository or Path.cwd(),
             instruction=instruction,
             allowed_paths=("**",),
             verification=_commands(check),
@@ -149,8 +284,11 @@ def main(
                     task,
                     selected_model,
                     run_root,
-                    approval_policy=TTYApprovalPolicy(sys.stdin, sys.stderr),
-                    event_sink=ConsoleEventSink(sys.stderr),
+                    allow_unsafe_local_exec=unsafe_local_exec,
+                    approval_policy=(
+                        None if print_mode else TTYApprovalPolicy(sys.stdin, sys.stderr)
+                    ),
+                    event_sink=None if print_mode else ConsoleEventSink(sys.stderr),
                 ),
                 selected_model,
             )
@@ -158,7 +296,10 @@ def main(
     except (UnsafeLocalExecutionError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
-    _show_result(result)
+    if print_mode:
+        typer.echo(result.model_dump_json(indent=2))
+    else:
+        _show_result(result)
     if result.status != "completed":
         raise typer.Exit(code=1)
 
@@ -253,10 +394,14 @@ def _model_from_env(
 
 @backend_app.command("claude-code")
 def run_claude_code_backend(
-    instruction: Annotated[str, typer.Option("--task", "-t")],
+    prompt: Annotated[str | None, typer.Argument(help="Delegated coding task")] = None,
+    instruction: Annotated[
+        str | None, typer.Option("--task", "-t", help="Compatibility alias for PROMPT")
+    ] = None,
     repository: Annotated[
-        Path, typer.Option("--repo", exists=True, file_okay=False)
-    ] = DEFAULT_REPOSITORY,
+        Path | None,
+        typer.Option("--cd", "-C", "--repo", exists=True, file_okay=False),
+    ] = None,
     check: Annotated[
         list[str] | None, typer.Option("--check", help="Exact final verification argv; repeatable")
     ] = None,
@@ -293,6 +438,9 @@ def run_claude_code_backend(
 ) -> None:
     """Let official Claude Code edit a disposable clone, then audit it with PCA."""
 
+    instruction = _prompt_or_task(prompt, instruction)
+    if instruction is None:
+        raise typer.BadParameter("PROMPT or --task is required")
     if not experimental_subscription:
         raise typer.BadParameter(
             "Claude Code delegation is local-only and experimental; pass "
@@ -307,7 +455,7 @@ def run_claude_code_backend(
         result = asyncio.run(
             ExternalCodingRunner(
                 TaskContract(
-                    repository=repository,
+                    repository=repository or Path.cwd(),
                     instruction=instruction,
                     allowed_paths=tuple(allowed_path or ("**",)),
                     verification=_commands(check),
@@ -335,10 +483,14 @@ def run_claude_code_backend(
 
 @backend_app.command("codex-cli")
 def run_codex_cli_backend(
-    instruction: Annotated[str, typer.Option("--task", "-t")],
+    prompt: Annotated[str | None, typer.Argument(help="Delegated coding task")] = None,
+    instruction: Annotated[
+        str | None, typer.Option("--task", "-t", help="Compatibility alias for PROMPT")
+    ] = None,
     repository: Annotated[
-        Path, typer.Option("--repo", exists=True, file_okay=False)
-    ] = DEFAULT_REPOSITORY,
+        Path | None,
+        typer.Option("--cd", "-C", "--repo", exists=True, file_okay=False),
+    ] = None,
     check: Annotated[
         list[str] | None, typer.Option("--check", help="Exact final verification argv; repeatable")
     ] = None,
@@ -375,6 +527,9 @@ def run_codex_cli_backend(
 ) -> None:
     """Let official Codex CLI edit a sandboxed clone, then audit it with PCA."""
 
+    instruction = _prompt_or_task(prompt, instruction)
+    if instruction is None:
+        raise typer.BadParameter("PROMPT or --task is required")
     if not experimental_subscription:
         raise typer.BadParameter(
             "Codex CLI delegation is local-only and experimental; pass "
@@ -389,7 +544,7 @@ def run_codex_cli_backend(
         result = asyncio.run(
             ExternalCodingRunner(
                 TaskContract(
-                    repository=repository,
+                    repository=repository or Path.cwd(),
                     instruction=instruction,
                     allowed_paths=tuple(allowed_path or ("**",)),
                     verification=_commands(check),
@@ -548,18 +703,26 @@ def resume(
     experimental_subscription: Annotated[
         bool, typer.Option("--experimental-subscription")
     ] = False,
+    allow_custom_provider_endpoint: Annotated[
+        bool, typer.Option("--allow-custom-provider-endpoint")
+    ] = False,
 ) -> None:
     """Resume a validated non-terminal session in its existing disposable workspace."""
 
     try:
         run_dir = _resolve_resume_dir(run_root, session)
         manifest = asyncio.run(SessionStore(run_dir).load())
+        _, _, api_url = _resolve_cli_settings(
+            provider=manifest.provider_name,
+            model=manifest.model_id,
+            api_url=api_url,
+        )
         selected_model = _model_from_env(
             provider=manifest.provider_name,
             model=manifest.model_id,
             base_url=api_url,
             tool_calling=True,
-            allow_custom_provider_endpoint=api_url is not None,
+            allow_custom_provider_endpoint=allow_custom_provider_endpoint,
             experimental_subscription=experimental_subscription,
         )
         projection = LiveEventProjection(
@@ -582,12 +745,57 @@ def resume(
         raise typer.Exit(code=1)
 
 
+@app.command("config")
+def configure(
+    provider: Annotated[
+        str | None,
+        typer.Option("--provider", help="Default provider; credentials are never stored."),
+    ] = None,
+    model: Annotated[str | None, typer.Option("--model", "-m")] = None,
+    api_url: Annotated[
+        str | None,
+        typer.Option("--api-url", help="Default provider endpoint; never include credentials."),
+    ] = None,
+    clear_api_url: Annotated[
+        bool, typer.Option("--clear-api-url", help="Remove the saved API URL default.")
+    ] = False,
+) -> None:
+    """Show or update non-secret provider defaults."""
+
+    path = default_cli_config_path()
+    try:
+        current = load_cli_config(path)
+        if provider is None and model is None and api_url is None and not clear_api_url:
+            typer.echo(f"config: {path}")
+            typer.echo(f"provider: {current.provider or '(not set)'}")
+            typer.echo(f"model: {current.model or '(not set)'}")
+            typer.echo(f"api_url: {current.api_url or '(not set)'}")
+            return
+        provider_changed = provider is not None and provider != current.provider
+        updated = CliConfig(
+            provider=provider if provider is not None else current.provider,
+            model=(model if model is not None else (None if provider_changed else current.model)),
+            api_url=(
+                None
+                if clear_api_url or (provider_changed and api_url is None)
+                else (api_url if api_url is not None else current.api_url)
+            ),
+        )
+        asyncio.run(save_cli_config(updated, path))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"error: config could not be saved: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"Saved non-secret defaults to {path}")
+
+
 @app.command("gateway")
 def serve_gateway(
-    model: Annotated[str, typer.Option("--model", "-m", envvar="CODING_AGENT_MODEL")],
+    model: Annotated[
+        str | None, typer.Option("--model", "-m", envvar="CODING_AGENT_MODEL")
+    ] = None,
     provider: Annotated[
-        str, typer.Option("--provider", "-p", envvar="PCA_PROVIDER")
-    ] = "openai-compatible",
+        str | None, typer.Option("--provider", envvar="PCA_PROVIDER")
+    ] = None,
     api_url: Annotated[
         str | None, typer.Option("--api-url", envvar="PCA_API_URL")
     ] = None,
@@ -599,6 +807,9 @@ def serve_gateway(
     experimental_subscription: Annotated[
         bool, typer.Option("--experimental-subscription")
     ] = False,
+    allow_custom_provider_endpoint: Annotated[
+        bool, typer.Option("--allow-custom-provider-endpoint")
+    ] = False,
 ) -> None:
     """Expose one configured provider through a bounded OpenAI Chat gateway."""
 
@@ -606,36 +817,54 @@ def serve_gateway(
         raise typer.BadParameter(
             "the MVP gateway only binds loopback; put an authenticated TLS proxy in front later"
         )
+    provider, model, api_url = _resolve_cli_settings(
+        provider=provider,
+        model=model,
+        api_url=api_url,
+    )
+    if model is None:
+        raise typer.BadParameter("--model is required when no config default exists")
     selected_model = _model_from_env(
         provider=provider,
         model=model,
         base_url=api_url,
         tool_calling=True,
-        allow_custom_provider_endpoint=api_url is not None,
+        allow_custom_provider_endpoint=allow_custom_provider_endpoint,
         experimental_subscription=experimental_subscription,
     )
     gateway = ModelGateway(selected_model, bearer_token=bearer_token)
     uvicorn.run(gateway, host=host, port=port, lifespan="on")
 
 
-@app.command()
+@app.command("exec")
+@app.command("run")
 def run(
-    repository: Annotated[Path, typer.Option("--repo", exists=True, file_okay=False)],
-    instruction: Annotated[str, typer.Option("--task", help="Bounded coding task")],
-    model: Annotated[str, typer.Option("--model", envvar="CODING_AGENT_MODEL")],
+    prompt: Annotated[str | None, typer.Argument(help="Bounded coding task")] = None,
+    repository: Annotated[
+        Path | None,
+        typer.Option("--cd", "-C", "--repo", exists=True, file_okay=False),
+    ] = None,
+    instruction: Annotated[
+        str | None, typer.Option("--task", "-t", help="Compatibility alias for PROMPT")
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", "-m", envvar="CODING_AGENT_MODEL")
+    ] = None,
     check: Annotated[
-        list[str], typer.Option("--check", help="Exact verification argv; repeatable")
-    ],
+        list[str] | None,
+        typer.Option("--check", help="Exact verification argv; repeatable"),
+    ] = None,
     provider: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--provider",
+            envvar="PCA_PROVIDER",
             help=(
                 "openai-compatible, ollama, openai-codex, anthropic, gemini, "
                 "or workers-ai"
             ),
         ),
-    ] = "openai-compatible",
+    ] = None,
     allowed_path: Annotated[
         list[str] | None,
         typer.Option("--allowed-path", help="Allowed repository glob; repeatable"),
@@ -651,7 +880,7 @@ def run(
     tool_calling: Annotated[
         bool,
         typer.Option(
-            "--tool-calling",
+            "--tool-calling/--no-tool-calling",
             help="Assert that the configured provider model/API supports tool calling.",
         ),
     ] = False,
@@ -673,11 +902,21 @@ def run(
         ),
     ] = False,
 ) -> None:
-    """Run one local task using configured environment or app-owned provider credentials."""
+    """Run one non-interactive task (Codex-style `exec`; `run` remains an alias)."""
 
+    instruction = _prompt_or_task(prompt, instruction)
+    if instruction is None:
+        raise typer.BadParameter("PROMPT or --task is required")
+    provider, model, base_url = _resolve_cli_settings(
+        provider=provider,
+        model=model,
+        api_url=base_url,
+    )
+    if model is None:
+        raise typer.BadParameter("--model is required when no config default exists")
     commands = _commands(check)
     task = TaskContract(
-        repository=repository,
+        repository=repository or Path.cwd(),
         instruction=instruction,
         allowed_paths=tuple(allowed_path or ("**",)),
         verification=commands,

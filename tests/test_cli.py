@@ -73,7 +73,227 @@ def test_cli_help_exposes_interactive_options_headless_run_and_resume() -> None:
     assert result.exit_code == 0
     assert "--api-url" in result.output
     assert "resume" in result.output
+    assert "exec" in result.output
+    assert "config" in result.output
     assert "run" in result.output
+
+
+def test_positional_prompt_cd_alias_and_print_mode_use_own_loop(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    model = ScriptedModel([ModelTurn(content="No source change was needed.")])
+    captured: dict[str, object] = {}
+    original_runner = cli.AgentRunner
+
+    class CapturingRunner(original_runner):
+        def __init__(self, task, selected_model, run_root, **kwargs) -> None:
+            captured["task"] = task
+            captured["kwargs"] = kwargs
+            super().__init__(task, selected_model, run_root, **kwargs)
+
+    monkeypatch.setattr(cli, "AgentRunner", CapturingRunner)
+    monkeypatch.setattr(cli, "_model_from_env", lambda **_: model)
+    monkeypatch.setenv("PCA_CONFIG", str(tmp_path / "missing-config.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "-p",
+            "-C",
+            str(tiny_bug_repo),
+            "--model",
+            "scripted",
+            "--unsafe-local-exec",
+            "No source change is needed.",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert '"status": "completed"' in result.output
+    assert captured["task"].repository == tiny_bug_repo
+    assert captured["task"].instruction == "No source change is needed."
+    assert captured["kwargs"]["approval_policy"] is None
+
+
+def test_known_subcommand_wins_over_default_prompt_routing(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        cli.app,
+        ["resume", "last", "--run-root", str(tmp_path / "missing")],
+    )
+
+    assert result.exit_code == 2
+    assert "no such command" not in result.output.lower()
+    assert "PROMPT" not in result.output
+
+
+def test_config_command_and_cli_env_config_precedence(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "config.json"
+    monkeypatch.setenv("PCA_CONFIG", str(path))
+    saved = CliRunner().invoke(
+        cli.app,
+        [
+            "config",
+            "--provider",
+            "ollama",
+            "--model",
+            "qwen3:4b",
+            "--api-url",
+            "http://127.0.0.1:11434/v1",
+        ],
+    )
+    shown = CliRunner().invoke(cli.app, ["config"])
+
+    assert saved.exit_code == 0, saved.output
+    assert shown.exit_code == 0
+    assert "provider: ollama" in shown.output
+    assert "model: qwen3:4b" in shown.output
+    assert "api_key" not in path.read_text()
+    assert cli._resolve_cli_settings(provider=None, model=None, api_url=None) == (
+        "ollama",
+        "qwen3:4b",
+        "http://127.0.0.1:11434/v1",
+    )
+    assert cli._resolve_cli_settings(
+        provider="anthropic",
+        model="claude-test",
+        api_url="https://proxy.example/v1",
+    ) == ("anthropic", "claude-test", "https://proxy.example/v1")
+    assert cli._resolve_cli_settings(
+        provider=None,
+        model="gemini/gemini-test",
+        api_url=None,
+    ) == ("gemini", "gemini-test", None)
+
+    switched = CliRunner().invoke(
+        cli.app,
+        ["config", "--provider", "openai-compatible"],
+    )
+    assert switched.exit_code == 0, switched.output
+    switched_config = cli.load_cli_config(path)
+    assert switched_config.provider == "openai-compatible"
+    assert switched_config.model is None
+    assert switched_config.api_url is None
+
+
+def test_root_completion_option_is_not_routed_as_a_prompt() -> None:
+    result = CliRunner().invoke(cli.app, ["--show-completion"])
+
+    assert result.exit_code == 1
+    assert "Shell" in result.output
+    assert "PROMPT is required" not in result.output
+
+
+def test_root_shell_completion_lists_subcommands_instead_of_routing_to_chat() -> None:
+    result = CliRunner().invoke(
+        cli.app,
+        [],
+        env={
+            "_ROOT_COMPLETE": "complete_bash",
+            "COMP_WORDS": "root ",
+            "COMP_CWORD": "1",
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "exec" in result.output
+    assert "resume" in result.output
+    assert "config" in result.output
+
+
+def test_root_shell_completion_includes_default_prompt_options() -> None:
+    runner = CliRunner()
+    for words, word_index in (("root --", "1"), ("root -p --", "2"), ("root Fix --", "2")):
+        result = runner.invoke(
+            cli.app,
+            [],
+            env={
+                "_ROOT_COMPLETE": "complete_bash",
+                "COMP_WORDS": words,
+                "COMP_CWORD": word_index,
+            },
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "--cd" in result.output
+        assert "--model" in result.output
+        assert "--provider" in result.output
+        assert "--check" in result.output
+
+
+def test_routed_help_never_exposes_hidden_chat_command() -> None:
+    result = CliRunner().invoke(cli.app, ["-p", "--help"])
+
+    assert result.exit_code == 0
+    assert "Usage: root [OPTIONS] [PROMPT]" in result.output
+    assert "root chat" not in result.output
+
+
+def test_legacy_short_provider_option_has_actionable_migration_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PCA_CONFIG", str(tmp_path / "missing.json"))
+    result = CliRunner().invoke(
+        cli.app,
+        ["-p", "ollama", "--model", "qwen3:4b", "--task", "Fix it"],
+    )
+
+    assert result.exit_code == 2
+    assert "-p now means --print" in result.output
+    assert "--provider" in result.output
+    assert "pca chat" not in result.output
+
+
+def test_exec_positional_and_legacy_run_flags_share_headless_contract(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    tasks = []
+
+    class FakeRunner:
+        def __init__(self, task, _model, _run_root, **_kwargs) -> None:
+            tasks.append(task)
+
+        async def run(self):
+            return RunResult(
+                run_id="headless-run",
+                task_id="headless-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    monkeypatch.setattr(cli, "AgentRunner", FakeRunner)
+    model_options = []
+
+    def fake_model(**kwargs):
+        model_options.append(kwargs)
+        return ScriptedModel([ModelTurn(content="unused")])
+
+    monkeypatch.setattr(cli, "_model_from_env", fake_model)
+    monkeypatch.setenv("PCA_CONFIG", str(tmp_path / "missing.json"))
+
+    modern = CliRunner().invoke(
+        cli.app,
+        ["exec", "Fix it", "-C", str(tiny_bug_repo), "--model", "scripted"],
+    )
+    legacy = CliRunner().invoke(
+        cli.app,
+        [
+            "run",
+            "--task",
+            "Fix it again",
+            "--repo",
+            str(tiny_bug_repo),
+            "--model",
+            "scripted",
+        ],
+    )
+
+    assert modern.exit_code == 0, modern.output
+    assert legacy.exit_code == 0, legacy.output
+    assert [task.instruction for task in tasks] == ["Fix it", "Fix it again"]
+    assert all(task.repository == tiny_bug_repo for task in tasks)
+    assert [options["tool_calling"] for options in model_options] == [False, False]
 
 
 def test_ollama_preset_retains_a_bounded_tool_turn_budget(monkeypatch) -> None:

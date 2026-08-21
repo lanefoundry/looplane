@@ -4,8 +4,8 @@ Temporary engineering name for a Python-first coding agent. It works from a fixe
 disposable clone, gives a model a small bounded tool set, reruns deterministic checks, and returns a
 patch plus an auditable run bundle. The source repository is never edited.
 
-The public product name and Cloudflare deployment are deliberately deferred until the local
-execution contract is proven.
+The public product name remains deliberately deferred. The local CLI is usable today, and the
+separate `cloudflare/` control plane contains the bounded Worker + Sandbox deployment slice.
 
 ## Current capabilities
 
@@ -81,16 +81,32 @@ can reliably complete arbitrary repository tasks.
 ## Interactive CLI
 
 Bare `pca` runs this project's Python loop; it does not launch Codex or Claude Code behind the
-scenes. With local Ollama:
+scenes. Its daily surface follows the familiar Claude Code, Codex, Pi, and OpenCode conventions:
 
 ```bash
-uv run pca \
-  --repo /absolute/path/to/a/git/repository \
-  --provider ollama \
-  --model qwen3:4b \
-  --task 'Fix the failing test without changing its intent.' \
-  --check 'pytest -q'
+# Save non-secret defaults once. API keys remain environment variables.
+pca config --provider ollama --model qwen3:4b
+
+cd /path/to/a/git/repository
+pca
+pca 'Fix the failing test without changing its intent.' --check 'pytest -q'
+pca -C /path/to/another/repo 'Explain and fix the failure.'
 ```
+
+For a one-off model selection, `-m ollama/qwen3:4b` also selects both the provider and model,
+matching the compact provider/model form used by Pi and OpenCode.
+
+`pca [PROMPT]` is interactive, `pca -p [PROMPT]` and `pca exec [PROMPT]` are non-interactive,
+and `pca resume` resumes the latest validated non-terminal session. `pca run`, `--task`, and
+`--repo` remain compatibility aliases. `-p` now means `--print`, as it does in Claude Code and Pi;
+use the long `--provider` option or a saved config default to choose a provider.
+Headless `-p`/`exec` checks still require `--unsafe-local-exec`; `exec` also requires
+`--tool-calling` unless the chosen transport is intentionally text-only.
+
+The config path is `${PCA_CONFIG:-${XDG_CONFIG_HOME:-~/.config}/python-coding-agent/config.json}`.
+Its strict schema contains only `provider`, `model`, and `api_url`; unknown fields, embedded URL
+credentials, and symlink config files are rejected. Resolution order is command line, environment,
+saved config, then built-in default.
 
 Read tools run automatically. A patch or repository-code command is shown in the terminal and
 requires `once`, `session`, `deny`, or `cancel`. An interrupted run keeps its disposable workspace:
@@ -107,8 +123,10 @@ For an API key or an existing OpenAI Chat-compatible proxy:
 
 ```bash
 export OPENAI_API_KEY='...'
-uv run pca --provider openai-compatible --api-url https://gateway.example/v1 \
-  --model your-model --repo /path/to/repo --task '...' --check 'pytest -q'
+pca config --provider openai-compatible --model your-model \
+  --api-url https://gateway.example/v1
+export OPENAI_API_KEY='...'
+pca -C /path/to/repo 'Fix the failing test.' --check 'pytest -q'
 ```
 
 Remote API URLs require HTTPS. Plain HTTP is accepted only for exact loopback hosts; credentials,
@@ -202,9 +220,8 @@ The run directory must be outside the target source repository.
 export OPENAI_API_KEY='...'
 export CODING_AGENT_MODEL='your-tool-capable-model'
 
-uv run coding-agent run \
-  --repo /absolute/path/to/a/git/repository \
-  --task 'Fix the bounded bug and keep the existing behavior.' \
+pca exec 'Fix the bounded bug and keep the existing behavior.' \
+  -C /absolute/path/to/a/git/repository \
   --allowed-path 'src/**' \
   --allowed-path 'tests/**' \
   --check 'pytest -q' \
@@ -230,14 +247,15 @@ trusted repository. Untrusted work requires the later Docker/Cloudflare Sandbox 
 | Gemini | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | Cloudflare Workers AI | `workers-ai` | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` |
 
-For `pca run`, `--api-url` is the preferred spelling and `--base-url` remains a compatibility
-alias. Remote endpoints require HTTPS and an explicit provider credential; a local Ollama process
-never receives `OLLAMA_API_KEY` even when it exists in the parent environment.
+For `pca exec` and its `pca run` compatibility alias, `--api-url` is the preferred spelling and
+`--base-url` remains a compatibility alias. Remote endpoints require HTTPS and an explicit
+provider credential; a local Ollama process never receives `OLLAMA_API_KEY` even when it exists in
+the parent environment.
 
-Model capabilities vary across every provider. Tool calling remains fail-closed unless the
-configured model/API path has been verified and `--tool-calling` is supplied. Native Anthropic,
-Gemini, and Workers AI credentials are restricted to their official HTTPS hosts; a custom native
-endpoint additionally requires the explicit `--allow-custom-provider-endpoint` acknowledgement.
+Model capabilities vary across every provider. Headless `exec`/`run` keeps tool calling fail-closed
+until `--tool-calling` explicitly asserts support. Native Anthropic, Gemini, and Workers AI
+credentials are restricted to their official HTTPS hosts; a custom native endpoint additionally
+requires the explicit `--allow-custom-provider-endpoint` acknowledgement.
 
 ## Run bundle
 
@@ -264,9 +282,10 @@ layer protect the source worktree and narrow tool behavior, but they are not a s
 process isolation. Codex CLI adds its own `workspace-write` sandbox; the local Claude Code path has
 an exact file-tool allowlist and post-run patch enforcement, but the official child still receives
 the user's `HOME` for its own authentication and is not filesystem-isolated by PCA. Do not use
-these local backends on hostile repositories. The next cloud milestone will put the project-owned
-Python runtime behind a thin Cloudflare Worker and Cloudflare Sandbox; consumer subscription
-logins will not be relayed there.
+these local backends on hostile repositories. The separate `cloudflare/` service now packages the
+project-owned Python runtime behind a thin Worker and Cloudflare Sandbox with a run-scoped model
+capability. It remains synchronous and ephemeral; consumer subscription logins are not relayed
+there. See [cloudflare/README.md](cloudflare/README.md) for its exact API and deployment boundary.
 
 See [progress.md](progress.md) for current acceptance criteria and
 [docs/stages](docs/stages/README.md) for milestone evidence.
