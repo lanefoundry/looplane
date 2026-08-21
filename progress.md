@@ -112,7 +112,7 @@ another coding-agent CLI.
 - [x] Close M5 with stage documentation, one QuidProQuo practice article, independent review,
       isolated staged-snapshot verification, and complete commits.
 
-## Active milestone: M6 Cloudflare Sandbox service
+## Completed milestone: M6 Cloudflare Sandbox service
 
 - [x] Keep HTTP coordination and provider credentials in a Worker; pass only a short-lived,
       run-scoped model capability into the Sandbox container.
@@ -125,6 +125,22 @@ another coding-agent CLI.
 - [x] Retain Cloudflare capability/evidence gaps honestly: no consumer subscription relay, no
       unbounded egress, and no production claim without a real deployed run.
 - [x] Close M6 with stage documentation, one QuidProQuo practice article, independent review,
+      verification, and complete commits.
+
+## Completed milestone: M7 familiar CLI ergonomics
+
+- [x] Accept the task as a positional prompt and default to the current Git repository:
+      `pca "fix the failing tests"`.
+- [x] Match familiar coding-agent entry points: bare interactive `pca`, non-interactive
+      `pca -p`, `pca exec`, `pca resume`, and `pca -C/--cd`.
+- [x] Preserve `pca run`, `--task`, and `--repo` as compatibility aliases with explicit migration
+      errors for any reassigned short option.
+- [x] Persist only non-secret provider/model/API URL defaults with CLI > environment > config
+      precedence; never store API keys or OAuth credentials in CLI config.
+- [x] Keep approval, disposable-workspace, exact-check, session, and headless safety semantics
+      unchanged while shortening the command surface.
+- [x] Add command-routing/config/help compatibility tests and run a real local CLI smoke test.
+- [x] Close M7 with stage documentation, one QuidProQuo practice article, independent review,
       verification, and complete commits.
 
 ## Explicitly deferred after M2
