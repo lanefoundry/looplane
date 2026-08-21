@@ -143,6 +143,23 @@ another coding-agent CLI.
 - [x] Close M7 with stage documentation, one QuidProQuo practice article, independent review,
       verification, and complete commits.
 
+## Active milestone: M8 first-run onboarding and model selection
+
+- [x] Replace the raw `Model:` fallback with a provider-aware first-run setup when a TTY has no
+      configured provider/model.
+- [x] Detect a reachable loopback Ollama service and offer its installed models without executing
+      repository code or reading another CLI's credentials.
+- [x] Save only the selected non-secret provider/model/API URL through the existing strict `0600`
+      config contract; keep API keys and OAuth grants in their existing stores/environment.
+- [x] Let `pca config --interactive` rerun setup, and print actionable non-TTY errors that show the
+      exact config or flag commands instead of prompting.
+- [x] Use a natural task prompt and clearly distinguish coding-agent tasks from general chat without
+      adding a full-screen TUI or changing `AgentRunner`.
+- [x] Test first-run, cancellation, local discovery, configured startup, non-TTY behavior, and
+      provider/model validation; verify one real bare-CLI setup path.
+- [x] Close M8 with stage documentation, one QuidProQuo practice article update, independent review,
+      verification, and complete commits.
+
 ## Explicitly deferred after M2
 
 - Multi-agent, MCP, RAG, long-term memory, full-screen TUI, LSP, GitHub writes, push, PR, deploy.

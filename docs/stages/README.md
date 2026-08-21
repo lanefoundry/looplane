@@ -37,3 +37,4 @@ the corrective commit rather than rewriting the historical result.
 - [M5: Subscription-backed external coding](m5-subscription-backed-external-coding.md)
 - [M6: Deployed Cloudflare Sandbox service](m6-cloudflare-sandbox-service.md)
 - [M7: Familiar CLI ergonomics](m7-familiar-cli-ergonomics.md)
+- [M8: First-run onboarding and model selection](m8-first-run-onboarding.md)
