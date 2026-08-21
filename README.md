@@ -84,7 +84,10 @@ Bare `pca` runs this project's Python loop; it does not launch Codex or Claude C
 scenes. Its daily surface follows the familiar Claude Code, Codex, Pi, and OpenCode conventions:
 
 ```bash
-# Save non-secret defaults once. API keys remain environment variables.
+# First run: choose a provider and model. Local Ollama models are discovered automatically.
+pca config --interactive
+
+# Or save non-secret defaults directly. API keys remain environment variables.
 pca config --provider ollama --model qwen3:4b
 
 cd /path/to/a/git/repository
@@ -102,6 +105,13 @@ and `pca resume` resumes the latest validated non-terminal session. `pca run`, `
 use the long `--provider` option or a saved config default to choose a provider.
 Headless `-p`/`exec` checks still require `--unsafe-local-exec`; `exec` also requires
 `--tool-calling` unless the chosen transport is intentionally text-only.
+
+On an unconfigured TTY, bare `pca` opens provider-aware setup before asking for a coding task.
+It offers models from a bounded fixed-loopback Ollama discovery request and otherwise asks for a
+provider model ID. `-p` and `exec` never open setup or prompt, even when attached to a TTY; missing
+configuration or prompt fails with an actionable command. The experimental `openai-codex`
+subscription transport remains outside interactive setup and must be selected explicitly with its
+required experimental flag.
 
 The config path is `${PCA_CONFIG:-${XDG_CONFIG_HOME:-~/.config}/python-coding-agent/config.json}`.
 Its strict schema contains only `provider`, `model`, and `api_url`; unknown fields, embedded URL

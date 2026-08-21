@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
 
+import httpx
 import typer
 import uvicorn
 from typer.core import TyperCommand, TyperGroup
@@ -52,6 +53,16 @@ from coding_agent.models import (
 )
 from coding_agent.oauth_login import parse_codex_callback, wait_for_codex_callback
 from coding_agent.session import SessionStore, SessionValidationError
+
+OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
+MAX_OLLAMA_TAGS_BYTES = 256 * 1024
+ONBOARDING_PROVIDERS = (
+    ("ollama", "Ollama local"),
+    ("openai-compatible", "OpenAI or compatible API"),
+    ("anthropic", "Anthropic API"),
+    ("gemini", "Google Gemini API"),
+    ("workers-ai", "Cloudflare Workers AI"),
+)
 
 
 class DefaultCommandGroup(TyperGroup):
@@ -160,6 +171,10 @@ def _show_result(result: RunResult) -> None:
     typer.echo(f"patch: {result.artifacts['patch']}")
 
 
+def _stdin_is_tty() -> bool:
+    return sys.stdin.isatty()
+
+
 def _prompt_or_task(prompt: str | None, task: str | None) -> str | None:
     if prompt is not None and task is not None:
         raise typer.BadParameter("use either positional PROMPT or --task, not both")
@@ -192,6 +207,159 @@ def _resolve_cli_settings(
     resolved_api_url = api_url or (config.api_url if use_config_defaults else None)
     resolved_model = model or (config.model if use_config_defaults else None)
     return resolved_provider, resolved_model, resolved_api_url
+
+
+def _discover_local_ollama_models() -> tuple[str, ...]:
+    """Return bounded model names from the fixed loopback Ollama discovery endpoint."""
+
+    try:
+        with (
+            httpx.Client(
+                timeout=1.5,
+                trust_env=False,
+                headers={"Accept-Encoding": "identity"},
+            ) as client,
+            client.stream("GET", OLLAMA_TAGS_URL) as response,
+        ):
+            if response.status_code != 200:
+                return ()
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                body.extend(chunk)
+                if len(body) > MAX_OLLAMA_TAGS_BYTES:
+                    return ()
+        payload = json.loads(body)
+    except (httpx.HTTPError, OSError, UnicodeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        return ()
+    names: list[str] = []
+    for entry in payload["models"][:100]:
+        if not isinstance(entry, dict):
+            continue
+        value = entry.get("model") or entry.get("name")
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        if value and len(value) <= 256 and value.isprintable():
+            names.append(value)
+    return tuple(dict.fromkeys(names))
+
+
+def _choose_provider(*, current: str | None, ollama_models: tuple[str, ...]) -> str:
+    typer.secho("\nFirst-time setup", bold=True)
+    for index, (slug, label) in enumerate(ONBOARDING_PROVIDERS, 1):
+        detail = ""
+        if slug == "ollama":
+            detail = (
+                f"  ({len(ollama_models)} models detected)"
+                if ollama_models
+                else "  (local service not detected)"
+            )
+        typer.echo(f"  {index}  {label}{detail}")
+    slugs = [slug for slug, _ in ONBOARDING_PROVIDERS]
+    preferred = current if current in slugs else ("ollama" if ollama_models else slugs[1])
+    default_index = slugs.index(preferred) + 1
+    while True:
+        answer = typer.prompt("Provider", default=str(default_index)).strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(slugs):
+            return slugs[int(answer) - 1]
+        if answer in slugs:
+            return answer
+        typer.secho("Choose a listed number or provider name.", fg=typer.colors.YELLOW, err=True)
+
+
+def _choose_model(
+    *, provider: str, current: str | None, ollama_models: tuple[str, ...]
+) -> str:
+    if provider == "ollama" and ollama_models:
+        choices = list(dict.fromkeys(([current] if current else []) + list(ollama_models)))
+        typer.secho("\nChoose a model", bold=True)
+        for index, name in enumerate(choices, 1):
+            typer.echo(f"  {index}  {name}")
+        while True:
+            answer = typer.prompt("Model", default="1").strip()
+            if answer.isdigit() and 1 <= int(answer) <= len(choices):
+                return choices[int(answer) - 1]
+            if answer in choices:
+                return answer
+            typer.secho("Choose a listed number or model name.", fg=typer.colors.YELLOW, err=True)
+    while True:
+        if current:
+            answer = typer.prompt("Model ID", default=current).strip()
+        else:
+            answer = typer.prompt("Model ID").strip()
+        if answer and "\x00" not in answer:
+            return answer
+        typer.secho("Model ID cannot be blank.", fg=typer.colors.YELLOW, err=True)
+
+
+def _credential_hint(provider: str, *, api_url: str | None = None) -> str | None:
+    if provider == "ollama":
+        return None
+    if provider == "openai-compatible":
+        endpoint = api_url or os.environ.get("OPENAI_BASE_URL")
+        if os.environ.get("OPENAI_API_KEY") or (endpoint and _loopback_url(endpoint)):
+            return None
+        return "Set OPENAI_API_KEY before the first run."
+    if provider == "anthropic":
+        return None if os.environ.get("ANTHROPIC_API_KEY") else (
+            "Set ANTHROPIC_API_KEY before the first run."
+        )
+    if provider == "gemini":
+        return None if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") else (
+            "Set GEMINI_API_KEY or GOOGLE_API_KEY before the first run."
+        )
+    if provider == "workers-ai":
+        ready = os.environ.get("CLOUDFLARE_ACCOUNT_ID") and os.environ.get(
+            "CLOUDFLARE_API_TOKEN"
+        )
+        return None if ready else (
+            "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN before the first run."
+        )
+    return None
+
+
+def _interactive_setup(
+    *,
+    current: CliConfig | None = None,
+    locked_provider: str | None = None,
+) -> CliConfig:
+    """Run provider-aware setup and persist no credential material."""
+
+    if not _stdin_is_tty():
+        raise typer.BadParameter("interactive setup requires a TTY")
+    current = current or CliConfig()
+    ollama_models = _discover_local_ollama_models()
+    if locked_provider is None:
+        provider = _choose_provider(current=current.provider, ollama_models=ollama_models)
+    else:
+        provider = locked_provider
+        label = dict(ONBOARDING_PROVIDERS).get(provider, provider)
+        typer.secho("\nFirst-time setup", bold=True)
+        typer.echo(f"  Provider  {label}")
+    prior_model = current.model if current.provider == provider else None
+    model = _choose_model(
+        provider=provider,
+        current=prior_model,
+        ollama_models=ollama_models,
+    )
+    api_url = current.api_url if current.provider == provider else None
+    configured = CliConfig(provider=provider, model=model, api_url=api_url)
+    try:
+        path = asyncio.run(save_cli_config(configured))
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(f"CLI config could not be saved: {exc}") from exc
+    typer.secho(f"✓ Saved non-secret defaults: {provider}/{model}", fg=typer.colors.GREEN)
+    typer.echo(f"  {path}")
+    if hint := _credential_hint(provider, api_url=api_url):
+        typer.secho(f"  {hint}", fg=typer.colors.YELLOW)
+    return configured
+
+
+def _show_context_header(*, repository: Path, provider: str, model: str) -> None:
+    typer.secho("\nPCA", bold=True, nl=False)
+    typer.echo(f"  ·  {provider}/{model}  ·  {repository.name}")
 
 
 @app.command("chat", hidden=True, cls=DefaultChatCommand)
@@ -244,25 +412,56 @@ def chat(
 ) -> None:
     """Start this agent's own loop in the current repository."""
 
+    requested_provider = provider
     if print_mode and prompt in SUPPORTED_PROVIDERS and provider is None:
         raise typer.BadParameter(
             "-p now means --print; select a provider with --provider instead"
         )
     instruction = _prompt_or_task(prompt, instruction)
-    if not sys.stdin.isatty() and instruction is None:
-        raise typer.BadParameter("PROMPT is required when stdin is not interactive")
-    instruction = instruction or typer.prompt("What should I change?")
     provider, model, api_url = _resolve_cli_settings(
         provider=provider,
         model=model,
         api_url=api_url,
     )
+    headless = print_mode or not _stdin_is_tty()
     if model is None:
-        if not sys.stdin.isatty():
+        if headless:
             raise typer.BadParameter(
-                "--model is required when stdin is not interactive and no config default exists"
+                "no model is configured; run `pca config --interactive` in a terminal or pass "
+                "`--provider PROVIDER --model MODEL`"
             )
-        model = typer.prompt("Model")
+        try:
+            current = load_cli_config()
+        except (OSError, ValueError) as exc:
+            raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
+        preferred_provider = requested_provider or current.provider
+        setup_current = CliConfig(
+            provider=preferred_provider,
+            model=current.model if preferred_provider == current.provider else None,
+            api_url=api_url,
+        )
+        configured = _interactive_setup(
+            current=setup_current,
+            locked_provider=requested_provider,
+        )
+        provider, model, api_url = (
+            configured.provider,
+            configured.model,
+            configured.api_url,
+        )
+        if provider is None or model is None:
+            raise typer.BadParameter("interactive setup did not select a provider and model")
+    repository = repository or Path.cwd()
+    if not print_mode:
+        _show_context_header(repository=repository, provider=provider, model=model)
+    if hint := _credential_hint(provider, api_url=api_url):
+        typer.secho(f"Provider is not ready. {hint}", fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(code=2)
+    if headless and instruction is None:
+        raise typer.BadParameter("PROMPT is required in non-interactive mode")
+    if instruction is None:
+        typer.echo("\nWhat would you like me to do in this repository?")
+        instruction = typer.prompt("›", prompt_suffix=" ")
     try:
         selected_model = _model_from_env(
             provider=provider,
@@ -273,7 +472,7 @@ def chat(
             experimental_subscription=experimental_subscription,
         )
         task = TaskContract(
-            repository=repository or Path.cwd(),
+            repository=repository,
             instruction=instruction,
             allowed_paths=("**",),
             verification=_commands(check),
@@ -759,12 +958,22 @@ def configure(
     clear_api_url: Annotated[
         bool, typer.Option("--clear-api-url", help="Remove the saved API URL default.")
     ] = False,
+    interactive: Annotated[
+        bool, typer.Option("--interactive", help="Run provider/model setup in this terminal.")
+    ] = False,
 ) -> None:
     """Show or update non-secret provider defaults."""
 
     path = default_cli_config_path()
     try:
         current = load_cli_config(path)
+        if interactive:
+            if provider is not None or model is not None or api_url is not None or clear_api_url:
+                raise typer.BadParameter(
+                    "--interactive cannot be combined with config value options"
+                )
+            _interactive_setup(current=current)
+            return
         if provider is None and model is None and api_url is None and not clear_api_url:
             typer.echo(f"config: {path}")
             typer.echo(f"provider: {current.provider or '(not set)'}")

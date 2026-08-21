@@ -36,6 +36,7 @@ def test_bare_pca_runs_our_agent_loop_with_trace_and_session(
         ]
     )
     monkeypatch.setattr(cli, "_model_from_env", lambda **_: model)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(
         cli,
         "TTYApprovalPolicy",
@@ -93,6 +94,7 @@ def test_positional_prompt_cd_alias_and_print_mode_use_own_loop(
 
     monkeypatch.setattr(cli, "AgentRunner", CapturingRunner)
     monkeypatch.setattr(cli, "_model_from_env", lambda **_: model)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("PCA_CONFIG", str(tmp_path / "missing-config.json"))
 
     result = CliRunner().invoke(
