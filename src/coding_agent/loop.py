@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from coding_agent.approvals import (
@@ -25,6 +27,7 @@ from coding_agent.contracts import (
     Checkpoint,
     ConversationItem,
     Message,
+    ModelTurn,
     RunResult,
     RunStatus,
     TaskContract,
@@ -58,6 +61,9 @@ from coding_agent.tools import ToolExecutionError, ToolExecutor
 
 class UnsafeLocalExecutionError(RuntimeError):
     """Raised unless the caller explicitly accepts unsandboxed repository code execution."""
+
+
+BlockingResult = TypeVar("BlockingResult")
 
 
 class AgentRunner:
@@ -121,6 +127,28 @@ class AgentRunner:
         self._session_lease: SessionWriterLease | None = None
         self._manifest: SessionManifest | None = None
         self._resume_ready = False
+        self._cancel_requested = asyncio.Event()
+
+    def request_cancel(self) -> None:
+        """Request a cooperative stop at the next side-effect-safe boundary."""
+
+        self._cancel_requested.set()
+
+    async def _run_blocking_safely(
+        self,
+        function: Callable[..., BlockingResult],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> BlockingResult:
+        """Defer task cancellation until one started blocking side effect has returned."""
+
+        blocking_task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        while True:
+            try:
+                return await asyncio.shield(blocking_task)
+            except asyncio.CancelledError:
+                self._cancel_requested.set()
 
     @classmethod
     async def resume(
@@ -509,6 +537,8 @@ class AgentRunner:
         assert self._executor is not None
         outcomes: list[VerificationOutcome] = []
         for command in self.task.verification:
+            if self._cancel_requested.is_set():
+                raise asyncio.CancelledError("run cancellation requested")
             decision = await self._approval(
                 action_id=f"verification:{command.name}",
                 effect=ToolEffect.EXECUTE,
@@ -518,6 +548,8 @@ class AgentRunner:
             )
             if decision == ApprovalDecision.CANCEL:
                 raise asyncio.CancelledError("final verification cancelled by user")
+            if self._cancel_requested.is_set():
+                raise asyncio.CancelledError("run cancellation requested")
             if decision == ApprovalDecision.DENY:
                 outcome = VerificationOutcome(
                     name=command.name,
@@ -544,7 +576,7 @@ class AgentRunner:
                 await self._mark_approved_action_started(
                     self._manifest.pending_action.request_id
                 )
-            outcome = await asyncio.to_thread(
+            outcome = await self._run_blocking_safely(
                 self._executor.run_check,
                 command.name,
                 timeout_seconds=self._remaining(deadline),
@@ -562,13 +594,54 @@ class AgentRunner:
                 exit_code=outcome.exit_code,
                 duration_seconds=outcome.duration_seconds,
             )
+            if self._cancel_requested.is_set():
+                await self._persist_verification(outcomes)
+                raise asyncio.CancelledError("run cancellation requested")
+        await self._persist_verification(outcomes)
+        return self._last_verification
+
+    async def _persist_verification(
+        self, outcomes: list[VerificationOutcome]
+    ) -> None:
         self._last_verification = tuple(outcomes)
         await atomic_write_json(
             self.run_dir / "verification.json",
             [outcome.model_dump(mode="json") for outcome in outcomes],
         )
         (self.run_dir / "test.log").write_text("\n".join(self._test_log), encoding="utf-8")
-        return self._last_verification
+
+    async def _complete_model_or_cancel(self, remaining: float) -> ModelTurn | None:
+        """Cancel a pure model wait immediately without interrupting side-effecting tools."""
+
+        model_task = asyncio.create_task(
+            self.model.complete(self._messages, self._executor.definitions)
+        )
+        cancel_task = asyncio.create_task(self._cancel_requested.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (model_task, cancel_task),
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                model_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await model_task
+                raise TimeoutError("model request exceeded remaining wall time")
+            if cancel_task in done and self._cancel_requested.is_set():
+                model_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await model_task
+                return None
+            return await model_task
+        finally:
+            if not model_task.done():
+                model_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await model_task
+            cancel_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await cancel_task
 
     async def _collect_patch(
         self, timeout_seconds: float | None = None
@@ -719,7 +792,7 @@ class AgentRunner:
                     run_dir=self.run_dir,
                     base_sha=base_sha,
                 )
-                workspace_path = await asyncio.to_thread(
+                workspace_path = await self._run_blocking_safely(
                     workspace.prepare,
                     timeout_seconds=self._remaining(deadline),
                 )
@@ -737,6 +810,12 @@ class AgentRunner:
                 final_summary = ""
 
             while self._step < self.task.limits.max_steps:
+                if self._cancel_requested.is_set():
+                    return await self._finish(
+                        status=RunStatus.CANCELLED,
+                        terminal_reason="user_cancelled",
+                        summary="Run cancelled by user.",
+                    )
                 try:
                     remaining = self._remaining(deadline)
                 except TimeoutError:
@@ -748,10 +827,13 @@ class AgentRunner:
                     )
                 self._step += 1
                 await self._event("model.requested", step=self._step)
-                turn = await asyncio.wait_for(
-                    self.model.complete(self._messages, self._executor.definitions),
-                    timeout=remaining,
-                )
+                turn = await self._complete_model_or_cancel(remaining)
+                if turn is None:
+                    return await self._finish(
+                        status=RunStatus.CANCELLED,
+                        terminal_reason="user_cancelled",
+                        summary="Run cancelled by user while waiting for the model.",
+                    )
                 self._usage = self._add_usage(self._usage, turn.usage)
                 assistant = turn.as_message()
                 self._messages.append(assistant)
@@ -766,6 +848,12 @@ class AgentRunner:
 
                 if turn.tool_calls:
                     for call in turn.tool_calls:
+                        if self._cancel_requested.is_set():
+                            return await self._finish(
+                                status=RunStatus.CANCELLED,
+                                terminal_reason="user_cancelled",
+                                summary="Run cancelled by user before executing the next tool.",
+                            )
                         if self._record_fingerprint(call):
                             return await self._finish(
                                 status=RunStatus.FAILED,
@@ -791,6 +879,12 @@ class AgentRunner:
                             return await self._finish(
                                 status=RunStatus.CANCELLED,
                                 terminal_reason="approval_cancelled",
+                                summary="Run cancelled by user before executing a tool.",
+                            )
+                        if self._cancel_requested.is_set():
+                            return await self._finish(
+                                status=RunStatus.CANCELLED,
+                                terminal_reason="user_cancelled",
                                 summary="Run cancelled by user before executing a tool.",
                             )
                         if decision == ApprovalDecision.DENY:
@@ -824,7 +918,7 @@ class AgentRunner:
                             await self._mark_approved_action_started(
                                 self._manifest.pending_action.request_id
                             )
-                        observation = await asyncio.to_thread(
+                        observation = await self._run_blocking_safely(
                             self._executor.execute,
                             call,
                             timeout_seconds=self._remaining(deadline),
@@ -839,6 +933,14 @@ class AgentRunner:
                             preview=bounded_text(observation.content, 2_000),
                         )
                         await self._checkpoint(RunStatus.IMPLEMENTING, last_tool=call.name)
+                        if self._cancel_requested.is_set():
+                            return await self._finish(
+                                status=RunStatus.CANCELLED,
+                                terminal_reason="user_cancelled",
+                                summary=(
+                                    "Run cancelled by user after the current tool completed."
+                                ),
+                            )
                     continue
 
                 if turn.finish_reason == "length":

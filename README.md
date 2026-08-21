@@ -81,7 +81,10 @@ can reliably complete arbitrary repository tasks.
 ## Interactive CLI
 
 Bare `pca` runs this project's Python loop; it does not launch Codex or Claude Code behind the
-scenes. Its daily surface follows the familiar Claude Code, Codex, Pi, and OpenCode conventions:
+scenes. On a real terminal it opens a full-screen Textual application with repository/model
+context, a task composer, live harness events, approval dialogs, safe Stop, and the final patch /
+verification summary. Its daily surface follows the familiar Claude Code, Codex, Pi, and OpenCode
+conventions:
 
 ```bash
 # First run: choose a provider and model. Local Ollama models are discovered automatically.
@@ -94,6 +97,7 @@ cd /path/to/a/git/repository
 pca
 pca 'Fix the failing test without changing its intent.' --check 'pytest -q'
 pca -C /path/to/another/repo 'Explain and fix the failure.'
+pca --plain  # line-oriented fallback for limited terminals and SSH troubleshooting
 ```
 
 For a one-off model selection, `-m ollama/qwen3:4b` also selects both the provider and model,
@@ -112,6 +116,12 @@ provider model ID. `-p` and `exec` never open setup or prompt, even when attache
 configuration or prompt fails with an actionable command. The experimental `openai-codex`
 subscription transport remains outside interactive setup and must be selected explicitly with its
 required experimental flag.
+
+`Ctrl+C` in the full-screen application requests a cooperative stop. A pending model request can
+stop immediately; a tool or verification command that has already started is allowed to finish its
+bounded execution and durable completion event before the session closes. This avoids abandoning a
+background thread while claiming the run is safely resumable. `PCA_NO_TUI=1` is equivalent to
+`--plain` for terminals that cannot use an alternate screen.
 
 The config path is `${PCA_CONFIG:-${XDG_CONFIG_HOME:-~/.config}/python-coding-agent/config.json}`.
 Its strict schema contains only `provider`, `model`, and `api_url`; unknown fields, embedded URL

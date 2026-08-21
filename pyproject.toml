@@ -12,6 +12,7 @@ dependencies = [
   "httpx>=0.28.0",
   "openai>=1.68.0",
   "pydantic>=2.10.0",
+  "textual>=8.2.8,<9",
   "typer>=0.15.0",
   "uvicorn>=0.30.0",
 ]

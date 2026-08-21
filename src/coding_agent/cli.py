@@ -131,7 +131,7 @@ app = typer.Typer(
     epilog=(
         "Daily use: pca [PROMPT] | pca -p [PROMPT] | pca exec [PROMPT] | "
         "pca resume. Primary options: -C/--cd/--repo, -m/--model, --provider, "
-        "--api-url, --check. Save non-secret defaults with pca config."
+        "--api-url, --check, --plain. Save non-secret defaults with pca config."
     ),
 )
 auth_app = typer.Typer(help="Manage provider credentials owned by this application.")
@@ -173,6 +173,15 @@ def _show_result(result: RunResult) -> None:
 
 def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
+
+
+def _terminal_supports_tui() -> bool:
+    return (
+        _stdin_is_tty()
+        and sys.stdout.isatty()
+        and os.environ.get("TERM", "").lower() != "dumb"
+        and os.environ.get("PCA_NO_TUI") != "1"
+    )
 
 
 def _prompt_or_task(prompt: str | None, task: str | None) -> str | None:
@@ -374,6 +383,13 @@ def chat(
         bool,
         typer.Option("--print", "-p", help="Run non-interactively and print JSON."),
     ] = False,
+    plain: Annotated[
+        bool,
+        typer.Option(
+            "--plain",
+            help="Use the line-oriented terminal UI instead of the full-screen application.",
+        ),
+    ] = False,
     provider: Annotated[
         str | None, typer.Option("--provider", envvar="PCA_PROVIDER")
     ] = None,
@@ -423,6 +439,72 @@ def chat(
         model=model,
         api_url=api_url,
     )
+    repository = repository or Path.cwd()
+    if not print_mode and not plain and _terminal_supports_tui():
+        try:
+            current = load_cli_config()
+        except (OSError, ValueError) as exc:
+            raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
+        selected_provider = requested_provider or current.provider
+        initial_config = (
+            CliConfig(provider=provider, model=model, api_url=api_url)
+            if model is not None
+            else CliConfig(
+                provider=selected_provider,
+                model=current.model if selected_provider == current.provider else None,
+                api_url=api_url,
+            )
+        )
+
+        from coding_agent.tui import PcaApp, TuiRunRequest
+
+        def make_runner(request: TuiRunRequest, approval_policy, event_sink):
+            if hint := _credential_hint(request.provider, api_url=request.api_url):
+                raise ValueError(f"Provider is not ready. {hint}")
+            selected_model = _model_from_env(
+                provider=request.provider,
+                model=request.model,
+                base_url=request.api_url,
+                tool_calling=True,
+                allow_custom_provider_endpoint=allow_custom_provider_endpoint,
+                experimental_subscription=experimental_subscription,
+            )
+            task = TaskContract(
+                repository=request.repository,
+                instruction=request.instruction,
+                allowed_paths=("**",),
+                verification=_commands(check),
+            )
+            return (
+                AgentRunner(
+                    task,
+                    selected_model,
+                    run_root,
+                    allow_unsafe_local_exec=unsafe_local_exec,
+                    approval_policy=approval_policy,
+                    event_sink=event_sink,
+                ),
+                selected_model,
+            )
+
+        tui_app = PcaApp(
+            repository=repository,
+            config=initial_config,
+            runner_factory=make_runner,
+            providers=ONBOARDING_PROVIDERS,
+            ollama_models=(
+                _discover_local_ollama_models() if initial_config.model is None else ()
+            ),
+            initial_prompt=instruction,
+            locked_provider=requested_provider,
+        )
+        result = tui_app.run()
+        if tui_app.last_error is not None:
+            typer.echo(f"error: {tui_app.last_error}", err=True)
+            raise typer.Exit(code=2)
+        if result is not None and result.status != "completed":
+            raise typer.Exit(code=1)
+        return
     headless = print_mode or not _stdin_is_tty()
     if model is None:
         if headless:
@@ -451,7 +533,6 @@ def chat(
         )
         if provider is None or model is None:
             raise typer.BadParameter("interactive setup did not select a provider and model")
-    repository = repository or Path.cwd()
     if not print_mode:
         _show_context_header(repository=repository, provider=provider, model=model)
     if hint := _credential_hint(provider, api_url=api_url):

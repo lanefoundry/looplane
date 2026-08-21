@@ -603,3 +603,85 @@ def test_live_eval_requires_explicit_subscription_opt_in() -> None:
 
     assert "--experimental-subscription" not in disabled
     assert enabled[-1] == "--experimental-subscription"
+
+
+def test_real_tty_routes_bare_prompt_to_full_screen_tui(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from coding_agent import tui
+
+    captured: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+            self.last_error = None
+
+        def run(self):
+            captured["ran"] = True
+            return None
+
+    monkeypatch.setenv("PCA_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
+    monkeypatch.setattr(cli, "_discover_local_ollama_models", lambda: ("qwen3:4b",))
+    monkeypatch.setattr(tui, "PcaApp", FakeApp)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["-C", str(tiny_bug_repo), "Fix the failing test."],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["ran"] is True
+    assert captured["initial_prompt"] == "Fix the failing test."
+    assert captured["repository"] == tiny_bug_repo
+    assert captured["ollama_models"] == ("qwen3:4b",)
+
+
+def test_plain_flag_never_launches_full_screen_tui(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from coding_agent import tui
+
+    class FakeRunner:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run(self):
+            return RunResult(
+                run_id="plain-run",
+                task_id="plain-task",
+                status=RunStatus.COMPLETED,
+                summary="plain completed",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(
+        tui,
+        "PcaApp",
+        lambda **_: (_ for _ in ()).throw(AssertionError("TUI must not launch")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_model_from_env",
+        lambda **_: ScriptedModel([ModelTurn(content="unused")]),
+    )
+    monkeypatch.setattr(cli, "AgentRunner", FakeRunner)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "--plain",
+            "-m",
+            "ollama/qwen3:4b",
+            "-C",
+            str(tiny_bug_repo),
+            "Explain this repository.",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "plain completed" in result.output
