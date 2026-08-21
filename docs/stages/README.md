@@ -38,3 +38,4 @@ the corrective commit rather than rewriting the historical result.
 - [M6: Deployed Cloudflare Sandbox service](m6-cloudflare-sandbox-service.md)
 - [M7: Familiar CLI ergonomics](m7-familiar-cli-ergonomics.md)
 - [M8: First-run onboarding and model selection](m8-first-run-onboarding.md)
+- [M9: Full-screen terminal application](m9-full-screen-terminal-application.md)

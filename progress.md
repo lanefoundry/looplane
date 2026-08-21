@@ -162,8 +162,22 @@ another coding-agent CLI.
 
 ## Explicitly deferred after M2
 
-- Multi-agent, MCP, RAG, long-term memory, full-screen TUI, LSP, GitHub writes, push, PR, deploy.
+- Multi-agent, MCP, RAG, long-term memory, LSP, GitHub writes, push, PR, deploy.
 - Public product/package naming.
+
+## Active milestone: M9 full-screen terminal application
+
+- [x] Launch a Textual full-screen application for bare interactive `pca`, while preserving
+      `pca -p`, `pca exec`, non-TTY automation, and an explicit `--plain` fallback.
+- [x] Present first-run provider/model onboarding, repository context, task input, raw live run
+      events, approval decisions, stop state, and terminal result in one coherent screen.
+- [x] Connect the TUI only through provider-neutral `EventSink` and `ApprovalPolicy` seams; keep
+      Textual out of `AgentRunner`, providers, tools, and durable event formats.
+- [x] Add cooperative cancellation so Stop never abandons a running tool/check thread or releases
+      the session writer before the current side effect has a durable completion event.
+- [x] Cover the Textual app with pilot tests and retain all existing CLI/session/safety tests.
+- [x] Close M9 with real-terminal smoke evidence, independent review, a stage record, one draft
+      QuidProQuo practice article, and complete commits.
 
 ## Required artifacts per run
 
