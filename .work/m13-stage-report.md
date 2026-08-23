@@ -97,3 +97,21 @@ Artifacts:
   reconciliation per runtime still need dedicated live proofs (Slice 2/3/4 remainder).
 - Normalizers remain permissive by design; they surface assistant text + tool activity even if a
   runtime adds event subtypes, failing closed only on malformed/truncated streams.
+
+## Recorded-stream integration proofs (added)
+
+`tests/test_external_runner_integration.py` proves per-runtime behavior end-to-end without live LLM
+calls. Real captured streams (`.artifacts/m13-captures/*.jsonl`, copied to `tests/fixtures/m13/`)
+are normalized by the **real** `PiBackend` / `OmpBackend` / `OpenCodeBackend` normalizers and replayed
+through the real `ExternalCodingRunner`. A synthetic workspace edit lets the runner's diff/verification
+pipeline reconcile a patch; the event stream stays genuine. Per runtime it asserts:
+
+- normalization yields the expected tool name (`bash` / `read` / `bash`) and assistant message text,
+  and is not malformed;
+- the runner reaches `verified` with the expected `changed_files` (approval → diff → verify);
+- an `external_agent_error` stream surfaces as `FAILED` with the actionable hint naming the backend;
+- `request_cancel()` maps to `user_cancelled`.
+
+Cancellation is runtime-agnostic (same runner cooperative-stop path); it is exercised for each backend
+to confirm the wiring. Live multi-turn agent sessions (the CLI's own internal loops) are out of scope
+for these deterministic proofs.
