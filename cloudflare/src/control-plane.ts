@@ -38,7 +38,7 @@ const TEXT_EXTENSIONS = new Set([
   ".ini",
   ".cfg",
 ]);
-const FIXED_COMMAND = "/usr/local/bin/pca-sandbox-run";
+const FIXED_COMMAND = "/usr/local/bin/rivumi-sandbox-run";
 const encoder = new TextEncoder();
 
 export interface Env {
@@ -793,16 +793,16 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
       "write",
     );
     requireSdkSuccess(
-      await sandbox.writeFile("/workspace/.pca-run-token", runToken),
+      await sandbox.writeFile("/workspace/.rivumi-run-token", runToken),
       "write",
     );
     const execution = await sandbox.exec(FIXED_COMMAND, {
       cwd: "/workspace",
       timeout: LIMITS.sandboxTimeoutMs,
       env: {
-        PCA_MODEL_ID: input.model,
-        PCA_MODEL_GATEWAY_URL: proxyUrl,
-        PCA_MAX_BUNDLE_BYTES: "1000000",
+        RIVUMI_MODEL_ID: input.model,
+        RIVUMI_MODEL_GATEWAY_URL: proxyUrl,
+        RIVUMI_MAX_BUNDLE_BYTES: "1000000",
       },
     });
     const terminalSuccess =
@@ -949,7 +949,7 @@ export async function handleRequest(
     const path = new URL(request.url).pathname;
     if (path === "/healthz") {
       if (request.method !== "GET") throw new RequestProblem(405, "method_not_allowed");
-      return json({ ok: true, service: "python-coding-agent-control-plane" });
+      return json({ ok: true, service: "rivumi-control-plane" });
     }
     if (path === "/v1/runs") {
       if (request.method !== "POST") throw new RequestProblem(405, "method_not_allowed");

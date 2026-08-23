@@ -154,7 +154,7 @@ describe("POST /v1/runs", () => {
       dependencies(sandbox()),
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "python-coding-agent-control-plane" });
+    expect(await response.json()).toEqual({ ok: true, service: "rivumi-control-plane" });
   });
 
   it("requires control-plane authentication before allocating a sandbox", async () => {
@@ -178,15 +178,15 @@ describe("POST /v1/runs", () => {
     );
     expect(handle.exec).toHaveBeenCalledTimes(1);
     const [command, options] = handle.exec.mock.calls[0]!;
-    expect(command).toBe("/usr/local/bin/pca-sandbox-run");
+    expect(command).toBe("/usr/local/bin/rivumi-sandbox-run");
     expect(options.env).toMatchObject({
-      PCA_MODEL_ID: model,
-      PCA_MODEL_GATEWAY_URL: "https://control.example/internal/v1",
+      RIVUMI_MODEL_ID: model,
+      RIVUMI_MODEL_GATEWAY_URL: "https://control.example/internal/v1",
     });
     expect(JSON.stringify(options.env)).not.toContain(providerSecret);
-    expect(options.env).not.toHaveProperty("PCA_RUN_TOKEN");
+    expect(options.env).not.toHaveProperty("RIVUMI_RUN_TOKEN");
     const tokenWrite = handle.writeFile.mock.calls.find(
-      ([path]) => path === "/workspace/.pca-run-token",
+      ([path]) => path === "/workspace/.rivumi-run-token",
     );
     expect(tokenWrite?.[1]).toEqual(expect.any(String));
     expect(handle.readFileStream).toHaveBeenCalledWith("/workspace/response.json");
@@ -506,7 +506,7 @@ describe("POST /v1/runs", () => {
 
     expect((await handleRequest(request("/v1/runs", requestBody()), env(), deps)).status).toBe(201);
     const token = handle.writeFile.mock.calls.find(
-      ([path]) => path === "/workspace/.pca-run-token",
+      ([path]) => path === "/workspace/.rivumi-run-token",
     )?.[1] as string;
     const replay = await handleRequest(
       request(

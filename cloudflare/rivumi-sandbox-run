@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+workspace=/workspace
+token_file=/workspace/.rivumi-run-token
+
+test "$(id -u)" -eq 0
+test -d "$workspace/source"
+test -f "$workspace/request.json"
+test -f "$token_file"
+test ! -L "$token_file"
+
+chown -R rivumi:rivumi "$workspace"
+chmod 0700 "$workspace"
+chmod 0600 "$token_file"
+
+exec setpriv \
+  --reuid=rivumi \
+  --regid=rivumi \
+  --init-groups \
+  --no-new-privs \
+  env \
+    HOME=/home/rivumi \
+    PATH=/usr/local/bin:/usr/bin:/bin \
+    RIVUMI_MODEL_ID="$RIVUMI_MODEL_ID" \
+    RIVUMI_MODEL_GATEWAY_URL="$RIVUMI_MODEL_GATEWAY_URL" \
+    RIVUMI_MAX_BUNDLE_BYTES="$RIVUMI_MAX_BUNDLE_BYTES" \
+    python3 -m rivumi.sandbox_entry /workspace/request.json

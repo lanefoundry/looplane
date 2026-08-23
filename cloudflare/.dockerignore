@@ -1,6 +1,6 @@
 *
 !Dockerfile
-!pca-sandbox-run
+!rivumi-sandbox-run
 !.artifacts/
 !.artifacts/*.whl
 !.artifacts/requirements.txt

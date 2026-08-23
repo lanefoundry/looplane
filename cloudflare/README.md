@@ -14,7 +14,7 @@ tokens, custom model IDs, or caller-selected upstream URLs.
 Unauthenticated liveness only:
 
 ```json
-{"ok":true,"service":"python-coding-agent-control-plane"}
+{"ok":true,"service":"rivumi-control-plane"}
 ```
 
 This proves Worker routing, not Sandbox or model execution.
@@ -56,18 +56,18 @@ Accepted check argv must exactly equal one of:
 No shell parsing is used for these checks. The only Worker-to-Sandbox exec command is:
 
 ```text
-/usr/local/bin/pca-sandbox-run
+/usr/local/bin/rivumi-sandbox-run
 ```
 
 The root-owned, mode `0555` wrapper validates the staged workspace and token file, changes the
-workspace owner to the image's non-root `pca` user, sets the token to owner-only mode `0600`, and
+workspace owner to the image's non-root `rivumi` user, sets the token to owner-only mode `0600`, and
 uses `setpriv --no-new-privs` before invoking the fixed Python module. Caller data is never inserted
 into a shell command.
 
 ## Model capability boundary
 
 The Sandbox receives a five-minute HMAC capability containing only route audience, run ID, model,
-issued time, and expiry. The Worker writes it to `/workspace/.pca-run-token`, then the non-root
+issued time, and expiry. The Worker writes it to `/workspace/.rivumi-run-token`, then the non-root
 Python entrypoint opens it without following links and immediately unlinks it. The capability is
 never present in the Sandbox exec environment.
 
@@ -147,7 +147,7 @@ The image pins pytest 8.4.2 and pytest-asyncio 1.4.0 for the fixed Python check 
 uploaded project dependencies are not installed automatically.
 
 Two clean builds from the same source and lockfiles must produce the same image ID. The image also
-retains a sorted `/opt/pca/python-packages.txt` inventory for later provenance checks.
+retains a sorted `/opt/rivumi/python-packages.txt` inventory for later provenance checks.
 
 The M6 live evidence retains one completed Worker to Sandbox to Groq coding run with a verified
 patch and check. The synchronous endpoint and ephemeral result bundle are still not a production
