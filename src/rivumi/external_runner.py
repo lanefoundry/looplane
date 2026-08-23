@@ -93,6 +93,13 @@ class _ExternalRunCancelled(RuntimeError):
 class ExternalCodingRunner:
     """Run an external coding agent in a pinned clone and audit its result."""
 
+    #: Budget for the post-delegation source-integrity audit.  This is a fast,
+    #: local ``git``/filesystem inspection and must not be starved by the
+    #: backend's wall-clock budget; otherwise a backend timeout would make this
+    #: check time out and misreport the terminal reason as
+    #: ``source_repository_changed``.
+    _SOURCE_INVARIANT_TIMEOUT = 30.0
+
     def __init__(
         self,
         task: TaskContract,
@@ -699,7 +706,7 @@ class ExternalCodingRunner:
                 self._source_invariant_matches,
                 source,
                 source_invariant,
-                self._remaining(deadline),
+                self._SOURCE_INVARIANT_TIMEOUT,
             ):
                 raise ToolExecutionError("source repository changed during delegation")
             if self._git_control_snapshot(git_dir) != git_control_snapshot:
@@ -786,7 +793,7 @@ class ExternalCodingRunner:
                 self._source_invariant_matches,
                 source,
                 source_invariant,
-                self._remaining(deadline),
+                self._SOURCE_INVARIANT_TIMEOUT,
             )
         except TimeoutError:
             source_unchanged = False

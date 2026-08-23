@@ -1072,6 +1072,226 @@ def run_codex_cli_backend(
         raise typer.Exit(code=1)
 
 
+def _run_external_coding(
+    *,
+    prompt: str | None,
+    instruction: str | None,
+    repository: Path | None,
+    check: list[str] | None,
+    allowed_path: list[str] | None,
+    run_root: Path,
+    task_id: str,
+    timeout_seconds: float,
+    allow_external_modify: bool,
+    unsafe_local_exec: bool,
+    backend: object,
+    require_model: bool,
+    model: str | None,
+) -> None:
+    """Shared runner path for the registry-backed external coding CLIs."""
+
+    from rivumi.external_runner import (
+        ExternalCodingRunner,
+        ExternalModificationApprovalError,
+        UnsafeExternalVerificationError,
+    )
+
+    instruction = _prompt_or_task(prompt, instruction)
+    if instruction is None:
+        raise typer.BadParameter("PROMPT or --task is required")
+    if require_model and not model:
+        raise typer.BadParameter("--model is required for this external runtime")
+    if not check:
+        raise typer.BadParameter("external coding requires at least one explicit --check command")
+    try:
+        result = asyncio.run(
+            ExternalCodingRunner(
+                TaskContract(
+                    repository=repository or Path.cwd(),
+                    instruction=instruction,
+                    allowed_paths=tuple(allowed_path or ("**",)),
+                    verification=_commands(check),
+                    limits=Limits(wall_time_seconds=timeout_seconds),
+                    task_id=task_id,
+                ),
+                backend,  # type: ignore[arg-type]
+                run_root,
+                allow_external_modify=allow_external_modify,
+                allow_unsafe_local_exec=unsafe_local_exec,
+            ).run()
+        )
+    except (
+        ExternalModificationApprovalError,
+        UnsafeExternalVerificationError,
+        OSError,
+        ValueError,
+    ) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    _show_result(result)
+    if result.status != "completed":
+        raise typer.Exit(code=1)
+
+
+@backend_app.command("opencode")
+def _run_opencode_backend(
+    prompt: Annotated[str | None, typer.Argument(help="Delegated coding task")] = None,
+    instruction: Annotated[
+        str | None, typer.Option("--task", "-t", help="Compatibility alias for PROMPT")
+    ] = None,
+    repository: Annotated[
+        Path | None, typer.Option("--cd", "-C", "--repo", exists=True, file_okay=False)
+    ] = None,
+    check: Annotated[
+        list[str] | None, typer.Option("--check", help="Exact final verification argv; repeatable")
+    ] = None,
+    allowed_path: Annotated[
+        list[str] | None, typer.Option("--allowed-path", help="Allowed path/glob; repeatable")
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="OpenCode provider/model id; e.g. ollama/gemma4."),
+    ] = None,
+    run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
+    task_id: Annotated[str, typer.Option("--task-id")] = "opencode-task",
+    timeout_seconds: Annotated[
+        float, typer.Option("--timeout", min=1, help="Maximum delegated runtime in seconds.")
+    ] = 300.0,
+    allow_external_modify: Annotated[
+        bool, typer.Option("--allow-external-modify", help="Approve CLI edits in Rivumi's clone.")
+    ] = False,
+    unsafe_local_exec: Annotated[
+        bool, typer.Option("--unsafe-local-exec", help="Allow trusted repo checks to run on host.")
+    ] = False,
+) -> None:
+    """Delegate to the installed OpenCode CLI in an isolated clone, then audit it with Rivumi."""
+
+    from rivumi.opencode_backend import OpenCodeBackend
+
+    backend = OpenCodeBackend(executable="opencode", model=model, timeout_seconds=timeout_seconds)
+    _run_external_coding(
+        require_model=True,
+        backend=backend,
+        prompt=prompt,
+        instruction=instruction,
+        repository=repository,
+        check=check,
+        allowed_path=allowed_path,
+        run_root=run_root,
+        task_id=task_id,
+        timeout_seconds=timeout_seconds,
+        allow_external_modify=allow_external_modify,
+        unsafe_local_exec=unsafe_local_exec,
+        model=model,
+    )
+
+
+@backend_app.command("pi")
+def _run_pi_backend(
+    prompt: Annotated[str | None, typer.Argument(help="Delegated coding task")] = None,
+    instruction: Annotated[
+        str | None, typer.Option("--task", "-t", help="Compatibility alias for PROMPT")
+    ] = None,
+    repository: Annotated[
+        Path | None, typer.Option("--cd", "-C", "--repo", exists=True, file_okay=False)
+    ] = None,
+    check: Annotated[
+        list[str] | None, typer.Option("--check", help="Exact final verification argv; repeatable")
+    ] = None,
+    allowed_path: Annotated[
+        list[str] | None, typer.Option("--allowed-path", help="Allowed path/glob; repeatable")
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="Pi provider/model id; Pi owns its auth."),
+    ] = None,
+    run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
+    task_id: Annotated[str, typer.Option("--task-id")] = "pi-task",
+    timeout_seconds: Annotated[
+        float, typer.Option("--timeout", min=1, help="Maximum delegated runtime in seconds.")
+    ] = 300.0,
+    allow_external_modify: Annotated[
+        bool, typer.Option("--allow-external-modify", help="Approve CLI edits in Rivumi's clone.")
+    ] = False,
+    unsafe_local_exec: Annotated[
+        bool, typer.Option("--unsafe-local-exec", help="Allow trusted repo checks to run on host.")
+    ] = False,
+) -> None:
+    """Delegate to the installed Pi coding agent in an isolated clone, then audit it with Rivumi."""
+
+    from rivumi.pi_backend import PiBackend
+
+    backend = PiBackend(executable="pi", model=model, timeout_seconds=timeout_seconds)
+    _run_external_coding(
+        require_model=True,
+        backend=backend,
+        prompt=prompt,
+        instruction=instruction,
+        repository=repository,
+        check=check,
+        allowed_path=allowed_path,
+        run_root=run_root,
+        task_id=task_id,
+        timeout_seconds=timeout_seconds,
+        allow_external_modify=allow_external_modify,
+        unsafe_local_exec=unsafe_local_exec,
+        model=model,
+    )
+
+
+@backend_app.command("omp")
+def _run_omp_backend(
+    prompt: Annotated[str | None, typer.Argument(help="Delegated coding task")] = None,
+    instruction: Annotated[
+        str | None, typer.Option("--task", "-t", help="Compatibility alias for PROMPT")
+    ] = None,
+    repository: Annotated[
+        Path | None, typer.Option("--cd", "-C", "--repo", exists=True, file_okay=False)
+    ] = None,
+    check: Annotated[
+        list[str] | None, typer.Option("--check", help="Exact final verification argv; repeatable")
+    ] = None,
+    allowed_path: Annotated[
+        list[str] | None, typer.Option("--allowed-path", help="Allowed path/glob; repeatable")
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="OMP provider/model id; OMP owns its auth."),
+    ] = None,
+    run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
+    task_id: Annotated[str, typer.Option("--task-id")] = "omp-task",
+    timeout_seconds: Annotated[
+        float, typer.Option("--timeout", min=1, help="Maximum delegated runtime in seconds.")
+    ] = 300.0,
+    allow_external_modify: Annotated[
+        bool, typer.Option("--allow-external-modify", help="Approve CLI edits in Rivumi's clone.")
+    ] = False,
+    unsafe_local_exec: Annotated[
+        bool, typer.Option("--unsafe-local-exec", help="Allow trusted repo checks to run on host.")
+    ] = False,
+) -> None:
+    """Delegate to the installed OMP agent in an isolated clone, then audit it with Rivumi."""
+
+    from rivumi.omp_backend import OmpBackend
+
+    backend = OmpBackend(executable="omp", model=model, timeout_seconds=timeout_seconds)
+    _run_external_coding(
+        require_model=True,
+        backend=backend,
+        prompt=prompt,
+        instruction=instruction,
+        repository=repository,
+        check=check,
+        allowed_path=allowed_path,
+        run_root=run_root,
+        task_id=task_id,
+        timeout_seconds=timeout_seconds,
+        allow_external_modify=allow_external_modify,
+        unsafe_local_exec=unsafe_local_exec,
+        model=model,
+    )
+
+
 @auth_app.command("login-codex")
 def login_codex(
     timeout_seconds: Annotated[

@@ -115,3 +115,34 @@ pipeline reconcile a patch; the event stream stays genuine. Per runtime it asser
 Cancellation is runtime-agnostic (same runner cooperative-stop path); it is exercised for each backend
 to confirm the wiring. Live multi-turn agent sessions (the CLI's own internal loops) are out of scope
 for these deterministic proofs.
+
+## Headless CLI entrypoints (`rivumi backend <runtime>`)
+
+Added `rivumi backend opencode|pi|omp` subcommands (`src/rivumi/cli.py`) mapping to the registry
+backends, each exposing `--model/-m`, `--check`, `--allowed-path`, `--run-root`, `--task-id`,
+`--timeout`, `--allow-external-modify`, and `--unsafe-local-exec`, plus `--task/-t` as a PROMPT alias.
+Approve/intent flags match the existing `claude-code`/`codex-cli` surface.
+
+Two latent runtime bugs were exposed by a live headless attempt and fixed:
+
+- `src/rivumi/runtime.py`: `run_bounded_command` unconditionally spawned a `_write_stdin` thread
+  whenever `stdin is not None`; for the default `subprocess.DEVNULL` sentinel (an `int`) this crashed
+  with `AttributeError: 'int' object has no attribute 'encode'`. The writer is now spawned only for a
+  real `str` payload (`isinstance(stdin, str)`).
+- `src/rivumi/external_runner.py`: both post-delegation source-integrity audits reused the (possibly
+  exhausted) backend wall-clock deadline via `self._remaining(deadline)`. When the external CLI ran
+  out of time, the audit immediately timed out itself and **masked** the real `timeout` terminal
+  reason as `source_repository_changed`. The audit now uses a dedicated `_SOURCE_INVARIANT_TIMEOUT`
+  (30 s) budget, so a backend timeout is correctly reported as `External coding run exceeded its
+  wall-time budget.` and any genuine source mutation is still rejected.
+
+Full suite: **511 passed**; `ruff check` clean.
+
+### Known follow-up (out of scope)
+
+A real `opencode` headless edit task (`ollama/gemma4`) completes a trivial prompt but hangs on an
+edit-then-approve workload when stdin is `/dev/null` (OpenCode's headless edit path expects
+interactive permission approval / its own autonomous flag). Wiring OpenCode's autonomous/approve flag
+into `OpenCodeBackend._argv` is a follow-up so `rivumi backend opencode` can make file edits
+non-interactively; the audit pipeline itself is verified correct by the recorded-stream tests above.
+

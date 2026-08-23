@@ -28,9 +28,11 @@ Worker + Sandbox deployment slice.
   because the process cannot prove whether that side effect completed.
 - Explicit model protocols, loopback Ollama, custom OpenAI-compatible API URLs, an experimental
   app-owned ChatGPT/Codex OAuth transport, and an optional bounded local model gateway.
-- A Rivumi-audited `ExternalCodingRunner` for local delegation to the installed official Codex and
-  Claude Code CLIs. They edit only a pinned disposable clone; Rivumi independently checks the full
-  path-bounded patch and runs exact final verification. They never become `ModelProvider`s.
+- A Rivumi-audited `ExternalCodingRunner` for local delegation to installed coding CLIs — the
+  official Codex and Claude Code CLIs plus local-only `opencode`, `pi`, and `omp`. They edit only a
+  pinned disposable clone; Rivumi independently checks the full path-bounded patch and runs exact
+  final verification. They never become `ModelProvider`s, and Rivumi never reads their credential
+  stores.
 
 ## Set up with uv
 
@@ -268,6 +270,39 @@ files are rejected in this initial external-coding milestone; use Rivumi's own `
 reviewable create/delete work. The source repository must start clean. Rivumi removes Git metadata
 from the child working tree, rejects index/config mutation, hashes all source entries outside
 `.git` (including ignored files), and rechecks both source and patch after final verification.
+
+More installed coding CLIs can sit in the same harness — `opencode`, `pi`, and `omp`. Each is a
+sibling external runtime, never a `ModelProvider`: it edits only the pinned disposable clone, owns
+its own login and provider credentials, and Rivumi independently audits the path-bounded patch and
+runs the exact final verification. Rivumi never reads or copies `~/.opencode`, `~/.omp`, Pi's auth
+store, or any other CLI credential file.
+
+```bash
+rivumi backend opencode \
+  --repo /path/to/trusted/repo \
+  --task 'Fix the failing test.' \
+  --allowed-path 'src/**' \
+  --check 'pytest -q' \
+  --model 'ollama/gemma4' \
+  --allow-external-modify \
+  --unsafe-local-exec
+```
+
+All five runtimes share the same closed-loop boundary:
+
+- `claude-code` — official Claude Code CLI; limited to `Read`, `Glob`, `Grep`, `Edit` inside the
+  disposable clone.
+- `codex-cli` — official Codex CLI, ephemeral with its `workspace-write` sandbox.
+- `opencode` — OpenCode CLI via `opencode run --format json`; `--model` takes a provider/model id
+  from `opencode models` (for example `ollama/gemma4`).
+- `pi` — Pi coding agent with its own auth store.
+- `omp` — OMP coding agent with its own auth store.
+
+`opencode`, `pi`, and `omp` are local-only and experimental. Streaming output is normalized into
+Rivumi's event journal (proofs live in `tests/test_external_runner_integration.py` with recorded
+real captures under `tests/fixtures/m13/`). The current OpenCode headless build still expects an
+interactive approve step before editing, so autonomous edits require OpenCode to run with its own
+autonomous flag; the audit pipeline itself is exercised end-to-end by those recorded streams.
 
 ## Local model gateway
 

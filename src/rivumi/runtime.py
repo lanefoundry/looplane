@@ -310,7 +310,7 @@ def run_bounded_command(
     )
     for reader in readers:
         reader.start()
-    if stdin is not None:
+    if stdin is not None and isinstance(stdin, str):
         assert process.stdin is not None
         threading.Thread(target=_write_stdin, args=(process.stdin, stdin), daemon=True).start()
 
