@@ -70,10 +70,20 @@ class OpenCodeBackend(StreamJsonCliBackend):
                 data=data,
             )
         if event_type == "error":
+            message = None
+            err = value.get("error")
+            if isinstance(err, dict):
+                err_data = err.get("data")
+                if isinstance(err_data, dict) and isinstance(err_data.get("message"), str):
+                    message = err_data["message"]
+                elif isinstance(err.get("message"), str):
+                    message = err["message"]
+            if message is None and isinstance(value.get("message"), str):
+                message = value["message"]
             return ExternalAgentEvent(
                 sequence=sequence,
                 event_type="result",
-                text=value.get("message") if isinstance(value.get("message"), str) else None,
+                text=message,
                 data={"source": "opencode", "is_error": True},
             )
         if event_type in {"tool", "tool_use", "tool_call", "function", "tool_execution"}:

@@ -128,3 +128,25 @@ def test_opencode_error_marks_failure(tmp_path: Path) -> None:
     stream = '{"type":"error","message":"boom"}'
     events, malformed = backend._normalize(stream)
     assert events and events[0].data.get("is_error") is True
+
+
+def test_opencode_error_nested_schema(tmp_path: Path) -> None:
+    backend = OpenCodeBackend(executable="opencode")
+    stream = '{"type":"error","error":{"name":"UnknownError","data":{"message":"Model not found"}}}'
+    events, malformed = backend._normalize(stream)
+    assert events and events[0].data.get("is_error") is True
+    assert events[0].text == "Model not found"
+
+
+def test_pi_toolcall_end_captures_tool_name(tmp_path: Path) -> None:
+    backend = PiBackend(executable="pi")
+    stream = "\n".join(
+        [
+            '{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start"}}',
+            '{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end",'
+            '"toolCall":{"type":"toolCall","id":"1","name":"bash","arguments":{}}}}',
+        ]
+    )
+    events, malformed = backend._normalize(stream)
+    tools = [e for e in events if e.event_type == "tool"]
+    assert tools and tools[-1].data.get("tool") == "bash"

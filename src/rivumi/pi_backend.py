@@ -63,8 +63,12 @@ class PiBackend(StreamJsonCliBackend):
                     )
             if sub in {"toolcall_start", "toolcall_end"}:
                 data: dict[str, Any] = {"source": "pi"}
-                if isinstance(update.get("toolName"), str):
-                    data["tool"] = update["toolName"]
+                name = update.get("toolName")
+                tool_call = update.get("toolCall")
+                if isinstance(tool_call, dict) and isinstance(tool_call.get("name"), str):
+                    name = tool_call["name"]
+                if isinstance(name, str):
+                    data["tool"] = name
                 return ExternalAgentEvent(sequence=sequence, event_type="tool", data=data)
             return None
         if event_type == "tool_execution_start":

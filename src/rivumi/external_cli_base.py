@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import threading
 from collections.abc import Mapping
@@ -251,7 +252,7 @@ class StreamJsonCliBackend:
                     timeout_seconds=self.timeout_seconds,
                     max_output_chars=self.max_output_bytes,
                     env=self._controlled_env(directory),
-                    stdin=self._input(task),
+                    stdin=self._input(task) or subprocess.DEVNULL,
                     cancel_event=cancel_event,
                     stdout_line_callback=stdout_line_callback,
                     max_stdout_line_bytes=self.max_event_bytes,
