@@ -30,7 +30,9 @@ SUPPORTED_PROVIDERS = frozenset(
         "ollama-cloud",
     }
 )
-SUPPORTED_RUNTIMES = frozenset({"rivumi-agent", "claude-code", "codex-cli"})
+SUPPORTED_RUNTIMES = frozenset(
+    {"rivumi-agent", "claude-code", "codex-cli", "opencode", "pi", "omp"}
+)
 MAX_CONFIG_BYTES = 64 * 1024
 
 

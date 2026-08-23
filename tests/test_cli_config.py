@@ -78,3 +78,28 @@ def test_cli_config_reads_legacy_default_when_new_path_is_absent(
     assert load_cli_config() == CliConfig(
         runtime="rivumi-agent", provider="ollama", model="qwen3:4b"
     )
+
+
+@pytest.mark.parametrize("runtime", ["opencode", "pi", "omp"])
+async def test_cli_config_accepts_headless_external_runtimes(runtime: str, tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    config = CliConfig(runtime=runtime, provider=None, model=None)
+
+    await save_cli_config(config, path)
+
+    assert load_cli_config(path) == CliConfig(runtime=runtime)
+
+
+def test_cli_config_previously_broke_app_startup_for_headless_external_runtimes(
+    tmp_path: Path,
+) -> None:
+    """Regression test for the SUPPORTED_RUNTIMES/runtime_registry drift bug.
+
+    Before this fix, selecting opencode/pi/omp in the runtime picker and saving
+    would write a config.json that load_cli_config() could never read back,
+    raising ValueError and preventing the CLI/TUI from starting at all.
+    """
+    path = tmp_path / "config.json"
+    path.write_text('{"runtime":"opencode","provider":null,"model":null}')
+
+    assert load_cli_config(path).runtime == "opencode"
