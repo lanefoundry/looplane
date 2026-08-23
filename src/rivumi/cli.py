@@ -1488,7 +1488,23 @@ def auth_set_key(
     except (OSError, PermissionError, ValueError) as exc:
         typer.echo(f"error: could not save {provider} credentials: {exc}", err=True)
         raise typer.Exit(code=2) from exc
-    typer.echo(f"Saved {provider} credentials for rivumi-agent at {path}")
+
+    from rivumi.provider_verification import verify_native_credential
+
+    result = asyncio.run(verify_native_credential(provider, values))
+    if result.skipped:
+        typer.echo(f"Saved {provider} credentials for rivumi-agent at {path}")
+    elif result.ok:
+        typer.secho(f"✓ Saved and verified {provider} credentials at {path}", fg=typer.colors.GREEN)
+    else:
+        # Verification failed, but the credential is already saved -- don't lock the user
+        # out of a key they may just not be able to verify from here (offline, provider
+        # outage). They can re-run `rivumi auth set-key` or `rivumi auth list --verify`.
+        typer.secho(
+            f"⚠ Saved {provider} credentials at {path}, but verification failed: "
+            f"{result.message}",
+            fg=typer.colors.YELLOW,
+        )
 
 
 @auth_app.command("clear-key")
@@ -1514,6 +1530,52 @@ def auth_clear_key(
         typer.echo(f"Cleared stored {provider} credentials for rivumi-agent.")
     else:
         typer.echo(f"No stored {provider} credentials were found.")
+
+
+@auth_app.command("list")
+def auth_list(
+    verify: Annotated[
+        bool,
+        typer.Option(
+            "--verify",
+            help="Also call each stored provider's API to confirm it still works "
+            "(slower, needs network).",
+        ),
+    ] = False,
+) -> None:
+    """Show which rivumi-agent providers have stored credentials, and their status.
+
+    Without --verify this only reads local state (env vars / the credential store) and
+    never touches the network, so it stays fast. --verify calls each already-configured
+    provider's API once, the same connection check `auth set-key` runs after saving.
+    """
+
+    from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS, missing_native_fields
+
+    for provider in sorted(NATIVE_CREDENTIAL_FIELDS):
+        if missing_native_fields(provider):
+            typer.echo(f"· {provider:<18} not set · run `rivumi auth set-key {provider}`")
+            continue
+        if not verify:
+            typer.secho(
+                f"⚠ {provider:<18} saved, not verified this run · re-run with --verify",
+                fg=typer.colors.YELLOW,
+            )
+            continue
+
+        from rivumi.native_credentials import resolve_native_field
+        from rivumi.provider_verification import verify_native_credential
+
+        fields: dict[str, str] = {}
+        for field in NATIVE_CREDENTIAL_FIELDS[provider]:
+            value = resolve_native_field(provider, field)
+            assert value is not None  # guaranteed non-missing by the check above
+            fields[field] = value
+        result = asyncio.run(verify_native_credential(provider, fields))
+        if result.ok:
+            typer.secho(f"✓ {provider:<18} verified", fg=typer.colors.GREEN)
+        else:
+            typer.secho(f"✗ {provider:<18} invalid · {result.message}", fg=typer.colors.RED)
 
 
 async def _exchange_codex_code(

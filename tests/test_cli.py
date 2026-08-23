@@ -636,10 +636,20 @@ def test_codex_status_is_redacted_and_logout_removes_only_app_grant(
     assert not credential_path.exists()
 
 
+def _stub_verification(monkeypatch, *, ok: bool, message: str = "") -> None:
+    from rivumi.provider_verification import VerificationResult
+
+    async def fake_verify(provider, fields, **_kwargs):
+        return VerificationResult(ok=ok, message=message or f"{provider} check")
+
+    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+
+
 def test_auth_set_key_prompts_hidden_and_persists_0600(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    _stub_verification(monkeypatch, ok=True)
 
     result = CliRunner().invoke(cli.app, ["auth", "set-key", "anthropic"], input="sk-secret\n")
 
@@ -651,6 +661,35 @@ def test_auth_set_key_prompts_hidden_and_persists_0600(tmp_path: Path, monkeypat
     assert path.is_file()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert resolve_native_field("anthropic", "api_key") == "sk-secret"
+
+
+def test_auth_set_key_prints_verification_success(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    _stub_verification(monkeypatch, ok=True)
+
+    result = CliRunner().invoke(cli.app, ["auth", "set-key", "anthropic"], input="sk-secret\n")
+
+    assert result.exit_code == 0, result.output
+    assert "✓" in result.output
+    assert "verified" in result.output
+
+
+def test_auth_set_key_prints_verification_failure_but_still_saves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    _stub_verification(monkeypatch, ok=False, message="anthropic rejected the credential (401).")
+
+    result = CliRunner().invoke(cli.app, ["auth", "set-key", "anthropic"], input="sk-bad\n")
+
+    assert result.exit_code == 0, result.output
+    assert "⚠" in result.output
+    assert "rejected the credential (401)" in result.output
+    from rivumi.native_credentials import resolve_native_field
+
+    assert resolve_native_field("anthropic", "api_key") == "sk-bad"
 
 
 def test_auth_set_key_rejects_unknown_provider() -> None:
@@ -673,6 +712,48 @@ def test_auth_clear_key_removes_stored_credential(tmp_path: Path, monkeypatch) -
     assert "Cleared" in cleared.output
     assert cleared_again.exit_code == 0
     assert "No stored" in cleared_again.output
+
+
+def test_auth_list_default_does_not_call_network(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from rivumi.native_credentials import save_native_credential
+
+    save_native_credential("gemini", {"api_key": "sk-secret"})
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("auth list without --verify must not call the network")
+
+    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fail_if_called)
+
+    result = CliRunner().invoke(cli.app, ["auth", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "gemini" in result.output
+    assert "not verified this run" in result.output
+
+
+def test_auth_list_shows_not_set_saved_and_verified_states(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from rivumi.native_credentials import save_native_credential
+    from rivumi.provider_verification import VerificationResult
+
+    save_native_credential("gemini", {"api_key": "good-key"})
+    save_native_credential("groq", {"api_key": "bad-key"})
+
+    async def fake_verify(provider, fields, **_kwargs):
+        if provider == "gemini":
+            return VerificationResult(ok=True, message="Connected to gemini.")
+        return VerificationResult(ok=False, message=f"{provider} rejected the credential (401).")
+
+    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+
+    result = CliRunner().invoke(cli.app, ["auth", "list", "--verify"])
+
+    assert result.exit_code == 0, result.output
+    assert "✓ gemini" in result.output
+    assert "✗ groq" in result.output
+    assert "· anthropic" in result.output
+    assert "not set" in result.output
 
 
 def test_live_eval_requires_explicit_subscription_opt_in() -> None:
