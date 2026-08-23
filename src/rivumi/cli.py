@@ -302,7 +302,7 @@ def _resolve_cli_settings(
     return resolved_provider, resolved_model, resolved_api_url
 
 
-def _discover_local_ollama_models() -> tuple[str, ...]:
+def _fetch_ollama_models() -> tuple[str, ...]:
     """Return bounded model names from the fixed loopback Ollama discovery endpoint."""
 
     try:
@@ -337,6 +337,20 @@ def _discover_local_ollama_models() -> tuple[str, ...]:
         if value and len(value) <= 256 and value.isprintable():
             names.append(value)
     return tuple(dict.fromkeys(names))
+
+
+def _discover_local_ollama_models() -> tuple[str, ...]:
+    """Cached, single-flight wrapper around :func:`_fetch_ollama_models`."""
+
+    from rivumi.startup_cache import CACHE_SCHEMA_VERSION, cached_scan
+
+    models = cached_scan(
+        OLLAMA_TAGS_URL,
+        CACHE_SCHEMA_VERSION,
+        _fetch_ollama_models,
+        ttl_seconds=300.0,
+    )
+    return tuple(models)
 
 
 def _choose_provider(*, current: str | None, ollama_models: tuple[str, ...]) -> str:

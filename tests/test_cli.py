@@ -908,3 +908,18 @@ def test_startup_tracer_emits_config_load_span(
     assert spans, "expected at least one startup span"
     assert any("config.load" in line for line in spans)
     assert all(line.startswith("{") and line.endswith("}") for line in spans)
+
+
+def test_discover_ollama_models_is_cached(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    fetches = []
+
+    def fake_fetch() -> tuple[str, ...]:
+        fetches.append(1)
+        return ("llama3:8b",)
+
+    monkeypatch.setattr(cli, "_fetch_ollama_models", fake_fetch)
+    first = cli._discover_local_ollama_models()
+    second = cli._discover_local_ollama_models()
+    assert first == second == ("llama3:8b",)
+    assert fetches == [1]

@@ -1,0 +1,42 @@
+name: startup-perf
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  startup-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install hyperfine (accurate timer when available)
+        run: |
+          if command -v hyperfine >/dev/null 2>&1; then
+            echo "hyperfine present"
+          else
+            echo "hyperfine absent; bench_startup.sh will use --fallback timer"
+          fi
+      - name: Benchmark current startup
+        run: bash scripts/bench_startup.sh --fallback --scenario help --scenario config
+      - name: Regression gate
+        run: |
+          if [ -f benchmarks/startup-baseline.json ]; then
+            bash scripts/check_startup_regression.sh \
+              benchmarks/startup-baseline.json \
+              .artifacts/startup/bench-help.json 10
+            bash scripts/check_startup_regression.sh \
+              benchmarks/startup-baseline.json \
+              .artifacts/startup/bench-config.json 10
+          else
+            echo "no benchmarks/startup-baseline.json committed; recording current numbers only"
+            mkdir -p benchmarks
+            cp .artifacts/startup/bench-help.json benchmarks/current-startup.json
+          fi
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-bench
+          path: .artifacts/startup/

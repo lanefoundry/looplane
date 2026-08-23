@@ -14,7 +14,10 @@ from rivumi.contracts import ModelTurn, RunResult, RunStatus
 from rivumi.models import ScriptedModel
 
 
-def test_discovers_bounded_unique_models_from_loopback_ollama(monkeypatch) -> None:
+def test_discovers_bounded_unique_models_from_loopback_ollama(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     entries = [{"name": "qwen3:4b"}, {"model": "qwen3:4b"}, {"name": "qwen3:0.6b"}]
     original_client = httpx.Client
     client = original_client(
@@ -27,7 +30,10 @@ def test_discovers_bounded_unique_models_from_loopback_ollama(monkeypatch) -> No
     assert cli._discover_local_ollama_models() == ("qwen3:4b", "qwen3:0.6b")
 
 
-def test_ollama_discovery_ignores_proxy_env_and_control_characters(monkeypatch) -> None:
+def test_ollama_discovery_ignores_proxy_env_and_control_characters(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     entries = [
         {"name": " qwen3:4b "},
         {"name": "bad\x1b[2Jname"},
@@ -61,8 +67,9 @@ def test_ollama_discovery_ignores_proxy_env_and_control_characters(monkeypatch) 
     ],
 )
 def test_ollama_discovery_fails_closed_on_bad_or_oversized_response(
-    response: httpx.Response, monkeypatch
+    response: httpx.Response, monkeypatch, tmp_path
 ) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     original_client = httpx.Client
 
     def handler(request: httpx.Request) -> httpx.Response:
