@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import builtins
 import runpy
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from rivumi import cli
@@ -375,6 +377,50 @@ def test_remote_ollama_uses_explicit_key_but_loopback_never_receives_it(monkeypa
     assert captured[1]["api_key"] is None
 
 
+@pytest.mark.parametrize(
+    ("provider", "env_var", "base_url"),
+    [
+        ("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1"),
+        ("deepseek", "DEEPSEEK_API_KEY", "https://api.deepseek.com"),
+        ("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1"),
+        ("moonshotai", "MOONSHOT_API_KEY", "https://api.moonshot.ai/v1"),
+        ("zai", "ZAI_API_KEY", "https://api.z.ai/api/coding/paas/v4"),
+        ("xai", "XAI_API_KEY", "https://api.x.ai/v1"),
+        ("nvidia-nim", "NVIDIA_API_KEY", "https://integrate.api.nvidia.com/v1"),
+        ("opencode-zen", "OPENCODE_ZEN_API_KEY", "https://opencode.ai/zen/v1"),
+        ("ollama-cloud", "OLLAMA_CLOUD_API_KEY", "https://ollama.com/v1"),
+    ],
+)
+def test_new_openai_compatible_providers_build_and_hint(
+    provider: str, env_var: str, base_url: str, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv(env_var, raising=False)
+
+    assert env_var in (cli._credential_hint(provider) or "")
+    with pytest.raises(typer.BadParameter, match=env_var):
+        cli._model_from_env(
+            provider=provider,
+            model="test-model",
+            base_url=None,
+            tool_calling=True,
+            allow_custom_provider_endpoint=False,
+        )
+
+    monkeypatch.setenv(env_var, "test-key")
+    assert cli._credential_hint(provider) is None
+    model = cli._model_from_env(
+        provider=provider,
+        model="test-model",
+        base_url=None,
+        tool_calling=True,
+        allow_custom_provider_endpoint=False,
+    )
+    assert model.provider_name == provider
+    assert model.model_id == "test-model"
+    assert str(model._client.base_url).rstrip("/") == base_url
+
+
 def test_claude_backend_requires_explicit_coding_boundaries(
     monkeypatch, tiny_bug_repo: Path, tmp_path: Path
 ) -> None:
@@ -588,6 +634,45 @@ def test_codex_status_is_redacted_and_logout_removes_only_app_grant(
     assert "secret" not in status.output
     assert logout.exit_code == 0
     assert not credential_path.exists()
+
+
+def test_auth_set_key_prompts_hidden_and_persists_0600(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+
+    result = CliRunner().invoke(cli.app, ["auth", "set-key", "anthropic"], input="sk-secret\n")
+
+    assert result.exit_code == 0, result.output
+    assert "sk-secret" not in result.output
+    from rivumi.native_credentials import native_credential_path, resolve_native_field
+
+    path = native_credential_path("anthropic")
+    assert path.is_file()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert resolve_native_field("anthropic", "api_key") == "sk-secret"
+
+
+def test_auth_set_key_rejects_unknown_provider() -> None:
+    result = CliRunner().invoke(cli.app, ["auth", "set-key", "made-up"])
+
+    assert result.exit_code != 0
+    assert "must be one of" in result.output
+
+
+def test_auth_clear_key_removes_stored_credential(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from rivumi.native_credentials import save_native_credential
+
+    save_native_credential("gemini", {"api_key": "sk-secret"})
+
+    cleared = CliRunner().invoke(cli.app, ["auth", "clear-key", "gemini"])
+    cleared_again = CliRunner().invoke(cli.app, ["auth", "clear-key", "gemini"])
+
+    assert cleared.exit_code == 0
+    assert "Cleared" in cleared.output
+    assert cleared_again.exit_code == 0
+    assert "No stored" in cleared_again.output
 
 
 def test_live_eval_requires_explicit_subscription_opt_in() -> None:

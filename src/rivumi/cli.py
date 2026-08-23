@@ -55,7 +55,44 @@ ONBOARDING_PROVIDERS = (
     ("anthropic", "Anthropic API (API key billing)"),
     ("gemini", "Google Gemini API"),
     ("workers-ai", "Cloudflare Workers AI"),
+    ("openrouter", "OpenRouter (100+ models, one key)"),
+    ("deepseek", "DeepSeek API"),
+    ("groq", "Groq (fast inference)"),
+    ("moonshotai", "Moonshot AI / Kimi"),
+    ("zai", "Z.ai / Zhipu (GLM)"),
+    ("xai", "xAI (Grok)"),
+    ("nvidia-nim", "NVIDIA NIM (build.nvidia.com)"),
+    ("opencode-zen", "OpenCode Zen"),
+    ("ollama-cloud", "Ollama Cloud (hosted, not local)"),
 )
+
+# Single API key, fixed OpenAI-compatible endpoint providers: (base_url, env var). Values
+# verified against @earendil-works/pi-ai's own provider source (the package pi/omp depend on),
+# except nvidia-nim/opencode-zen/ollama-cloud which come from the free-llm-models skill notes.
+# OpenCode Zen: some free-tier models train on submitted data per its own docs; do not route
+# sensitive/confidential code through it. Never the default provider.
+_SIMPLE_API_KEY_PROVIDERS: dict[str, str] = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "moonshotai": "MOONSHOT_API_KEY",
+    "zai": "ZAI_API_KEY",
+    "xai": "XAI_API_KEY",
+    "nvidia-nim": "NVIDIA_API_KEY",
+    "opencode-zen": "OPENCODE_ZEN_API_KEY",
+    "ollama-cloud": "OLLAMA_CLOUD_API_KEY",
+}
+_SIMPLE_API_KEY_BASE_URLS: dict[str, str] = {
+    "openrouter": "https://openrouter.ai/api/v1",
+    "deepseek": "https://api.deepseek.com",
+    "groq": "https://api.groq.com/openai/v1",
+    "moonshotai": "https://api.moonshot.ai/v1",
+    "zai": "https://api.z.ai/api/coding/paas/v4",
+    "xai": "https://api.x.ai/v1",
+    "nvidia-nim": "https://integrate.api.nvidia.com/v1",
+    "opencode-zen": "https://opencode.ai/zen/v1",
+    "ollama-cloud": "https://ollama.com/v1",
+}
 
 
 async def _dispose_controller(controller: ConversationController) -> None:
@@ -373,31 +410,47 @@ def _choose_model(*, provider: str, current: str | None, ollama_models: tuple[st
 
 
 def _credential_hint(provider: str, *, api_url: str | None = None) -> str | None:
+    from rivumi.native_credentials import resolve_native_field
+
     if provider == "ollama":
         return None
     if provider == "openai-compatible":
         endpoint = api_url or os.environ.get("OPENAI_BASE_URL")
-        if os.environ.get("OPENAI_API_KEY") or (endpoint and _loopback_url(endpoint)):
+        if resolve_native_field("openai-compatible", "api_key") or (
+            endpoint and _loopback_url(endpoint)
+        ):
             return None
-        return "Set OPENAI_API_KEY before the first run."
+        return "Set OPENAI_API_KEY, or run `rivumi auth set-key openai-compatible`."
     if provider == "anthropic":
         return (
             None
-            if os.environ.get("ANTHROPIC_API_KEY")
-            else ("Set ANTHROPIC_API_KEY before the first run.")
+            if resolve_native_field("anthropic", "api_key")
+            else "Set ANTHROPIC_API_KEY, or run `rivumi auth set-key anthropic`."
         )
     if provider == "gemini":
         return (
             None
-            if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-            else ("Set GEMINI_API_KEY or GOOGLE_API_KEY before the first run.")
+            if resolve_native_field("gemini", "api_key")
+            else "Set GEMINI_API_KEY or GOOGLE_API_KEY, or run `rivumi auth set-key gemini`."
         )
     if provider == "workers-ai":
-        ready = os.environ.get("CLOUDFLARE_ACCOUNT_ID") and os.environ.get("CLOUDFLARE_API_TOKEN")
+        ready = resolve_native_field("workers-ai", "account_id") and resolve_native_field(
+            "workers-ai", "api_token"
+        )
         return (
             None
             if ready
-            else ("Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN before the first run.")
+            else (
+                "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, "
+                "or run `rivumi auth set-key workers-ai`."
+            )
+        )
+    env_var = _SIMPLE_API_KEY_PROVIDERS.get(provider)
+    if env_var is not None:
+        return (
+            None
+            if resolve_native_field(provider, "api_key")
+            else f"Set {env_var}, or run `rivumi auth set-key {provider}`."
         )
     return None
 
@@ -792,6 +845,18 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _required_native_field(provider: str, field: str, *, env_hint: str) -> str:
+    from rivumi.native_credentials import resolve_native_field
+
+    value = resolve_native_field(provider, field)
+    if not value:
+        raise typer.BadParameter(
+            f"missing {field.replace('_', ' ')} for {provider}: set {env_hint}, "
+            f"or run `rivumi auth set-key {provider}`"
+        )
+    return value
+
+
 def _loopback_url(value: str) -> bool:
     return urlsplit(value).hostname in {"localhost", "127.0.0.1", "::1"}
 
@@ -817,11 +882,12 @@ def _model_from_env(
         OpenAICompatibleModel,
         WorkersAIModel,
     )
+    from rivumi.native_credentials import resolve_native_field
 
     if provider == "openai-compatible":
         return OpenAICompatibleModel(
             model=model,
-            api_key=os.environ.get("OPENAI_API_KEY"),
+            api_key=resolve_native_field("openai-compatible", "api_key"),
             base_url=base_url or os.environ.get("OPENAI_BASE_URL"),
             supports_tool_calling=tool_calling,
         )
@@ -855,17 +921,15 @@ def _model_from_env(
     if provider == "anthropic":
         return AnthropicModel(
             model=model,
-            api_key=_required_env("ANTHROPIC_API_KEY"),
+            api_key=_required_native_field("anthropic", "api_key", env_hint="ANTHROPIC_API_KEY"),
             base_url=base_url or os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
             supports_tool_calling=tool_calling,
             allow_custom_endpoint=allow_custom_provider_endpoint,
         )
     if provider == "gemini":
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if not api_key:
-            raise typer.BadParameter(
-                "required environment variable is missing: GEMINI_API_KEY or GOOGLE_API_KEY"
-            )
+        api_key = _required_native_field(
+            "gemini", "api_key", env_hint="GEMINI_API_KEY or GOOGLE_API_KEY"
+        )
         return GeminiModel(
             model=model,
             api_key=api_key,
@@ -875,12 +939,27 @@ def _model_from_env(
         )
     if provider == "workers-ai":
         return WorkersAIModel(
-            account_id=_required_env("CLOUDFLARE_ACCOUNT_ID"),
-            api_token=_required_env("CLOUDFLARE_API_TOKEN"),
+            account_id=_required_native_field(
+                "workers-ai", "account_id", env_hint="CLOUDFLARE_ACCOUNT_ID"
+            ),
+            api_token=_required_native_field(
+                "workers-ai", "api_token", env_hint="CLOUDFLARE_API_TOKEN"
+            ),
             model=model,
             base_url=base_url or "https://api.cloudflare.com/client/v4",
             supports_tool_calling=tool_calling,
             allow_custom_endpoint=allow_custom_provider_endpoint,
+        )
+    if provider in _SIMPLE_API_KEY_PROVIDERS:
+        api_key = _required_native_field(
+            provider, "api_key", env_hint=_SIMPLE_API_KEY_PROVIDERS[provider]
+        )
+        return OpenAICompatibleModel(
+            model=model,
+            api_key=api_key,
+            base_url=base_url or _SIMPLE_API_KEY_BASE_URLS[provider],
+            supports_tool_calling=tool_calling,
+            provider_name=provider,
         )
     raise typer.BadParameter(f"unsupported provider: {provider}")
 
@@ -1389,6 +1468,59 @@ def logout_codex() -> None:
         typer.echo(f"error: Codex authorization could not be removed: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo("ChatGPT/Codex authorization removed from Rivumi.")
+
+
+@auth_app.command("set-key")
+def auth_set_key(
+    provider: Annotated[
+        str,
+        typer.Argument(help="anthropic | gemini | openai-compatible | workers-ai"),
+    ],
+) -> None:
+    """Store an API key/secret for a rivumi-agent provider, local to this application only."""
+
+    from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS, save_native_credential
+
+    fields = NATIVE_CREDENTIAL_FIELDS.get(provider)
+    if fields is None:
+        choices = ", ".join(sorted(NATIVE_CREDENTIAL_FIELDS))
+        raise typer.BadParameter(f"provider must be one of: {choices}")
+    if not _stdin_is_tty():
+        raise typer.BadParameter("rivumi auth set-key requires a TTY")
+    values = {
+        field: typer.prompt(field.replace("_", " ").title(), hide_input=True) for field in fields
+    }
+    try:
+        path = save_native_credential(provider, values)
+    except (OSError, PermissionError, ValueError) as exc:
+        typer.echo(f"error: could not save {provider} credentials: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"Saved {provider} credentials for rivumi-agent at {path}")
+
+
+@auth_app.command("clear-key")
+def auth_clear_key(
+    provider: Annotated[
+        str,
+        typer.Argument(help="anthropic | gemini | openai-compatible | workers-ai"),
+    ],
+) -> None:
+    """Delete a stored rivumi-agent provider credential."""
+
+    from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS, clear_native_credential
+
+    if provider not in NATIVE_CREDENTIAL_FIELDS:
+        choices = ", ".join(sorted(NATIVE_CREDENTIAL_FIELDS))
+        raise typer.BadParameter(f"provider must be one of: {choices}")
+    try:
+        cleared = clear_native_credential(provider)
+    except (OSError, PermissionError, ValueError) as exc:
+        typer.echo(f"error: could not clear {provider} credentials: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if cleared:
+        typer.echo(f"Cleared stored {provider} credentials for rivumi-agent.")
+    else:
+        typer.echo(f"No stored {provider} credentials were found.")
 
 
 async def _exchange_codex_code(

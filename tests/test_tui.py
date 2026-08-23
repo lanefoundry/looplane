@@ -57,6 +57,7 @@ from rivumi.loop import AgentRunner
 from rivumi.models import ScriptedModel
 from rivumi.runtime_semantics import ContextTelemetry, PermissionMode, ProcessLocalGrant
 from rivumi.tui import (
+    ApiKeyModal,
     ApprovalModal,
     ConversationRuntimeEventMessage,
     InlineApprovalBlock,
@@ -750,6 +751,65 @@ async def test_native_runtime_switch_retains_conversation_but_new_command_clears
         await _wait_until(lambda: app._conversation_id is None)
         assert list(app.query(MessageBlock)) == []
         assert app._ask_history == []
+
+
+async def test_runtime_switch_to_native_prompts_for_missing_credential(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli", provider="anthropic"),
+        runner_factory=lambda *_: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"), ("rivumi-agent", "Rivumi")),
+        providers=(("anthropic", "Anthropic API"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        task = app.query_one("#task", MessageComposer)
+        task.load_text("/runtime rivumi-agent")
+        await pilot.press("enter")
+        await _wait_until(lambda: isinstance(app.screen, ApiKeyModal))
+        assert app.config.runtime == "codex-cli"
+        key_input = app.screen.query_one("#field-api_key")
+        key_input.value = "sk-test-secret"
+        await pilot.click("#save")
+        await _wait_until(lambda: not isinstance(app.screen, ApiKeyModal))
+        await _wait_until(lambda: app.config.runtime == "rivumi-agent")
+        assert "Credentials saved" in "\n".join(
+            entry.title for entry in app.query(TimelineEntry)
+        )
+
+    from rivumi.native_credentials import resolve_native_field
+
+    assert resolve_native_field("anthropic", "api_key") == "sk-test-secret"
+
+
+async def test_runtime_switch_to_native_cancelled_credential_prompt_leaves_runtime_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli", provider="anthropic"),
+        runner_factory=lambda *_: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"), ("rivumi-agent", "Rivumi")),
+        providers=(("anthropic", "Anthropic API"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        task = app.query_one("#task", MessageComposer)
+        task.load_text("/runtime rivumi-agent")
+        await pilot.press("enter")
+        await _wait_until(lambda: isinstance(app.screen, ApiKeyModal))
+        await pilot.click("#cancel")
+        await _wait_until(lambda: not isinstance(app.screen, ApiKeyModal))
+        assert app.config.runtime == "codex-cli"
+        assert "Runtime switch cancelled" in str(app.query_one("#status").content)
 
 
 async def test_resume_displays_persisted_failure_without_replaying_it(tmp_path: Path) -> None:

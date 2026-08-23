@@ -1292,6 +1292,65 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         self.dismiss(None)
 
 
+class ApiKeyModal(ModalScreen[dict[str, str] | None]):
+    """Collect the missing credential field(s) for a rivumi-agent provider."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    DEFAULT_CSS = """
+    ApiKeyModal { align: center middle; background: $background 70%; }
+    ApiKeyModal > Vertical {
+        width: 64; max-width: 92%; height: auto; padding: 1 2;
+        border: round $accent; background: $surface;
+    }
+    ApiKeyModal .title { text-style: bold; color: $accent; }
+    ApiKeyModal .hint { color: $text-muted; margin-bottom: 1; }
+    ApiKeyModal Label.field { margin-top: 1; }
+    ApiKeyModal Horizontal { height: auto; margin-top: 1; align-horizontal: right; }
+    ApiKeyModal Button { margin-left: 1; }
+    """
+
+    def __init__(self, *, provider: str, fields: tuple[str, ...]) -> None:
+        super().__init__()
+        self.provider = provider
+        self.fields = fields
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f"Connect {self.provider}", classes="title")
+            yield Static(
+                "Stored locally for rivumi-agent only (0600, never sent elsewhere).",
+                classes="hint",
+            )
+            for field in self.fields:
+                yield Label(field.replace("_", " ").title(), classes="field")
+                yield Input(password=True, id=f"field-{field}")
+            yield Static("", id="api-key-error", markup=False)
+            with Horizontal():
+                yield Button("Cancel", id="cancel")
+                yield Button("Save", id="save", variant="primary")
+
+    def on_mount(self) -> None:
+        if self.fields:
+            self.query_one(f"#field-{self.fields[0]}", Input).focus()
+
+    @on(Button.Pressed)
+    def choose(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        values: dict[str, str] = {}
+        for field in self.fields:
+            value = self.query_one(f"#field-{field}", Input).value.strip()
+            if not value:
+                self.query_one("#api-key-error", Static).update("All fields are required.")
+                return
+            values[field] = value
+        self.dismiss(values)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class RivumiApp(App[RunResult | None]):
     """One-run full-screen host; durable run state remains owned by AgentRunner."""
 
@@ -2337,6 +2396,39 @@ class RivumiApp(App[RunResult | None]):
         self._refresh_context()
         self.query_one("#status", Static).update(f"Using model · {selected or 'Automatic'}")
 
+    async def _ensure_native_credentials(self) -> bool:
+        """Prompt for and store a missing rivumi-agent provider credential, if any.
+
+        Returns ``True`` when the runtime switch should proceed (nothing was missing, or the
+        user supplied and saved it) and ``False`` when the user cancelled.
+        """
+
+        from rivumi.native_credentials import (
+            NATIVE_CREDENTIAL_FIELDS,
+            missing_native_fields,
+            save_native_credential,
+        )
+
+        provider = self.config.provider
+        if provider is None:
+            return True
+        fields = NATIVE_CREDENTIAL_FIELDS.get(provider)
+        if fields is None or not missing_native_fields(provider):
+            return True
+        result = await self.push_screen_wait(ApiKeyModal(provider=provider, fields=fields))
+        if result is None:
+            return False
+        try:
+            save_native_credential(provider, result)
+        except (OSError, PermissionError, ValueError) as exc:
+            self.query_one("#status", Static).update(f"Could not save credentials: {exc}")
+            return False
+        self._write_timeline(
+            "Credentials saved",
+            f"{provider} · stored locally for rivumi-agent, never sent elsewhere",
+        )
+        return True
+
     @work(exclusive=True, group="configuration")
     async def _apply_runtime_command(self, requested: str) -> None:
         aliases = {
@@ -2358,6 +2450,9 @@ class RivumiApp(App[RunResult | None]):
         previous = self._runtime()
         if selected == previous:
             self.query_one("#status", Static).update(f"Runtime unchanged · {selected}")
+            return
+        if selected == "rivumi-agent" and not await self._ensure_native_credentials():
+            self.query_one("#status", Static).update("Runtime switch cancelled")
             return
         previous_config = self.config
         previous_reported_model = self._runtime_reported_model

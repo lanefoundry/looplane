@@ -19,6 +19,15 @@ SUPPORTED_PROVIDERS = frozenset(
         "openai-codex",
         "openai-compatible",
         "workers-ai",
+        "openrouter",
+        "deepseek",
+        "groq",
+        "moonshotai",
+        "zai",
+        "xai",
+        "nvidia-nim",
+        "opencode-zen",
+        "ollama-cloud",
     }
 )
 SUPPORTED_RUNTIMES = frozenset({"rivumi-agent", "claude-code", "codex-cli"})

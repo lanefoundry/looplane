@@ -318,7 +318,10 @@ def test_explicit_provider_is_locked_during_setup(
     "present",
     ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
 )
-def test_workers_ai_hint_requires_both_credentials(present: str, monkeypatch) -> None:
+def test_workers_ai_hint_requires_both_credentials(
+    present: str, monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
     monkeypatch.setenv(present, "configured")
