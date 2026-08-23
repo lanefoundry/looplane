@@ -7,7 +7,6 @@ import contextlib
 import json
 import os
 import shlex
-import shutil
 import sys
 import time
 import webbrowser
@@ -45,6 +44,7 @@ if TYPE_CHECKING:
         tuple[str, Path, str | None, str | None], "ConversationController"
     ]
 
+import rivumi.runtime_registry as runtime_registry
 from rivumi.startup_trace import _STARTUP
 
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
@@ -56,21 +56,6 @@ ONBOARDING_PROVIDERS = (
     ("gemini", "Google Gemini API"),
     ("workers-ai", "Cloudflare Workers AI"),
 )
-EXTERNAL_RUNTIME_MODELS = {
-    "claude-code": (
-        ("Automatic · account default (recommended)", None),
-        ("Sonnet · daily coding", "sonnet"),
-        ("Opus · complex reasoning", "opus"),
-        ("Haiku · fast and efficient", "haiku"),
-        ("Best · strongest available", "best"),
-    ),
-    "codex-cli": (
-        ("Automatic · Codex default (recommended)", None),
-        ("GPT-5.6 Terra · balanced", "gpt-5.6-terra"),
-        ("GPT-5.6 Sol · strongest", "gpt-5.6-sol"),
-        ("GPT-5.6 Luna · fast", "gpt-5.6-luna"),
-    ),
-}
 
 
 async def _dispose_controller(controller: ConversationController) -> None:
@@ -92,7 +77,7 @@ def _acquire_native_controller(
     cache: NativeControllerCache,
     identity: tuple[str, Path, str | None, str | None],
     *,
-    runtime: str,
+    adapter: runtime_registry.RuntimeAdapter,
     repository: Path,
     model: str | None,
 ) -> ConversationController:
@@ -101,12 +86,15 @@ def _acquire_native_controller(
     A controller that closed itself after a failed turn (see
     :meth:`ConversationTurnHandle.run`) is discarded and replaced so a single
     protocol failure does not poison every later run in the session.
+
+    The native in-process session class comes from the runtime registry's
+    ``native_session`` import path, so adding a new native-driven runtime is a
+    registry entry rather than a branch here.
     """
 
-    from rivumi.claude_conversation import IsolatedClaudeConversation
-    from rivumi.codex_conversation import IsolatedCodexConversation
     from rivumi.conversation_controller import ConversationController
 
+    assert adapter.native_session is not None
     controller = cache.get(identity)
     if controller is not None and controller.is_closed:
         _schedule_controller_cleanup(controller)
@@ -114,26 +102,11 @@ def _acquire_native_controller(
         controller = None
     if controller is None:
         with _STARTUP.span("controller.build"):
-            session = (
-                IsolatedClaudeConversation(repository, model=model)
-                if runtime == "claude-code"
-                else IsolatedCodexConversation(repository, model=model)
-            )
+            session_cls = runtime_registry._resolve_class(adapter.native_session)
+            session = session_cls(repository, model=model)
             controller = ConversationController(session)
             cache[identity] = controller
     return controller
-
-
-def _tui_runtime_options() -> tuple[tuple[str, str], ...]:
-    """List local runtimes without claiming that an installed CLI is authenticated."""
-
-    options: list[tuple[str, str]] = []
-    if shutil.which("claude"):
-        options.append(("claude-code", "Claude Code · uses installed local login"))
-    if shutil.which("codex"):
-        options.append(("codex-cli", "Codex CLI · uses installed local login"))
-    options.append(("rivumi-agent", "Rivumi · API key or local model"))
-    return tuple(options)
 
 
 class DefaultCommandGroup(TyperGroup):
@@ -532,8 +505,6 @@ def chat(
     """Start this agent's own loop in the current repository."""
 
     from rivumi.approvals import TTYApprovalPolicy
-    from rivumi.claude_backend import ClaudeCodeBackend
-    from rivumi.codex_backend import CodexCliBackend
     from rivumi.console import ConsoleEventSink
     from rivumi.conversation import ConversationStore
     from rivumi.conversation_controller import decide_runtime_approval
@@ -597,7 +568,10 @@ def chat(
         ] = {}
 
         def make_runner(request: TuiRunRequest, approval_policy, event_sink):
-            if request.runtime in {"claude-code", "codex-cli"}:
+            adapter = runtime_registry.RUNTIME_REGISTRY.get(request.runtime)
+            if adapter is None:
+                raise ValueError(f"Unknown runtime: {request.runtime}")
+            if adapter.native_session is not None:
                 identity = (
                     request.runtime,
                     request.repository.resolve(),
@@ -607,7 +581,7 @@ def chat(
                 controller = _acquire_native_controller(
                     native_controllers,
                     identity,
-                    runtime=request.runtime,
+                    adapter=adapter,
                     repository=request.repository,
                     model=request.model,
                 )
@@ -630,16 +604,18 @@ def chat(
                 verification=_commands(check),
                 limits=Limits(
                     wall_time_seconds=(
-                        300.0 if request.runtime in {"claude-code", "codex-cli"} else 900.0
+                        300.0
+                        if adapter.kind is runtime_registry.RuntimeKind.EXTERNAL
+                        else 900.0
                     )
                 ),
             )
-            if request.runtime in {"claude-code", "codex-cli"}:
-                backend = (
-                    ClaudeCodeBackend(model=request.model, timeout_seconds=300.0)
-                    if request.runtime == "claude-code"
-                    else CodexCliBackend(model=request.model, timeout_seconds=300.0)
-                )
+            if (
+                adapter.kind is runtime_registry.RuntimeKind.EXTERNAL
+                and adapter.backend is not None
+            ):
+                backend_cls = runtime_registry._resolve_class(adapter.backend)
+                backend = backend_cls(model=request.model, timeout_seconds=300.0)
                 return (
                     ExternalCodingRunner(
                         task,
@@ -678,7 +654,8 @@ def chat(
 
         async def _warmup_native_controller() -> None:
             runtime = initial_config.runtime
-            if runtime not in {"claude-code", "codex-cli"}:
+            adapter = runtime_registry.RUNTIME_REGISTRY.get(runtime)
+            if adapter is None or adapter.native_session is None:
                 return
             try:
                 model = initial_config.runtime_model or initial_config.model
@@ -691,7 +668,7 @@ def chat(
                 controller = _acquire_native_controller(
                     native_controllers,
                     identity,
-                    runtime=runtime,
+                    adapter=adapter,
                     repository=repository,
                     model=model,
                 )
@@ -705,8 +682,8 @@ def chat(
             repository=repository,
             config=initial_config,
             runner_factory=make_runner,
-            runtimes=_tui_runtime_options(),
-            runtime_models=EXTERNAL_RUNTIME_MODELS,
+            runtimes=runtime_registry.runtime_options(),
+            runtime_models=runtime_registry.runtime_model_map(),
             providers=ONBOARDING_PROVIDERS,
             ollama_models=(
                 _discover_local_ollama_models()

@@ -766,8 +766,9 @@ def test_acquire_native_controller_reuses_open_and_recreates_closed(
 ) -> None:
     cache: dict = {}
     identity = ("codex-cli", tmp_path, None, None)
+    adapter = cli.runtime_registry.RUNTIME_REGISTRY["codex-cli"]
     first = cli._acquire_native_controller(
-        cache, identity, runtime="codex-cli", repository=tmp_path, model=None
+        cache, identity, adapter=adapter, repository=tmp_path, model=None
     )
     assert isinstance(first, ConversationController)
     assert not first.is_closed
@@ -775,7 +776,7 @@ def test_acquire_native_controller_reuses_open_and_recreates_closed(
 
     # An open controller is reused instead of rebuilt.
     again = cli._acquire_native_controller(
-        cache, identity, runtime="codex-cli", repository=tmp_path, model=None
+        cache, identity, adapter=adapter, repository=tmp_path, model=None
     )
     assert again is first
 
@@ -783,7 +784,7 @@ def test_acquire_native_controller_reuses_open_and_recreates_closed(
     # next run rebuilds a fresh conversation instead of failing forever.
     first._closed = True
     rebuilt = cli._acquire_native_controller(
-        cache, identity, runtime="codex-cli", repository=tmp_path, model=None
+        cache, identity, adapter=adapter, repository=tmp_path, model=None
     )
     assert rebuilt is not first
     assert not rebuilt.is_closed

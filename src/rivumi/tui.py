@@ -35,6 +35,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
+import rivumi.runtime_registry as runtime_registry
 from rivumi.approvals import (
     ApprovalDecision,
     ApprovalPolicy,
@@ -1197,14 +1198,21 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         self.query_one("#automatic-model", Static).display = (
             not rivumi_runtime and not external_options
         ) or (rivumi_runtime and not use_list and not use_input)
-        hint = {
-            "claude-code": (
-                "Uses the installed official Claude Code and its local login. "
+        adapter = runtime_registry.RUNTIME_REGISTRY.get(runtime)
+        if adapter is None:
+            hint = ""
+        elif rivumi_runtime:
+            hint = "Rivumi owns the model loop; API keys remain in environment variables."
+        elif adapter.native_session is not None:
+            hint = (
+                f"Uses the installed {adapter.label.split(' · ')[0]} and its local login. "
                 "Local-only and experimental."
-            ),
-            "codex-cli": "Uses the installed official Codex CLI and its local ChatGPT login.",
-            "rivumi-agent": "Rivumi owns the model loop; API keys remain in environment variables.",
-        }.get(runtime, "")
+            )
+        else:
+            hint = (
+                f"Rivumi drives the installed {adapter.executable} directly; "
+                "your provider keys stay in its config."
+            )
         self.query_one("#runtime-hint", Static).update(hint)
 
     @on(Select.Changed, "#runtime")
@@ -1488,7 +1496,7 @@ class RivumiApp(App[RunResult | None]):
         # ALLOW_SESSION lasts until this full-screen Rivumi process exits, including
         # subsequent bounded tasks. It is never persisted to disk.
         self._approval_session_grants: set[ProcessLocalGrant] = set()
-        self._mode = "ask" if self._runtime() in {"claude-code", "codex-cli"} else "agent"
+        self._mode = "ask" if self._uses_native_conversation() else "agent"
         self._ask_history: list[tuple[str, str]] = []
         self._external_message_generations: set[int] = set()
         self._tool_actions: dict[str, ToolActionBlock] = {}
@@ -1611,21 +1619,32 @@ class RivumiApp(App[RunResult | None]):
             return self.config.runtime
         return "rivumi-agent"
 
+    def _runtime_adapter(self) -> runtime_registry.RuntimeAdapter | None:
+        return runtime_registry.RUNTIME_REGISTRY.get(self._runtime())
+
+    def _uses_native_conversation(self, runtime: str | None = None) -> bool:
+        adapter = runtime_registry.RUNTIME_REGISTRY.get(runtime or self._runtime())
+        return adapter is not None and adapter.native_session is not None
+
     def _is_ready(self) -> bool:
-        if self._runtime() in {"claude-code", "codex-cli"}:
+        adapter = self._runtime_adapter()
+        if adapter is None:
+            return bool(self.config.provider and self.config.model)
+        if (
+            adapter.native_session is not None
+            or adapter.kind is runtime_registry.RuntimeKind.EXTERNAL
+        ):
             return True
         return bool(self.config.provider and self.config.model)
 
-    def _uses_native_conversation(self) -> bool:
-        return self._runtime() in {"claude-code", "codex-cli"}
-
     def _refresh_context(self) -> None:
-        runtime = self._runtime()
         active_model = self._runtime_reported_model or self.config.runtime_model or "Automatic"
-        if runtime == "claude-code":
-            identity = f"Claude Code  ·  local login  ·  {active_model}"
-        elif runtime == "codex-cli":
-            identity = f"Codex CLI  ·  local ChatGPT login  ·  {active_model}"
+        adapter = self._runtime_adapter()
+        if adapter is not None and (
+            adapter.native_session is not None
+            or adapter.kind is runtime_registry.RuntimeKind.EXTERNAL
+        ):
+            identity = f"{adapter.label}  ·  {active_model}"
         else:
             provider = self.config.provider or "connection required"
             model = self.config.model or "model required"
@@ -1634,12 +1653,12 @@ class RivumiApp(App[RunResult | None]):
         self.query_one("#context", Static).tooltip = str(self.repository)
 
     def _refresh_mode(self) -> None:
-        external = self._runtime() in {"claude-code", "codex-cli"}
+        native_session = self._uses_native_conversation()
         picker = self.query_one("#mode", Select)
-        if not external:
+        if not native_session:
             self._mode = "agent"
             picker.value = "agent"
-        picker.disabled = not external or self._agent_running
+        picker.disabled = not native_session or self._agent_running
         self.query_one("#send", Button).label = "Send"
 
     @on(Select.Changed, "#mode")
@@ -1656,7 +1675,7 @@ class RivumiApp(App[RunResult | None]):
         self._refresh_context()
 
     def action_toggle_mode(self) -> None:
-        if self._agent_running or self._runtime() not in {"claude-code", "codex-cli"}:
+        if self._agent_running or not self._uses_native_conversation():
             return
         self.query_one("#mode", Select).value = "agent" if self._mode == "ask" else "ask"
 
@@ -1695,8 +1714,8 @@ class RivumiApp(App[RunResult | None]):
         )
         native_switch = (
             context_changed
-            and previous_runtime in {"claude-code", "codex-cli"}
-            and current_runtime in {"claude-code", "codex-cli"}
+            and self._uses_native_conversation(previous_runtime)
+            and self._uses_native_conversation(current_runtime)
         )
         if native_switch:
             try:
@@ -1727,7 +1746,7 @@ class RivumiApp(App[RunResult | None]):
             self._release_conversation()
             self._ask_history.clear()
             self._reset_transcript()
-            self._mode = "ask" if current_runtime in {"claude-code", "codex-cli"} else "agent"
+            self._mode = "ask" if self._uses_native_conversation(current_runtime) else "agent"
             self._runtime_context_id = uuid4().hex
             self._native_session_has_context = False
             self._runtime_reported_model = None
@@ -1930,7 +1949,7 @@ class RivumiApp(App[RunResult | None]):
             return
         selected = (
             self.config.runtime_model
-            if runtime in {"claude-code", "codex-cli"}
+            if self._uses_native_conversation(runtime)
             else self.config.model
         )
         available = list(self.runtime_models.get(runtime, ()))
@@ -1960,11 +1979,6 @@ class RivumiApp(App[RunResult | None]):
         )
 
     def _show_runtime_selector(self) -> None:
-        descriptions = {
-            "claude-code": "Official Claude Code using the local login",
-            "codex-cli": "Official Codex CLI using the local ChatGPT login",
-            "rivumi-agent": "Rivumi-owned model and tool loop",
-        }
         current = self._runtime()
         self._show_inline_selector(
             command="runtime",
@@ -1974,7 +1988,9 @@ class RivumiApp(App[RunResult | None]):
                 InlineSelectorOption(
                     value=value,
                     label=label,
-                    description=descriptions.get(value, value),
+                    description=runtime_registry.RUNTIME_REGISTRY.get(value).label
+                    if runtime_registry.RUNTIME_REGISTRY.get(value) is not None
+                    else value,
                     selected=value == current,
                 )
                 for value, label in self.runtimes
@@ -2286,13 +2302,13 @@ class RivumiApp(App[RunResult | None]):
             selected = by_name.get(normalized.casefold(), normalized)
         previous = (
             self.config.runtime_model
-            if runtime in {"claude-code", "codex-cli"}
+            if self._uses_native_conversation(runtime)
             else self.config.model
         )
         if selected == previous:
             self.query_one("#status", Static).update(f"Model unchanged · {selected or 'Automatic'}")
             return
-        if runtime in {"claude-code", "codex-cli"}:
+        if self._uses_native_conversation(runtime):
             previous_config = self.config
             previous_reported_model = self._runtime_reported_model
             self.config = self.config.model_copy(update={"runtime_model": selected})
@@ -2348,8 +2364,8 @@ class RivumiApp(App[RunResult | None]):
         self.config = self.config.model_copy(update={"runtime": selected, "runtime_model": None})
         try:
             if (
-                previous in {"claude-code", "codex-cli"}
-                and selected in {"claude-code", "codex-cli"}
+                self._uses_native_conversation(previous)
+                and self._uses_native_conversation(selected)
                 and self._conversation_lease is not None
                 and self.conversation_store is not None
             ):
@@ -2367,7 +2383,7 @@ class RivumiApp(App[RunResult | None]):
         self._runtime_context_id = uuid4().hex
         self._native_session_has_context = False
         self._runtime_reported_model = None
-        self._mode = "ask" if selected in {"claude-code", "codex-cli"} else "agent"
+        self._mode = "ask" if self._uses_native_conversation(selected) else "agent"
         self._write_timeline("Runtime switched", f"{previous} → {selected} · transcript retained")
         self._refresh_context()
         self._refresh_mode()
@@ -2605,7 +2621,7 @@ class RivumiApp(App[RunResult | None]):
             provider=self.config.provider,
             model=(
                 self.config.runtime_model
-                if self._runtime() in {"claude-code", "codex-cli"}
+                if self._uses_native_conversation()
                 else self.config.model
             ),
             api_url=self.config.api_url,
@@ -2704,7 +2720,7 @@ class RivumiApp(App[RunResult | None]):
                 self.query_one("#activity", RichLog).write(
                     "Run failed before completion:\n" + str(exc)
                 )
-                if self._mode == "agent" and self._runtime() in {"claude-code", "codex-cli"}:
+                if self._mode == "agent" and self._uses_native_conversation():
                     self.query_one("#activity", RichLog).write(
                         "Switch to Ask for read-only conversation on a dirty repository."
                     )
@@ -2768,7 +2784,7 @@ class RivumiApp(App[RunResult | None]):
         if self.conversation_store is None:
             return
         runtime = self._runtime()
-        if runtime not in {"claude-code", "codex-cli"}:
+        if not self._uses_native_conversation(runtime):
             return
         if self._conversation_lease is None:
             created = await self.conversation_store.create(

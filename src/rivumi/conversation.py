@@ -88,12 +88,24 @@ def _bounded_text(value: str, *, label: str, allow_blank: bool = False) -> str:
     return value
 
 
+def _validate_runtime_slug(value: object) -> object:
+    """Accept any runtime registered in the runtime registry (``None`` passes through)."""
+
+    if value is None:
+        return value
+    from rivumi.runtime_registry import RUNTIME_REGISTRY
+
+    if value not in RUNTIME_REGISTRY:
+        raise ValueError(f"unknown runtime: {value!r}")
+    return value
+
+
 class ConversationManifest(ContractModel):
     """Small versioned index for one Rivumi-owned conversation."""
 
     schema_version: Literal[1] = SCHEMA_VERSION
     conversation_id: str
-    runtime: Literal["claude-code", "codex-cli"]
+    runtime: str
     model_override: str | None = None
     title: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -102,6 +114,11 @@ class ConversationManifest(ContractModel):
     turn_count: int = Field(default=0, ge=0)
     active_turn_id: str | None = None
     active_writer_token: str | None = None
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def validate_runtime(cls, value: object) -> object:
+        return _validate_runtime_slug(value)
 
     @field_validator("conversation_id")
     @classmethod
@@ -140,13 +157,18 @@ class ConversationEvent(ContractModel):
     sequence: int = Field(ge=0)
     event_id: str = Field(default_factory=lambda: uuid4().hex)
     event_type: ConversationEventKind
-    runtime: Literal["claude-code", "codex-cli"] | None = None
+    runtime: str | None = None
     model_override: str | None = None
     turn_id: str | None = None
     text: str | None = None
     reason: str | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def validate_runtime(cls, value: object) -> object:
+        return _validate_runtime_slug(value)
 
     @field_validator("conversation_id")
     @classmethod
@@ -472,9 +494,9 @@ class ConversationStore:
     def _context_state(
         events: tuple[ConversationEvent, ...],
         *,
-        runtime: Literal["claude-code", "codex-cli"],
+        runtime:         str,
         model_override: str | None,
-    ) -> tuple[Literal["claude-code", "codex-cli"], str | None]:
+    ) -> tuple[        str, str | None]:
         for event in events:
             if event.event_type == ConversationEventKind.CONTEXT_CHANGED:
                 assert event.runtime is not None
@@ -522,7 +544,7 @@ class ConversationStore:
     async def create(
         self,
         *,
-        runtime: Literal["claude-code", "codex-cli"],
+        runtime:         str,
         model_override: str | None = None,
         title: str = "",
         conversation_id: str | None = None,
@@ -555,7 +577,7 @@ class ConversationStore:
     async def new(
         self,
         *,
-        runtime: Literal["claude-code", "codex-cli"],
+        runtime:         str,
         model_override: str | None = None,
         title: str = "",
         conversation_id: str | None = None,
@@ -649,7 +671,7 @@ class ConversationStore:
         self,
         lease: ConversationWriterLease,
         *,
-        runtime: Literal["claude-code", "codex-cli"],
+        runtime:         str,
         model_override: str | None = None,
     ) -> ConversationEvent:
         """Persist a provider-neutral runtime/model switch between completed turns."""
