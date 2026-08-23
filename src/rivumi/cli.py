@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         tuple[str, Path, str | None, str | None], "ConversationController"
     ]
 
+import rivumi.provider_catalog as provider_catalog
 import rivumi.runtime_registry as runtime_registry
 from rivumi.startup_trace import _STARTUP
 
@@ -82,17 +83,8 @@ _SIMPLE_API_KEY_PROVIDERS: dict[str, str] = {
     "opencode-zen": "OPENCODE_ZEN_API_KEY",
     "ollama-cloud": "OLLAMA_CLOUD_API_KEY",
 }
-_SIMPLE_API_KEY_BASE_URLS: dict[str, str] = {
-    "openrouter": "https://openrouter.ai/api/v1",
-    "deepseek": "https://api.deepseek.com",
-    "groq": "https://api.groq.com/openai/v1",
-    "moonshotai": "https://api.moonshot.ai/v1",
-    "zai": "https://api.z.ai/api/coding/paas/v4",
-    "xai": "https://api.x.ai/v1",
-    "nvidia-nim": "https://integrate.api.nvidia.com/v1",
-    "opencode-zen": "https://opencode.ai/zen/v1",
-    "ollama-cloud": "https://ollama.com/v1",
-}
+# Base URLs live in provider_catalog (shared with provider_verification's connection checks).
+_SIMPLE_API_KEY_BASE_URLS: dict[str, str] = provider_catalog.OPENAI_COMPATIBLE_BASE_URLS
 
 
 async def _dispose_controller(controller: ConversationController) -> None:
@@ -922,7 +914,8 @@ def _model_from_env(
         return AnthropicModel(
             model=model,
             api_key=_required_native_field("anthropic", "api_key", env_hint="ANTHROPIC_API_KEY"),
-            base_url=base_url or os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+            base_url=base_url
+            or os.environ.get("ANTHROPIC_BASE_URL", provider_catalog.ANTHROPIC_BASE_URL),
             supports_tool_calling=tool_calling,
             allow_custom_endpoint=allow_custom_provider_endpoint,
         )
@@ -933,7 +926,7 @@ def _model_from_env(
         return GeminiModel(
             model=model,
             api_key=api_key,
-            base_url=base_url or "https://generativelanguage.googleapis.com/v1beta",
+            base_url=base_url or provider_catalog.GEMINI_BASE_URL,
             supports_tool_calling=tool_calling,
             allow_custom_endpoint=allow_custom_provider_endpoint,
         )
@@ -946,7 +939,7 @@ def _model_from_env(
                 "workers-ai", "api_token", env_hint="CLOUDFLARE_API_TOKEN"
             ),
             model=model,
-            base_url=base_url or "https://api.cloudflare.com/client/v4",
+            base_url=base_url or provider_catalog.WORKERS_AI_BASE_URL,
             supports_tool_calling=tool_calling,
             allow_custom_endpoint=allow_custom_provider_endpoint,
         )
