@@ -662,6 +662,31 @@ def chat(
                 selected_model,
             )
 
+        async def _warmup_native_controller() -> None:
+            runtime = initial_config.runtime
+            if runtime not in {"claude-code", "codex-cli"}:
+                return
+            try:
+                model = initial_config.runtime_model or initial_config.model
+                identity = (
+                    runtime,
+                    repository.resolve(),
+                    model,
+                    tui_app._runtime_context_id,
+                )
+                controller = _acquire_native_controller(
+                    native_controllers,
+                    identity,
+                    runtime=runtime,
+                    repository=repository,
+                    model=model,
+                )
+                await controller._ensure_started()
+            except BaseException:
+                # Warm-up is best-effort: a failure must never break app startup
+                # or the first real turn.
+                pass
+
         tui_app = RivumiApp(
             repository=repository,
             config=initial_config,
@@ -677,6 +702,7 @@ def chat(
             initial_prompt=instruction,
             locked_provider=requested_provider,
             conversation_store=ConversationStore(),
+            runner_warmup=_warmup_native_controller,
         )
         result = tui_app.run()
         final_transcript = tui_app.final_transcript_text

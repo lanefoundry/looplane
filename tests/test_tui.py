@@ -135,6 +135,24 @@ async def _wait_until(predicate, *, attempts: int = 50) -> None:
     raise AssertionError("condition did not become true")
 
 
+async def test_runner_warmup_is_scheduled_on_mount(tmp_path: Path) -> None:
+    started = asyncio.Event()
+
+    async def warmup() -> None:
+        started.set()
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="claude-code", provider="anthropic", model="x"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("anthropic", "Anthropic"),),
+        runner_warmup=warmup,
+    )
+    async with app.run_test(size=(100, 30)):
+        await asyncio.wait_for(started.wait(), timeout=2)
+    assert started.is_set()
+
+
 async def test_configured_tui_runs_task_and_projects_raw_events(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 

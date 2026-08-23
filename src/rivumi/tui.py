@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -1462,6 +1462,7 @@ class RivumiApp(App[RunResult | None]):
         initial_prompt: str | None = None,
         locked_provider: str | None = None,
         conversation_store: ConversationStore | None = None,
+        runner_warmup: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         super().__init__()
         self.repository = repository
@@ -1474,6 +1475,7 @@ class RivumiApp(App[RunResult | None]):
         self.initial_prompt = initial_prompt
         self.locked_provider = locked_provider
         self.conversation_store = conversation_store
+        self.runner_warmup = runner_warmup
         self._runner: TuiRunner | None = None
         self._resource: TuiResource | None = None
         self._persistent_resources: list[TuiResource] = []
@@ -1591,6 +1593,8 @@ class RivumiApp(App[RunResult | None]):
         else:
             self.query_one("#task", MessageComposer).focus()
         self._refresh_readiness()
+        if self.runner_warmup is not None:
+            asyncio.create_task(self.runner_warmup())
 
     def on_resize(self, event: Resize) -> None:
         self.set_class(event.size.width < 70, "narrow")
