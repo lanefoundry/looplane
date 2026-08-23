@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.backends import ExternalAgentTask, ExternalRunStatus
-from coding_agent.codex_backend import CodexCliBackend
+from rivumi.backends import ExternalAgentEvent, ExternalAgentTask, ExternalRunStatus
+from rivumi.codex_backend import CodexCliBackend
 
 
 def _fake_codex(tmp_path: Path, body: str) -> Path:
@@ -17,6 +17,59 @@ def _fake_codex(tmp_path: Path, body: str) -> Path:
     executable.write_text(f"#!/usr/bin/env python3\n{body}", encoding="utf-8")
     executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
     return executable
+
+
+@pytest.mark.asyncio
+async def test_codex_backend_emits_normalized_events_before_child_exit(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    finished = tmp_path / "finished"
+    executable = _fake_codex(
+        tmp_path,
+        f"""
+import json, pathlib, time
+print(json.dumps({{"type": "thread.started", "thread_id": "private"}}), flush=True)
+print(json.dumps({{"type": "turn.started"}}), flush=True)
+print(json.dumps({{"type": "item.completed", "item": {{
+    "id": "private-message", "type": "agent_message", "text": "hello"
+}}}}), flush=True)
+time.sleep(0.4)
+pathlib.Path({str(finished)!r}).write_text("done")
+print(json.dumps({{"type": "turn.completed"}}), flush=True)
+""",
+    )
+    received: list[ExternalAgentEvent] = []
+    message_received = asyncio.Event()
+
+    class Sink:
+        async def emit(self, event: ExternalAgentEvent) -> None:
+            received.append(event)
+            if event.event_type == "message":
+                message_received.set()
+
+    run_task = asyncio.create_task(
+        CodexCliBackend(executable=executable).run(
+            ExternalAgentTask(task_id="streaming", instruction="say hello"),
+            working_directory=workspace,
+            event_sink=Sink(),
+        )
+    )
+
+    await asyncio.wait_for(message_received.wait(), timeout=1)
+    assert not run_task.done()
+    assert not finished.exists()
+    result = await run_task
+
+    assert result.status is ExternalRunStatus.COMPLETED
+    assert [event.event_type for event in received] == [
+        "system",
+        "system",
+        "message",
+        "result",
+    ]
+    assert "private" not in "".join(event.model_dump_json() for event in received)
 
 
 @pytest.mark.asyncio
@@ -76,6 +129,35 @@ print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}))
     assert "echo private" not in serialized
     assert backend.local_only is True
     assert backend.experimental is True
+
+
+@pytest.mark.asyncio
+async def test_codex_backend_forwards_optional_model(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = _fake_codex(
+        tmp_path,
+        """
+import json, sys
+assert sys.argv[-3:] == ["--model", "gpt-5.6-terra", "-"]
+assert sys.argv[sys.argv.index("--sandbox") + 1] == "read-only"
+print(json.dumps({"type": "thread.started"}))
+print(json.dumps({"type": "turn.started"}))
+print(json.dumps({"type": "item.completed", "item": {
+    "type": "agent_message", "text": "done"
+}}))
+print(json.dumps({"type": "turn.completed", "usage": {}}))
+""",
+    )
+
+    result = await CodexCliBackend(
+        executable=executable, model="gpt-5.6-terra", sandbox_mode="read-only"
+    ).run(
+        ExternalAgentTask(task_id="task-model", instruction="inspect"),
+        working_directory=workspace,
+    )
+
+    assert result.status is ExternalRunStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -176,8 +258,7 @@ async def test_codex_backend_timeout_kills_process_group(tmp_path: Path) -> None
     workspace.mkdir()
     marker = tmp_path / "grandchild-finished"
     child = (
-        "import pathlib,time; time.sleep(0.6); "
-        f"pathlib.Path({str(marker)!r}).write_text('alive')"
+        f"import pathlib,time; time.sleep(0.6); pathlib.Path({str(marker)!r}).write_text('alive')"
     )
     executable = _fake_codex(
         tmp_path,

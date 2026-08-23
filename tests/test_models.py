@@ -8,7 +8,7 @@ import httpx
 import pytest
 from openai import APIStatusError
 
-from coding_agent.contracts import (
+from rivumi.contracts import (
     Message,
     ModelTurn,
     ToolCall,
@@ -16,7 +16,7 @@ from coding_agent.contracts import (
     ToolObservation,
     Usage,
 )
-from coding_agent.models import (
+from rivumi.models import (
     AnthropicModel,
     GeminiModel,
     OpenAICompatibleModel,

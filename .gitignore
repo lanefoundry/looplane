@@ -8,3 +8,5 @@ runs/
 dist/
 build/
 *.egg-info/
+.artifacts/
+.agent-work/

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.policy import PathPolicyError, SafePathPolicy
+from rivumi.policy import PathPolicyError, SafePathPolicy
 
 
 @pytest.fixture

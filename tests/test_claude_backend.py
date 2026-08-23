@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.backends import ExternalAgentTask, ExternalRunStatus
-from coding_agent.claude_backend import ClaudeCodeBackend
+from rivumi.backends import ExternalAgentEvent, ExternalAgentTask, ExternalRunStatus
+from rivumi.claude_backend import ClaudeCodeBackend
 
 
 def _fake_claude(tmp_path: Path, body: str) -> Path:
@@ -17,6 +17,54 @@ def _fake_claude(tmp_path: Path, body: str) -> Path:
     executable.write_text(f"#!/usr/bin/env python3\n{body}", encoding="utf-8")
     executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
     return executable
+
+
+@pytest.mark.asyncio
+async def test_claude_backend_emits_message_before_exit_and_deduplicates_result(
+    tmp_path: Path,
+) -> None:
+    finished = tmp_path / "finished"
+    executable = _fake_claude(
+        tmp_path,
+        f"""
+import json, pathlib, time
+print(json.dumps({{"type": "system", "subtype": "init", "session_id": "private"}}), flush=True)
+print(json.dumps({{"type": "assistant", "message": {{"content": [
+    {{"type": "text", "text": "hello"}}
+]}}}}), flush=True)
+time.sleep(0.4)
+pathlib.Path({str(finished)!r}).write_text("done")
+print(json.dumps({{"type": "result", "subtype": "success", "is_error": False,
+                  "result": "hello"}}), flush=True)
+""",
+    )
+    received: list[ExternalAgentEvent] = []
+    message_received = asyncio.Event()
+
+    class Sink:
+        async def emit(self, event: ExternalAgentEvent) -> None:
+            received.append(event)
+            if event.event_type == "message":
+                message_received.set()
+
+    run_task = asyncio.create_task(
+        ClaudeCodeBackend(executable=executable).run(
+            ExternalAgentTask(task_id="streaming", instruction="say hello"),
+            event_sink=Sink(),
+        )
+    )
+
+    await asyncio.wait_for(message_received.wait(), timeout=1)
+    assert not run_task.done()
+    assert not finished.exists()
+    result = await run_task
+
+    assert result.status is ExternalRunStatus.COMPLETED
+    assert result.summary == "hello"
+    assert [event.event_type for event in received] == ["system", "message", "result"]
+    assert received[-1].text is None
+    assert result.events[-1].text is None
+    assert "private" not in "".join(event.model_dump_json() for event in received)
 
 
 @pytest.mark.asyncio
@@ -31,7 +79,7 @@ assert "--tools=" in sys.argv
 request = json.loads(sys.stdin.readline())
 assert request["type"] == "user"
 assert request["message"]["content"] == "inspect the fixture"
-assert os.path.basename(os.getcwd()).startswith("pca-claude-")
+assert os.path.basename(os.getcwd()).startswith("rivumi-claude-")
 print(json.dumps({"type": "system", "subtype": "init", "session_id": "private"}))
 print(json.dumps({"type": "assistant", "message": {"content": [
     {"type": "text", "text": "inspection complete"}
@@ -53,6 +101,25 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
     assert "private" not in result.model_dump_json()
     assert backend.local_only is True
     assert backend.experimental is True
+
+
+@pytest.mark.asyncio
+async def test_claude_backend_forwards_optional_model_alias(tmp_path: Path) -> None:
+    executable = _fake_claude(
+        tmp_path,
+        """
+import json, sys
+assert sys.argv[sys.argv.index("--model") + 1] == "sonnet"
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                  "result": "done"}))
+""",
+    )
+
+    result = await ClaudeCodeBackend(executable=executable, model="sonnet").run(
+        ExternalAgentTask(task_id="task-model", instruction="inspect")
+    )
+
+    assert result.status is ExternalRunStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -111,8 +178,7 @@ raise SystemExit(7)
 async def test_claude_backend_timeout_kills_process_group(tmp_path: Path) -> None:
     marker = tmp_path / "grandchild-finished"
     child = (
-        "import pathlib,time; time.sleep(0.6); "
-        f"pathlib.Path({str(marker)!r}).write_text('alive')"
+        f"import pathlib,time; time.sleep(0.6); pathlib.Path({str(marker)!r}).write_text('alive')"
     )
     executable = _fake_claude(
         tmp_path,

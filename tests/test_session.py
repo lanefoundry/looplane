@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.contracts import TaskContract, VerificationCommand
-from coding_agent.events import RunEvent
-from coding_agent.prompts import CODING_AGENT_PROMPT_VERSION
-from coding_agent.session import (
+from rivumi.contracts import TaskContract, VerificationCommand
+from rivumi.events import RunEvent
+from rivumi.prompts import CODING_AGENT_PROMPT_VERSION
+from rivumi.session import (
     SessionBusyError,
     SessionManifest,
     SessionStore,

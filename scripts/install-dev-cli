@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_dir=$(dirname -- "$script_dir")
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "error: uv is required (https://docs.astral.sh/uv/)" >&2
+    exit 1
+fi
+
+constraints_file=$(mktemp "${TMPDIR:-/tmp}/rivumi-tool-constraints.XXXXXX")
+trap 'rm -f "$constraints_file"' EXIT HUP INT TERM
+
+uv export \
+    --project "$project_dir" \
+    --locked \
+    --no-dev \
+    --no-emit-project \
+    --no-hashes \
+    --output-file "$constraints_file" \
+    >/dev/null
+
+# The project was renamed before its first public release. Remove the former local
+# development tool so its `pca` and `coding-agent` commands cannot shadow Rivumi.
+if uv tool list | grep -q '^python-coding-agent '; then
+    uv tool uninstall python-coding-agent
+fi
+
+uv tool install \
+    --editable "$project_dir" \
+    --constraints "$constraints_file" \
+    --force
+
+tool_python="$(uv tool dir)/rivumi/bin/python"
+tool_rivumi="$(uv tool dir)/rivumi/bin/rivumi"
+uv pip check --python "$tool_python"
+"$tool_rivumi" --help >/dev/null
+
+echo "rivumi development command is synchronized with uv.lock"

@@ -1,4 +1,4 @@
-from coding_agent.prompts import CODING_AGENT_PROMPT_VERSION, CODING_AGENT_SYSTEM_PROMPT
+from rivumi.prompts import CODING_AGENT_PROMPT_VERSION, CODING_AGENT_SYSTEM_PROMPT
 
 
 def test_m3_prompt_versions_the_observed_exact_edit_guidance() -> None:

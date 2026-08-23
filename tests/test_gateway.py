@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import httpx
 import pytest
 
-from coding_agent.contracts import (
+from rivumi.contracts import (
     ConversationItem,
     Message,
     ModelCapabilities,
@@ -16,8 +16,8 @@ from coding_agent.contracts import (
     ToolObservation,
     Usage,
 )
-from coding_agent.gateway import ModelGateway
-from coding_agent.models import ProviderError, ProviderErrorKind
+from rivumi.gateway import ModelGateway
+from rivumi.models import ProviderError, ProviderErrorKind
 
 
 class CapturingProvider:

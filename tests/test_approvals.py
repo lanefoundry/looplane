@@ -5,7 +5,7 @@ from io import StringIO
 import pytest
 from pydantic import ValidationError
 
-from coding_agent.approvals import (
+from rivumi.approvals import (
     ApprovalDecision,
     ApprovalReason,
     ApprovalRequest,
@@ -15,7 +15,7 @@ from coding_agent.approvals import (
     TTYApprovalPolicy,
     effect_for_tool,
 )
-from coding_agent.contracts import ToolCall, VerificationCommand
+from rivumi.contracts import ToolCall, VerificationCommand
 
 
 def request(effect: ToolEffect) -> ApprovalRequest:

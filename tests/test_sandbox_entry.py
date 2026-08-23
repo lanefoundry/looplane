@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.contracts import ModelTurn, ToolCall
-from coding_agent.models import ScriptedModel
-from coding_agent.sandbox_entry import (
+from rivumi.contracts import ModelTurn, ToolCall
+from rivumi.models import ScriptedModel
+from rivumi.sandbox_entry import (
     SandboxEntrypointError,
     _main,
     _read_and_remove_run_token,
@@ -125,7 +125,7 @@ async def test_sandbox_entry_rejects_oversized_request(tmp_path: Path) -> None:
 
 
 def test_run_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> None:
-    token_path = tmp_path / ".pca-run-token"
+    token_path = tmp_path / ".rivumi-run-token"
     token_path.write_text("signed-run-capability", encoding="utf-8")
     token_path.chmod(0o600)
 
@@ -136,7 +136,7 @@ def test_run_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> None:
 
 
 def test_run_capability_rejects_loose_permissions(tmp_path: Path) -> None:
-    token_path = tmp_path / ".pca-run-token"
+    token_path = tmp_path / ".rivumi-run-token"
     token_path.write_text("signed-run-capability", encoding="utf-8")
     token_path.chmod(0o644)
 
@@ -154,10 +154,10 @@ async def test_main_returns_only_a_bounded_entrypoint_failure_code(tmp_path: Pat
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "coding_agent.sandbox_entry.Path",
+            "rivumi.sandbox_entry.Path",
             lambda value: response_path if value == "/workspace/response.json" else Path(value),
         )
-        monkeypatch.setattr("coding_agent.sandbox_entry.run_sandbox_request", fail_entrypoint)
+        monkeypatch.setattr("rivumi.sandbox_entry.run_sandbox_request", fail_entrypoint)
         exit_code = await _main(["sandbox_entry", "request.json"])
 
     assert exit_code == 1

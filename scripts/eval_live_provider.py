@@ -55,7 +55,7 @@ def prepare_source(fixture: Path, destination: Path) -> tuple[str, str]:
     )
     require_command(["git", "init", "-q"], cwd=destination)
     require_command(["git", "config", "user.email", "eval@example.com"], cwd=destination)
-    require_command(["git", "config", "user.name", "PCA Eval"], cwd=destination)
+    require_command(["git", "config", "user.name", "Rivumi Eval"], cwd=destination)
     require_command(["git", "add", "."], cwd=destination)
     require_command(["git", "commit", "-qm", "fixture: live provider eval"], cwd=destination)
     return require_command(["git", "rev-parse", "HEAD"], cwd=destination), tree_digest(
@@ -99,7 +99,7 @@ def build_agent_command(
     command = [
         sys.executable,
         "-m",
-        "coding_agent",
+        "rivumi",
         "run",
         "--repo",
         str(source),

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.contracts import Limits, ToolCall, VerificationCommand
-from coding_agent.policy import SafePathPolicy
-from coding_agent.tools import ToolExecutor
+from rivumi.contracts import Limits, ToolCall, VerificationCommand
+from rivumi.policy import SafePathPolicy
+from rivumi.tools import ToolExecutor
 
 
 def make_executor(
@@ -89,6 +89,32 @@ diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.
     assert "left - right" in (
         tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
     ).read_text()
+
+
+def test_apply_patch_rejects_stale_target_content(tiny_bug_repo: Path) -> None:
+    executor = make_executor(tiny_bug_repo)
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    patch = """\
+diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
+--- a/src/tiny_python_bug/calculator.py
++++ b/src/tiny_python_bug/calculator.py
+@@ -1,3 +1,3 @@
+ def add(left: int, right: int) -> int:
+     \"\"\"Return the sum of two integers.\"\"\"
+-    return left - right
++    return left + right
+"""
+    target.write_text(
+        target.read_text().replace("return left - right", "return left * right"),
+        encoding="utf-8",
+    )
+
+    observation = executor.execute(ToolCall(name="apply_patch", arguments={"patch": patch}))
+
+    assert observation.ok is False
+    assert observation.error is not None
+    assert "git apply --check failed" in observation.error
+    assert target.read_text().endswith("return left * right\n")
 
 
 def test_replace_text_makes_exact_reviewable_edit_and_preserves_mode(
@@ -439,7 +465,7 @@ def test_replace_text_restores_original_after_post_replace_fsync_failure(
     assert observation.ok is False
     assert observation.error is not None and "fsync failure" in observation.error
     assert target.read_bytes() == before
-    assert not list(target.parent.glob(".*.pca-replace-*"))
+    assert not list(target.parent.glob(".*.rivumi-replace-*"))
 
 
 def test_tool_output_limit_is_a_true_utf8_byte_cap(tiny_bug_repo: Path) -> None:

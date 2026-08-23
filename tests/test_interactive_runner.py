@@ -8,14 +8,14 @@ from pathlib import Path
 import pytest
 from conftest import run_git
 
-from coding_agent.approvals import (
+from rivumi.approvals import (
     ApprovalDecision,
     ApprovalRequest,
     CallbackApprovalPolicy,
     HeadlessApprovalPolicy,
     ToolEffect,
 )
-from coding_agent.contracts import (
+from rivumi.contracts import (
     Limits,
     ModelCapabilities,
     ModelProtocol,
@@ -25,9 +25,9 @@ from coding_agent.contracts import (
     ToolCall,
     VerificationCommand,
 )
-from coding_agent.loop import AgentRunner
-from coding_agent.models import ScriptedModel
-from coding_agent.session import SessionStore
+from rivumi.loop import AgentRunner
+from rivumi.models import ScriptedModel
+from rivumi.session import SessionStore
 
 FIX_PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py

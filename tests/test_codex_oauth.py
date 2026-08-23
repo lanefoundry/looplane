@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from coding_agent.codex_oauth import (
+from rivumi.codex_oauth import (
     CODEX_CLIENT_ID,
     CODEX_RESPONSES_URL,
     TOKEN_URL,
@@ -24,8 +24,8 @@ from coding_agent.codex_oauth import (
     CodexOAuthClient,
     OpenAICodexResponsesModel,
 )
-from coding_agent.contracts import Message, ToolCall, ToolDefinition, ToolObservation
-from coding_agent.models import ProviderError, ProviderErrorKind
+from rivumi.contracts import Message, ToolCall, ToolDefinition, ToolObservation
+from rivumi.models import ProviderError, ProviderErrorKind
 
 
 def jwt(account_id: str = "account-test") -> str:

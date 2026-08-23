@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import run_git
 
-from coding_agent.contracts import (
+from rivumi.contracts import (
     Limits,
     Message,
     ModelCapabilities,
@@ -20,8 +20,8 @@ from coding_agent.contracts import (
     ToolCall,
     VerificationCommand,
 )
-from coding_agent.loop import AgentRunner
-from coding_agent.models import ScriptedModel
+from rivumi.loop import AgentRunner
+from rivumi.models import ScriptedModel
 
 FIX_PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
