@@ -1,0 +1,22 @@
+{
+  "results": [
+    {
+      "command": "uv run rivumi --help",
+      "mean": 0.49200123350601643,
+      "median": 0.49200123350601643,
+      "min": 0.4048571669263765,
+      "max": 0.8207658749306574,
+      "runs": 10,
+      "fallback": true
+    },
+    {
+      "command": "uv run rivumi config",
+      "mean": 0.38041797070764005,
+      "median": 0.38041797070764005,
+      "min": 0.36354570800904185,
+      "max": 0.3985685830703005,
+      "runs": 10,
+      "fallback": true
+    }
+  ]
+}
