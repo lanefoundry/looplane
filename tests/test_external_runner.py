@@ -20,6 +20,7 @@ from rivumi.external_runner import (
     ExternalCodingRunner,
     ExternalModificationApprovalError,
     UnsafeExternalVerificationError,
+    external_failure_hint,
 )
 from rivumi.runtime import WorkspacePreparationError
 
@@ -135,6 +136,16 @@ class SourceTamperingBackend(EditingBackend):
             task,
             working_directory=working_directory,
             event_sink=event_sink,
+        )
+
+
+class MissingExecutableBackend(EditingBackend):
+    async def run(self, task, *, working_directory=None, event_sink=None):
+        return ExternalAgentResult(
+            backend_name=self.backend_name,
+            task_id=task.task_id,
+            status=ExternalRunStatus.FAILED,
+            terminal_reason="executable_unavailable",
         )
 
 
@@ -404,3 +415,36 @@ async def test_external_runner_detects_ignored_source_file_changes(
     assert result.status is RunStatus.FAILED
     assert result.terminal_reason == "source_repository_changed"
     assert ignored.read_text(encoding="utf-8") == "source was modified\n"
+
+
+def test_external_failure_hint_mapping() -> None:
+    assert external_failure_hint("executable_unavailable", "opencode") == (
+        "The opencode executable was not found on your PATH. Install opencode (or add it to "
+        "PATH) and retry."
+    )
+    assert "authenticated" in external_failure_hint("external_agent_error", "pi")
+    assert external_failure_hint("verified", "pi") is None
+    assert external_failure_hint("user_cancelled", "pi") is None
+    assert external_failure_hint("policy_or_artifact_error", "pi") is None
+
+
+@pytest.mark.asyncio
+async def test_external_runner_surfaces_actionable_failure_hint(
+    tmp_path: Path, tiny_bug_repo: Path
+) -> None:
+    runner = ExternalCodingRunner(
+        _task(tiny_bug_repo),
+        MissingExecutableBackend(),
+        tmp_path / "runs",
+        allow_external_modify=True,
+        allow_unsafe_local_exec=True,
+    )
+
+    result = await runner.run()
+
+    assert result.status is RunStatus.FAILED
+    assert result.terminal_reason == "executable_unavailable"
+    assert result.error is not None
+    assert "executable was not found" in result.error
+    assert "fixture-agent" in result.error
+

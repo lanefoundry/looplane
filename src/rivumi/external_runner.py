@@ -42,6 +42,41 @@ from rivumi.runtime import (
 )
 from rivumi.tools import ToolExecutionError, ToolExecutor
 
+EXTERNAL_FAILURE_HINTS: dict[str, str] = {
+    "executable_unavailable": (
+        "The {name} executable was not found on your PATH. Install {name} (or add it to "
+        "PATH) and retry."
+    ),
+    "timeout": (
+        "{name} exceeded its time budget. Raise the wall-time limit or narrow the task, then retry."
+    ),
+    "output_limit_exceeded": (
+        "{name} produced more output than Rivumi can capture; the stream was truncated. Narrow the "
+        "task scope, then retry."
+    ),
+    "malformed_event_stream": (
+        "{name} returned output Rivumi could not parse. Check your {name} version and that it "
+        "supports JSON streaming, then retry."
+    ),
+    "external_agent_error": (
+        "{name} exited with an error. Confirm {name} is authenticated and its model/provider is "
+        "reachable, then retry."
+    ),
+}
+
+
+def external_failure_hint(terminal_reason: str, backend_name: str) -> str | None:
+    """Actionable guidance for a failed external run, or ``None`` when not a mapped failure.
+
+    The hint is best-effort: it points the user at the installed CLI's prerequisites
+    (present on PATH, authenticated, reachable) without asserting a specific root cause such
+    as an auth error unless the backend itself reported one.
+    """
+    template = EXTERNAL_FAILURE_HINTS.get(terminal_reason)
+    if template is None:
+        return None
+    return template.format(name=backend_name)
+
 
 class UnsafeExternalVerificationError(RuntimeError):
     """Raised when host-local verification was not explicitly acknowledged."""
@@ -778,6 +813,7 @@ class ExternalCodingRunner:
         }
         if backend_result is not None:
             artifacts["backend_result"] = str(self.run_dir / "backend-result.json")
+        failure_error = external_failure_hint(terminal_reason, self.backend.backend_name)
         result = RunResult(
             run_id=self.run_id,
             task_id=effective_task.task_id,
@@ -791,6 +827,7 @@ class ExternalCodingRunner:
             verification=verification,
             usage=Usage(),
             terminal_reason=terminal_reason,
+            error=failure_error,
             artifacts=artifacts,
         )
         await atomic_write_json(
