@@ -27,6 +27,7 @@ from rivumi.conversation_runtime import (
     TurnCompletedEvent,
 )
 from rivumi.runtime_semantics import RuntimeCapabilities
+from rivumi.startup_trace import _STARTUP
 
 
 class ConversationEventSink(Protocol):
@@ -155,7 +156,8 @@ class ConversationController:
             if self._closed:
                 raise RuntimeError("conversation controller is closed")
             if not self._started:
-                await self.session.start()
+                with _STARTUP.span("controller.start"):
+                    await self.session.start()
                 self._started = True
 
 

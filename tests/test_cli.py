@@ -880,3 +880,31 @@ def test_plain_flag_never_launches_full_screen_tui(
 
     assert result.exit_code == 0, result.output
     assert "plain completed" in result.output
+
+
+def test_startup_tracer_is_noop_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    from rivumi.startup_trace import _StartupTracer
+
+    log = tmp_path / "startup.jsonl"
+    tracer = _StartupTracer(None)
+    assert tracer.enabled is False
+    with tracer.span("config.load"):
+        pass
+    assert not log.exists()
+
+
+def test_startup_tracer_emits_config_load_span(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi.startup_trace import _StartupTracer
+
+    log = tmp_path / "startup.jsonl"
+    monkeypatch.setattr(cli, "_STARTUP", _StartupTracer(str(log)))
+
+    result = CliRunner().invoke(cli.app, ["config"])
+
+    assert result.exit_code == 0, result.output
+    spans = [line for line in log.read_text().splitlines() if line.strip()]
+    assert spans, "expected at least one startup span"
+    assert any("config.load" in line for line in spans)
+    assert all(line.startswith("{") and line.endswith("}") for line in spans)

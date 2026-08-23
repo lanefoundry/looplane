@@ -45,6 +45,8 @@ if TYPE_CHECKING:
         tuple[str, Path, str | None, str | None], "ConversationController"
     ]
 
+from rivumi.startup_trace import _STARTUP
+
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 MAX_OLLAMA_TAGS_BYTES = 256 * 1024
 ONBOARDING_PROVIDERS = (
@@ -111,13 +113,14 @@ def _acquire_native_controller(
         cache.pop(identity, None)
         controller = None
     if controller is None:
-        session = (
-            IsolatedClaudeConversation(repository, model=model)
-            if runtime == "claude-code"
-            else IsolatedCodexConversation(repository, model=model)
-        )
-        controller = ConversationController(session)
-        cache[identity] = controller
+        with _STARTUP.span("controller.build"):
+            session = (
+                IsolatedClaudeConversation(repository, model=model)
+                if runtime == "claude-code"
+                else IsolatedCodexConversation(repository, model=model)
+            )
+            controller = ConversationController(session)
+            cache[identity] = controller
     return controller
 
 
@@ -277,7 +280,8 @@ def _resolve_cli_settings(
     api_url: str | None,
 ) -> tuple[str, str | None, str | None]:
     try:
-        config = load_cli_config()
+        with _STARTUP.span("config.load"):
+            config = load_cli_config()
     except (OSError, ValueError) as exc:
         raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
 
@@ -536,7 +540,8 @@ def chat(
     repository = repository or Path.cwd()
     if not print_mode and not plain and _terminal_supports_tui():
         try:
-            current = load_cli_config()
+            with _STARTUP.span("config.load"):
+                current = load_cli_config()
         except (OSError, ValueError) as exc:
             raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
         explicit_rivumi_runtime = any(
@@ -691,7 +696,8 @@ def chat(
                 "`--provider PROVIDER --model MODEL`"
             )
         try:
-            current = load_cli_config()
+            with _STARTUP.span("config.load"):
+                current = load_cli_config()
         except (OSError, ValueError) as exc:
             raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
         preferred_provider = requested_provider or current.provider
@@ -818,11 +824,12 @@ def _model_from_env(
             user_message_prefix="/no_think\n",
         )
     if provider == "openai-codex":
-        oauth = CodexOAuthClient()
-        manager = CodexCredentialManager(
-            CodexCredentialStore(_codex_credential_path()),
-            oauth,
-        )
+        with _STARTUP.span("model.codex_oauth"):
+            oauth = CodexOAuthClient()
+            manager = CodexCredentialManager(
+                CodexCredentialStore(_codex_credential_path()),
+                oauth,
+            )
         return OpenAICodexResponsesModel(
             model=model,
             credentials=manager,
@@ -1257,7 +1264,8 @@ def configure(
 
     path = default_cli_config_path()
     try:
-        current = load_cli_config(path)
+        with _STARTUP.span("config.load"):
+            current = load_cli_config(path)
         if interactive:
             if provider is not None or model is not None or api_url is not None or clear_api_url:
                 raise typer.BadParameter(
