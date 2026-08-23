@@ -52,6 +52,9 @@ class OpenCodeBackend(StreamJsonCliBackend):
                     if isinstance(item, dict) and isinstance(item.get("text"), str)
                 ]
                 return "".join(parts) or None
+        part = value.get("part")
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            return part["text"]
         if isinstance(value.get("text"), str):
             return value["text"]
         return None
@@ -87,9 +90,13 @@ class OpenCodeBackend(StreamJsonCliBackend):
                 data={"source": "opencode", "is_error": True},
             )
         if event_type in {"tool", "tool_use", "tool_call", "function", "tool_execution"}:
-            data = {"source": "opencode"}
-            if isinstance(value.get("name"), str):
-                data["tool"] = value["name"]
+            data: dict[str, Any] = {"source": "opencode"}
+            name = value.get("name")
+            part = value.get("part")
+            if isinstance(part, dict) and isinstance(part.get("tool"), str):
+                name = part["tool"]
+            if isinstance(name, str):
+                data["tool"] = name
             return ExternalAgentEvent(sequence=sequence, event_type="tool", data=data)
         text = self._text_of(value)
         if text:

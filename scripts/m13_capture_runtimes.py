@@ -90,6 +90,7 @@ def capture_one(name: str, task: str, timeout: int, model: str | None = None) ->
                 env=env,
                 capture_output=True,
                 text=True,
+                stdin=subprocess.DEVNULL,
                 timeout=timeout,
             )
             status = "ok" if proc.returncode == 0 else "nonzero_exit"

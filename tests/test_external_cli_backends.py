@@ -138,6 +138,28 @@ def test_opencode_error_nested_schema(tmp_path: Path) -> None:
     assert events[0].text == "Model not found"
 
 
+OPENCODE_SUCCESS = "\n".join(
+    [
+        '{"type":"step_start","part":{"type":"step-start"}}',
+        '{"type":"tool_use","part":{"type":"tool","tool":"bash","callID":"c1",'
+        '"state":{"status":"completed","input":{"command":"ls -a"}}}}',
+        '{"type":"step_finish","part":{"type":"step-finish","reason":"tool-calls"}}',
+        '{"type":"text","part":{"type":"text","text":"README.md\\nsrc\\ntests"}}',
+        '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}',
+    ]
+)
+
+
+def test_opencode_success_schema(tmp_path: Path) -> None:
+    backend = OpenCodeBackend(executable="opencode")
+    events, malformed = backend._normalize(OPENCODE_SUCCESS)
+    messages = [e for e in events if e.event_type == "message"]
+    tools = [e for e in events if e.event_type == "tool"]
+    assert "".join(e.text or "" for e in messages) == "README.md\nsrc\ntests"
+    assert tools and tools[0].data.get("tool") == "bash"
+    assert events[0].event_type == "tool"
+
+
 def test_pi_toolcall_end_captures_tool_name(tmp_path: Path) -> None:
     backend = PiBackend(executable="pi")
     stream = "\n".join(

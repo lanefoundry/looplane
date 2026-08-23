@@ -14,7 +14,7 @@ normalized events under `.artifacts/m13-captures/<runtime>.*`.
 Artifacts:
 - `pi.jsonl`, `pi.normalized.json`, `pi.stderr.txt`, `pi.meta.json`
 - `omp.jsonl`, `omp.normalized.json`, `omp.stderr.txt`, `omp.meta.json`
-- `opencode.jsonl` (empty — see OpenCode below), `opencode.stderr.txt`, `opencode.meta.json`
+- `opencode.jsonl` (6 events — see OpenCode below), `opencode.stderr.txt`, `opencode.meta.json`
 - `_summary.json`
 
 ## Versions (this machine)
@@ -61,14 +61,27 @@ Artifacts:
 - **Error schema confirmed**: `{"type":"error","error":{"name":<str>,"data":{"message":<str>}}}`,
   e.g. `{"type":"error","error":{"name":"UnknownError","data":{"message":"Model not found:
   openrouter/z-ai/glm-5.2:free."}}}`. The normalizer now extracts `error.data.message`.
-- **Successful-run capture: PENDING.** In this environment a valid provider turn did not complete:
-  `opencode run` emits the error JSON to stdout and exits (rc=0) when the model is unknown, but
-  with a loadable model it keeps the session open and does not return within the timeout. This is
-  environmental (the default/selected provider was unresponsive here), not a backend-argv defect.
-  The success-path event shapes (text/tool `result`) remain the permissive assumption in
-  `OpenCodeBackend._normalize_event`; tighten once a responsive OpenCode provider is available.
-- Robustness fix applied: backends now pass `stdin=subprocess.DEVNULL` so a CLI can never block on
-  an inherited TTY stdin after its turn.
+- **Robustness fix applied**: backends now pass `stdin=subprocess.DEVNULL` (and the capture script
+  too). Without this, `opencode run` is a REPL that keeps the session open and blocks on stdin
+  after its turn; with it, opencode exits (rc=0) on error. Verified: error runs now terminate
+  cleanly instead of hanging.
+- **Successful-run capture: DONE.** Pulled local Ollama model `ollama/gemma4` (9.6GB) — the only
+  catalog id usable offline here; earlier attempts with `openrouter/z-ai/glm-5.2:free`, `zen/hy3-free`,
+  and `9router/ollama/glm-4.7-flash` failed because those API-level ids are not in OpenCode's provider
+  catalog / the endpoint was unresponsive — and ran `opencode run --format json --model ollama/gemma4
+  "<instruction>"` via the capture harness (`stdin=DEVNULL`). Result: rc=0, malformed=False, 6 events
+  across 4 types: `step_start`×2, `tool_use`×1, `step_finish`×2, `text`×1.
+  - Event shapes confirmed against the live stream:
+    - `step_start`: `{"type":"step_start","part":{"type":"step-start",...}}` — step marker, normalizer emits no event.
+    - `tool_use`: `{"type":"tool_use","part":{"type":"tool","tool":"bash","callID":...,"state":{"status":"completed","input":{"command":"ls -a"},"output":...}}}` — normalizer reads the tool name from `part.tool`.
+    - `step_finish`: `{"type":"step_finish","part":{"type":"step-finish","reason":"tool-calls"|"stop","tokens":...,"cost":...}}` — step marker.
+    - `text`: `{"type":"text","part":{"type":"text","text":"README.md\nsrc\ntests"}}` — normalizer reads assistant text from `part.text`.
+  - Normalizer fixed (`OpenCodeBackend._normalize_event`): message text from `part.text`, tool name
+    from `part.tool`; `step_start`/`step_finish` are ignored. Verified by `test_opencode_success_schema`.
+- Note: OpenCode provider id space diverges from the raw free-llm-models API ids. `opencode models`
+  lists only `ollama/gemma4`, `ollama/nemotron-cascade-2`, `9router/ollama/glm-4.7-flash`; a locally
+  pulled model not in this catalog (e.g. `qwen3`) is rejected with `Model not found` even though Ollama
+  has it. Use a catalog id via `-m`/`--model`.
 
 ## Policy / billing notes (from free-llm-models skill, 2026-08-23)
 
@@ -79,7 +92,7 @@ Artifacts:
 
 ## Limitations
 
-- OpenCode success-path normalizer unverified against a live stream (provider unresponsive in env).
+- OpenCode success-path normalizer verified against a live `ollama/gemma4` stream (see OpenCode above).
 - Captures are single read-only turns in an empty dir; multi-turn resume / approval / diff
   reconciliation per runtime still need dedicated live proofs (Slice 2/3/4 remainder).
 - Normalizers remain permissive by design; they surface assistant text + tool activity even if a
