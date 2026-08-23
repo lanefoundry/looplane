@@ -75,9 +75,9 @@ are headless and never read approval input; repository checks therefore retain t
 
 ## Implementation
 
-- `src/coding_agent/cli.py`: default-command routing, positional prompt, `-p`, `exec`/`run`, cwd
+- `src/rivumi/cli.py`: default-command routing, positional prompt, `-p`, `exec`/`run`, cwd
   aliases, provider/model shorthand, config precedence, and consistent backend/gateway options.
-- `src/coding_agent/cli_config.py`: strict, private, atomic non-secret defaults.
+- `src/rivumi/cli_config.py`: strict, private, atomic non-secret defaults.
 - `tests/test_cli.py`: root/subcommand routing, modern and legacy syntax, config precedence,
   completion routing, and migration errors.
 - `tests/test_cli_config.py`: schema, credential URL, symlink, round-trip, and file-mode coverage.

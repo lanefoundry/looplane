@@ -41,7 +41,7 @@ Detailed source and policy notes are retained in `.research/m5-codex-cli-backend
 `ExternalCodingRunner` resolves the source HEAD, requires a clean worktree, and computes a
 deadline-bound streaming SHA-256 snapshot of every source filesystem entry except Git internals.
 That deliberately includes ignored files, directories, and symlinks. It creates a no-hardlink
-clone, moves `.git` to `.pca-git-metadata` outside the child cwd, removes `origin`, and records Git
+clone, moves `.git` to `.rivumi-git-metadata` outside the child cwd, removes `origin`, and records Git
 control hashes before delegation.
 
 After the backend exits, PCA checks source integrity before invoking Git. It then checks the

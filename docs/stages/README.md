@@ -39,3 +39,11 @@ the corrective commit rather than rewriting the historical result.
 - [M7: Familiar CLI ergonomics](m7-familiar-cli-ergonomics.md)
 - [M8: First-run onboarding and model selection](m8-first-run-onboarding.md)
 - [M9: Full-screen terminal application](m9-full-screen-terminal-application.md)
+
+## Pending closure records
+
+These implementation records have verification evidence but do not become completed milestone
+records until their commit fields point to the final reviewed commits.
+
+- [M10: Runtime-first subscription TUI](m10-runtime-first-subscription-tui.md)
+- [M11: Unified native conversation](m11-unified-native-conversation.md)

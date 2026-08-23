@@ -58,10 +58,10 @@ checkpoint is durable; only then is a cancelled result written and the session l
 
 ## Implementation
 
-- `src/coding_agent/tui.py`: full-screen app, onboarding and approval modals, raw event sink,
+- `src/rivumi/tui.py`: full-screen app, onboarding and approval modals, raw event sink,
   approval policy, task composer, activity reducer, Stop, and result presentation.
-- `src/coding_agent/loop.py`: cooperative cancellation at model and side-effect-safe boundaries.
-- `src/coding_agent/cli.py`: real-TTY route, `--plain`, `PCA_NO_TUI`, and unchanged headless route.
+- `src/rivumi/loop.py`: cooperative cancellation at model and side-effect-safe boundaries.
+- `src/rivumi/cli.py`: real-TTY route, `--plain`, `PCA_NO_TUI`, and unchanged headless route.
 - `tests/test_tui.py`: Textual pilot tests plus a real deferred-stop runner regression.
 - `pyproject.toml` / `uv.lock`: reproducible Textual dependency.
 

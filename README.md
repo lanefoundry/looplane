@@ -1,11 +1,11 @@
-# Python Coding Agent
+# Rivumi
 
-Temporary engineering name for a Python-first coding agent. It works from a fixed Git commit in a
+Rivumi is a Python-first coding agent. It works from a fixed Git commit in a
 disposable clone, gives a model a small bounded tool set, reruns deterministic checks, and returns a
 patch plus an auditable run bundle. The source repository is never edited.
 
-The public product name remains deliberately deferred. The local CLI is usable today, and the
-separate `cloudflare/` control plane contains the bounded Worker + Sandbox deployment slice.
+The local CLI is usable today, and the separate `cloudflare/` control plane contains the bounded
+Worker + Sandbox deployment slice.
 
 ## Current capabilities
 
@@ -20,16 +20,16 @@ separate `cloudflare/` control plane contains the bounded Worker + Sandbox deplo
 - Segment-aware path allowlists, traversal/symlink protection, exact command argv, process-group
   timeouts, bounded output capture, and a subprocess environment without model/GitHub credentials.
 - JSONL events, atomic checkpoints, final patch, test log, and result artifacts.
-- Bare `pca` interactive entry with live tool/check traces and approval before modify/execute.
+- Bare `rivumi` interactive entry with live tool/check traces and approval before modify/execute.
 - Versioned `session.json`, OS writer fencing, strict workspace/event validation, and
-  `pca resume` for interrupted non-terminal runs.
+  `rivumi resume` for interrupted non-terminal runs.
 - State-first event journaling repairs a crash between manifest commit and JSONL append. An
   interruption after `tool.started` or `verification.started` is deliberately not auto-resumed,
   because the process cannot prove whether that side effect completed.
 - Explicit model protocols, loopback Ollama, custom OpenAI-compatible API URLs, an experimental
   app-owned ChatGPT/Codex OAuth transport, and an optional bounded local model gateway.
-- A PCA-audited `ExternalCodingRunner` for local delegation to the installed official Codex and
-  Claude Code CLIs. They edit only a pinned disposable clone; PCA independently checks the full
+- A Rivumi-audited `ExternalCodingRunner` for local delegation to the installed official Codex and
+  Claude Code CLIs. They edit only a pinned disposable clone; Rivumi independently checks the full
   path-bounded patch and runs exact final verification. They never become `ModelProvider`s.
 
 ## Set up with uv
@@ -43,12 +43,38 @@ uv run ruff check .
 The `.venv/` directory is created and managed by `uv`; dependencies are defined in
 `pyproject.toml` and locked in `uv.lock`. There is no separate `requirements.txt`.
 
-Install the editable daily command once:
+Install or refresh the editable daily command:
 
 ```bash
-uv tool install --editable /Users/xiaoxu/Projects/python-coding-agent
-pca --help
+scripts/install-dev-cli
+rivumi --help
 ```
+
+Editable installs read source changes immediately, but their isolated dependency environment does
+not update when project dependencies change. Run `scripts/install-dev-cli` again after pulling or
+editing dependency changes in `pyproject.toml` or `uv.lock`. The script exports locked runtime
+constraints, refreshes the isolated tool environment, checks installed dependency compatibility,
+and smoke-tests the actual global command. A stale lock or broken tool environment fails the script
+instead of leaving a partially synchronized `rivumi` command.
+
+For every TUI layout change, run the geometry tests and render both wide and narrow review images:
+
+```bash
+uv run pytest tests/test_tui.py -q
+uv run python scripts/render_tui_screenshot.py --width 120 --height 36 --name wide
+uv run python scripts/render_tui_screenshot.py --width 60 --height 22 --name narrow
+uv run python scripts/render_tui_screenshot.py --state thinking --name loading
+for frame in 0 1 2 3 4 5; do
+  uv run python scripts/render_tui_screenshot.py \
+    --state thinking --loading-frame "$frame" --name "loading-frame-$frame"
+done
+```
+
+Review the generated `.artifacts/tui/*.png` images before treating the UI change as complete,
+including an active state whenever loading or tool feedback changes. When the loading animation
+itself changes, render every distinct frame and verify that the indicator moves while its terminal
+cell width and status-label position remain fixed. The SVG artifacts are always produced; PNG
+conversion uses Quick Look on macOS or ImageMagick when available.
 
 ## Offline proof
 
@@ -67,7 +93,7 @@ four verified completions. It checks the exact changed file and patch, the requi
 that the source repository's HEAD, status, and bytes remain unchanged:
 
 ```bash
-eval_root=$(mktemp -d /tmp/pca-live-eval.XXXXXX)
+eval_root=$(mktemp -d /tmp/rivumi-live-eval.XXXXXX)
 uv run python scripts/eval_live_provider.py \
   --provider ollama \
   --model qwen3:4b \
@@ -80,73 +106,99 @@ can reliably complete arbitrary repository tasks.
 
 ## Interactive CLI
 
-Bare `pca` runs this project's Python loop; it does not launch Codex or Claude Code behind the
-scenes. On a real terminal it opens a full-screen Textual application with repository/model
-context, a task composer, live harness events, approval dialogs, safe Stop, and the final patch /
-verification summary. Its daily surface follows the familiar Claude Code, Codex, Pi, and OpenCode
-conventions:
+Bare `rivumi` opens one continuous full-screen coding conversation. With an installed Claude Code or
+Codex CLI, the header shows the selected runtime, model, and repository; ordinary answers, tool
+activity, edits, and checks stay in one semantic transcript. Side effects pause at the actual tool
+boundary for approval. There is no separate Ask/Agent mode to choose before every message.
 
 ```bash
-# First run: choose a provider and model. Local Ollama models are discovered automatically.
-pca config --interactive
+# First run: choose the runtime in the full-screen UI.
+rivumi
 
-# Or save non-secret defaults directly. API keys remain environment variables.
-pca config --provider ollama --model qwen3:4b
+# Or configure Rivumi's own model loop directly. API keys remain environment variables.
+rivumi config --provider ollama --model qwen3:4b
 
 cd /path/to/a/git/repository
-pca
-pca 'Fix the failing test without changing its intent.' --check 'pytest -q'
-pca -C /path/to/another/repo 'Explain and fix the failure.'
-pca --plain  # line-oriented fallback for limited terminals and SSH troubleshooting
+rivumi
+rivumi 'Fix the failing test without changing its intent.' --check 'pytest -q'
+rivumi -C /path/to/another/repo 'Explain and fix the failure.'
+rivumi --plain  # line-oriented fallback for limited terminals and SSH troubleshooting
 ```
 
 For a one-off model selection, `-m ollama/qwen3:4b` also selects both the provider and model,
 matching the compact provider/model form used by Pi and OpenCode.
 
-`pca [PROMPT]` is interactive, `pca -p [PROMPT]` and `pca exec [PROMPT]` are non-interactive,
-and `pca resume` resumes the latest validated non-terminal session. `pca run`, `--task`, and
+The first screen chooses who owns the agent loop:
+
+- **Claude Code** uses the installed official CLI and its own local login. Its model starts at the
+  account's `Automatic` default; `Ctrl+L` can switch to Sonnet, Opus, Haiku, or Best.
+- **Codex CLI** uses the installed official CLI and its own local ChatGPT login. Its model starts
+  at the Codex `Automatic` default; `Ctrl+L` can select a current recommended Codex model.
+- **Rivumi Agent** runs this project's provider-neutral Python loop. A discovered local Ollama model
+  is selected automatically; API and custom endpoints keep their explicit model IDs.
+
+`Automatic` is represented by omitting the model override, so the official CLI remains the source
+of truth as account availability and recommended defaults change. Choosing a model saves only its
+non-secret name; Rivumi never persists the official CLI's login or an API key.
+
+The official runtime keeps one native session and one Rivumi-owned disposable committed-HEAD clone
+across turns. It may answer without tools, inspect the clone, or request Edit/Bash permissions as
+the conversation evolves. Rivumi never edits the source worktree directly: every reported file
+change is matched against an independently audited bounded patch. Concurrent changes in the source
+worktree do not invalidate the isolated conversation or its cleanup. `Ctrl+L` (or `/model`) changes
+runtime/model; `/new`, `/resume`, and `/history`
+manage Rivumi-owned conversation continuity without persisting vendor session identifiers.
+
+`rivumi [PROMPT]` is interactive, `rivumi -p [PROMPT]` and `rivumi exec [PROMPT]` are non-interactive,
+and `rivumi resume` resumes the latest validated non-terminal session. `rivumi run`, `--task`, and
 `--repo` remain compatibility aliases. `-p` now means `--print`, as it does in Claude Code and Pi;
 use the long `--provider` option or a saved config default to choose a provider.
 Headless `-p`/`exec` checks still require `--unsafe-local-exec`; `exec` also requires
 `--tool-calling` unless the chosen transport is intentionally text-only.
 
-On an unconfigured TTY, bare `pca` opens provider-aware setup before asking for a coding task.
-It offers models from a bounded fixed-loopback Ollama discovery request and otherwise asks for a
-provider model ID. `-p` and `exec` never open setup or prompt, even when attached to a TTY; missing
-configuration or prompt fails with an actionable command. The experimental `openai-codex`
-subscription transport remains outside interactive setup and must be selected explicitly with its
-required experimental flag.
+On an unconfigured TTY, bare `rivumi` opens runtime-first setup before asking for a coding task.
+Installed official Claude Code and Codex CLIs are offered without claiming that their login is
+valid. Rivumi's own runtime offers models from a bounded fixed-loopback Ollama discovery request;
+unknown custom endpoints ask for a provider model ID only when a run needs one. `-p` and `exec`
+never open setup or prompt, even when attached to a TTY; missing configuration or prompt fails with
+an actionable command. The separate app-owned `openai-codex` ModelProvider transport remains
+experimental and explicit; it is not the official Codex CLI runtime shown by the TUI.
 
-`Ctrl+C` in the full-screen application requests a cooperative stop. A pending model request can
-stop immediately; a tool or verification command that has already started is allowed to finish its
-bounded execution and durable completion event before the session closes. This avoids abandoning a
-background thread while claiming the run is safely resumable. `PCA_NO_TUI=1` is equivalent to
+`Ctrl+C` in the full-screen application requests a bounded cooperative stop during an active turn;
+when idle it first clears a draft, and a second press within a moment confirms exit (`Ctrl+D` and
+`Ctrl+Q` behave the same). `Escape` interrupts an active turn and never closes Rivumi by itself; when
+idle, a single `Escape` is invisible and a second press opens `/rewind` when rewindable prompts
+exist. Leaving the full-screen UI prints a bounded, app-owned semantic transcript — finalized user
+prompts, assistant messages, tool outcomes, and notices plus a copyable `/resume` command — into the
+terminal's primary buffer so history survives in scrollback. `RIVUMI_NO_TUI=1` is equivalent to
 `--plain` for terminals that cannot use an alternate screen.
 
-The config path is `${PCA_CONFIG:-${XDG_CONFIG_HOME:-~/.config}/python-coding-agent/config.json}`.
-Its strict schema contains only `provider`, `model`, and `api_url`; unknown fields, embedded URL
-credentials, and symlink config files are rejected. Resolution order is command line, environment,
-saved config, then built-in default.
+The config path is `${RIVUMI_CONFIG:-${XDG_CONFIG_HOME:-~/.config}/rivumi/config.json}`.
+Its strict schema contains only non-secret `runtime`, `runtime_model`, `provider`, `model`, and
+`api_url` values; unknown fields, embedded URL credentials, and symlink config files are rejected.
+Resolution order is command line, environment, saved config, then built-in default.
+Existing pre-rename config, conversation, run, and OAuth paths are discovered when their Rivumi
+replacement does not yet exist. The former command names are intentionally not installed.
 
 Read tools run automatically. A patch or repository-code command is shown in the terminal and
 requires `once`, `session`, `deny`, or `cancel`. An interrupted run keeps its disposable workspace:
 
 ```bash
-uv run pca resume last
-uv run pca resume <run-id>
+uv run rivumi resume last
+uv run rivumi resume <run-id>
 ```
 
-Sessions default to `${XDG_STATE_HOME:-~/.local/state}/python-coding-agent/runs`; override with
-`PCA_RUN_ROOT` or `--run-root`.
+Sessions default to `${XDG_STATE_HOME:-~/.local/state}/rivumi/runs`; override with
+`RIVUMI_RUN_ROOT` or `--run-root`.
 
 For an API key or an existing OpenAI Chat-compatible proxy:
 
 ```bash
 export OPENAI_API_KEY='...'
-pca config --provider openai-compatible --model your-model \
+rivumi config --provider openai-compatible --model your-model \
   --api-url https://gateway.example/v1
 export OPENAI_API_KEY='...'
-pca -C /path/to/repo 'Fix the failing test.' --check 'pytest -q'
+rivumi -C /path/to/repo 'Fix the failing test.' --check 'pytest -q'
 ```
 
 Remote API URLs require HTTPS. Plain HTTP is accepted only for exact loopback hosts; credentials,
@@ -159,14 +211,14 @@ generic OpenAI-compatible URL. This project follows that boundary and creates it
 it never reads `~/.codex`, Claude Code, Pi, OpenCode, or OMP credential files.
 
 ```bash
-uv run pca auth login-codex
-uv run pca auth status-codex
-uv run pca --provider openai-codex --model <supported-codex-model> \
+uv run rivumi auth login-codex
+uv run rivumi auth status-codex
+uv run rivumi --provider openai-codex --model <supported-codex-model> \
   --experimental-subscription --repo /path/to/repo --task '...' --check 'pytest -q'
 ```
 
-If the browser callback cannot reach localhost, use `pca auth login-codex --manual`; the pasted
-callback is hidden and only the PCA-owned credential store is written. `pca auth logout-codex`
+If the browser callback cannot reach localhost, use `rivumi auth login-codex --manual`; the pasted
+callback is hidden and only the Rivumi-owned credential store is written. `rivumi auth logout-codex`
 removes that store without touching the official Codex CLI.
 
 This path is deliberately opt-in because upstream authorization and protocol behavior can change.
@@ -174,13 +226,13 @@ Its current public OAuth client identity is borrowed from a pinned ecosystem imp
 remains experimental until this project has its own registration and current authorization proof.
 
 Anthropic's current Agent SDK policy says third-party products may not offer `claude.ai` login or
-subscription rate limits without prior approval. PCA therefore keeps its own loop on the native
+subscription rate limits without prior approval. Rivumi therefore keeps its own loop on the native
 Anthropic API-key adapter. For local/private experiments only, the installed official Claude Code
-CLI can edit a disposable clone with only `Read`, `Glob`, `Grep`, and `Edit`; PCA runs the final
+CLI can edit a disposable clone with only `Read`, `Glob`, `Grep`, and `Edit`; Rivumi runs the final
 check separately:
 
 ```bash
-pca backend claude-code \
+rivumi backend claude-code \
   --repo /path/to/trusted/repo \
   --task 'Fix the failing test.' \
   --allowed-path 'src/**' \
@@ -191,8 +243,8 @@ pca backend claude-code \
 ```
 
 That command uses the official CLI's own login (and therefore permits that official child to read
-its own auth state), but PCA never reads or copies the login. Bash, Write, WebFetch, WebSearch,
-MCP, subagent tools, and session persistence are not enabled. This is not evidence for PCA's own
+its own auth state), but Rivumi never reads or copies the login. Bash, Write, WebFetch, WebSearch,
+MCP, subagent tools, and session persistence are not enabled. This is not evidence for Rivumi's own
 agent loop, and a hosted Claude subscription proxy is intentionally not implemented.
 
 The separately installed official Codex CLI can be used through the same outer harness. It owns
@@ -200,7 +252,7 @@ its ChatGPT login and agent loop, runs ephemeral with user config/rules ignored,
 the disposable clone through Codex's `workspace-write` sandbox:
 
 ```bash
-pca backend codex-cli \
+rivumi backend codex-cli \
   --repo /path/to/trusted/repo \
   --task 'Fix the failing test.' \
   --allowed-path 'src/**' \
@@ -211,25 +263,25 @@ pca backend codex-cli \
 ```
 
 The two explicit acknowledgements are separate: one permits the external CLI to modify only the
-clone; the other permits PCA to execute repository verification code on the host. New untracked
-files are rejected in this initial external-coding milestone; use PCA's own `apply_patch` path for
-reviewable create/delete work. The source repository must start clean. PCA removes Git metadata
+clone; the other permits Rivumi to execute repository verification code on the host. New untracked
+files are rejected in this initial external-coding milestone; use Rivumi's own `apply_patch` path for
+reviewable create/delete work. The source repository must start clean. Rivumi removes Git metadata
 from the child working tree, rejects index/config mutation, hashes all source entries outside
 `.git` (including ignored files), and rechecks both source and patch after final verification.
 
 ## Local model gateway
 
-`pca gateway` is the OMP-inspired model gateway boundary. It translates OpenAI Chat wire messages
+`rivumi gateway` is the OMP-inspired model gateway boundary. It translates OpenAI Chat wire messages
 into canonical contracts and dispatches through one configured provider; it is not arbitrary URL
 passthrough.
 
 ```bash
-uv run pca gateway --provider ollama --model qwen3:4b --port 8788
+uv run rivumi gateway --provider ollama --model qwen3:4b --port 8788
 curl http://127.0.0.1:8788/v1/models
 ```
 
 The MVP exposes `/healthz`, `/v1/models`, and non-streaming `/v1/chat/completions`, binds loopback
-only, caps request bodies, and optionally requires `PCA_GATEWAY_TOKEN`. SSE and remote binding are
+only, caps request bodies, and optionally requires `RIVUMI_GATEWAY_TOKEN`. SSE and remote binding are
 deferred.
 
 ## Headless run
@@ -240,7 +292,7 @@ The run directory must be outside the target source repository.
 export OPENAI_API_KEY='...'
 export CODING_AGENT_MODEL='your-tool-capable-model'
 
-pca exec 'Fix the bounded bug and keep the existing behavior.' \
+rivumi exec 'Fix the bounded bug and keep the existing behavior.' \
   -C /absolute/path/to/a/git/repository \
   --allowed-path 'src/**' \
   --allowed-path 'tests/**' \
@@ -261,13 +313,13 @@ trusted repository. Untrusted work requires the later Docker/Cloudflare Sandbox 
 | Provider | CLI value | Credential environment |
 |---|---|---|
 | OpenAI or compatible endpoint | `openai-compatible` | `OPENAI_API_KEY`, optional `OPENAI_BASE_URL` |
-| Ollama | `ollama` | local: none; remote HTTPS: `OLLAMA_API_KEY`; optional `PCA_API_URL` |
-| ChatGPT/Codex subscription | `openai-codex` | app-owned OAuth via `pca auth login-codex` |
+| Ollama | `ollama` | local: none; remote HTTPS: `OLLAMA_API_KEY`; optional `RIVUMI_API_URL` |
+| ChatGPT/Codex subscription | `openai-codex` | app-owned OAuth via `rivumi auth login-codex` |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_BASE_URL` |
 | Gemini | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | Cloudflare Workers AI | `workers-ai` | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` |
 
-For `pca exec` and its `pca run` compatibility alias, `--api-url` is the preferred spelling and
+For `rivumi exec` and its `rivumi run` compatibility alias, `--api-url` is the preferred spelling and
 `--base-url` remains a compatibility alias. Remote endpoints require HTTPS and an explicit
 provider credential; a local Ollama process never receives `OLLAMA_API_KEY` even when it exists in
 the parent environment.
@@ -301,7 +353,7 @@ The local runtime does not provide an OS/container sandbox. The disposable clone
 layer protect the source worktree and narrow tool behavior, but they are not a substitute for
 process isolation. Codex CLI adds its own `workspace-write` sandbox; the local Claude Code path has
 an exact file-tool allowlist and post-run patch enforcement, but the official child still receives
-the user's `HOME` for its own authentication and is not filesystem-isolated by PCA. Do not use
+the user's `HOME` for its own authentication and is not filesystem-isolated by Rivumi. Do not use
 these local backends on hostile repositories. The separate `cloudflare/` service now packages the
 project-owned Python runtime behind a thin Worker and Cloudflare Sandbox with a run-scoped model
 capability. It remains synchronous and ephemeral; consumer subscription logins are not relayed

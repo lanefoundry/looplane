@@ -85,12 +85,12 @@ Pinned source paths, policy links, and comparison details are retained in
 
 ## Implementation
 
-- `src/coding_agent/oauth_login.py` and `src/coding_agent/cli.py` harden Codex login and add
+- `src/rivumi/oauth_login.py` and `src/rivumi/cli.py` harden Codex login and add
   redacted `status-codex` / app-only `logout-codex` commands.
-- `src/coding_agent/backends.py` defines a contract separate from `ModelProvider`;
-  `src/coding_agent/claude_backend.py` implements the restricted official-CLI backend.
-- `src/coding_agent/runtime.py` gives bounded subprocesses an optional cancellation signal.
-- `src/coding_agent/models.py` tightens explicit API-key validation for remote compatible URLs.
+- `src/rivumi/backends.py` defines a contract separate from `ModelProvider`;
+  `src/rivumi/claude_backend.py` implements the restricted official-CLI backend.
+- `src/rivumi/runtime.py` gives bounded subprocesses an optional cancellation signal.
+- `src/rivumi/models.py` tightens explicit API-key validation for remote compatible URLs.
 - `scripts/eval_live_provider.py` forwards explicit experimental opt-in and retains it in the
   summary instead of enabling subscription paths implicitly.
 - `uv tool install --editable .` installs global `pca` and `coding-agent` executables.

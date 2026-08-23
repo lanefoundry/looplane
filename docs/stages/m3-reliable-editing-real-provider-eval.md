@@ -75,15 +75,15 @@ match, regex edit, replace-all, or unrestricted `write_file` fallback.
 
 ## Implementation
 
-- `src/coding_agent/tools.py` adds the exact edit schema, read-version ledger, bounded atomic
+- `src/rivumi/tools.py` adds the exact edit schema, read-version ledger, bounded atomic
   transaction, whitespace validation, cumulative patch validation, and rollback.
-- `src/coding_agent/prompts.py` defines prompt version `m3-exact-edit-v1`; new sessions and
+- `src/rivumi/prompts.py` defines prompt version `m3-exact-edit-v1`; new sessions and
   `run.created` persist it.
-- `src/coding_agent/approvals.py` classifies the new tool as a modify effect; the loop previews the
+- `src/rivumi/approvals.py` classifies the new tool as a modify effect; the loop previews the
   path and both exact fragments before approval.
 - `evals/live/tiny-python-bug.json` is the repeatable acceptance manifest.
 - `scripts/eval_live_provider.py` creates a new source Git repository and run root for every
-  attempt, calls `python -m coding_agent run`, and writes per-attempt logs plus `summary.json`.
+  attempt, calls `python -m rivumi run`, and writes per-attempt logs plus `summary.json`.
 
 ## Verification evidence
 
