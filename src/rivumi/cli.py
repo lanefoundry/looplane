@@ -12,17 +12,18 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 from urllib.parse import urlsplit
 
 import httpx
 import typer
-import uvicorn
 from typer.core import TyperCommand, TyperGroup
 
-from rivumi.approvals import TTYApprovalPolicy
-from rivumi.claude_backend import ClaudeCodeBackend
-from rivumi.claude_conversation import IsolatedClaudeConversation
+# NOTE: heavy, route-specific modules (provider SDKs, vendor backends, gateway,
+# Textual, conversation controllers, runtime discovery) are imported lazily inside
+# the command/helper that needs them so `rivumi --help`, `config`, and other
+# lightweight routes never load the OpenAI/Anthropic SDKs, uvicorn, Textual, or
+# external runtime implementations. See docs/startup-performance-playbook.md.
 from rivumi.cli_config import (
     SUPPORTED_PROVIDERS,
     CliConfig,
@@ -30,38 +31,19 @@ from rivumi.cli_config import (
     load_cli_config,
     save_cli_config,
 )
-from rivumi.codex_backend import CodexCliBackend
-from rivumi.codex_conversation import IsolatedCodexConversation
-from rivumi.codex_oauth import (
-    CodexCredentialManager,
-    CodexCredentialStore,
-    CodexOAuthClient,
-    OpenAICodexResponsesModel,
-)
-from rivumi.console import ConsoleEventSink, LiveEventProjection
 from rivumi.contracts import Limits, RunResult, TaskContract, VerificationCommand
-from rivumi.conversation import ConversationStore
-from rivumi.conversation_controller import (
-    ConversationController,
-    decide_runtime_approval,
-)
-from rivumi.external_runner import (
-    ExternalCodingRunner,
-    ExternalModificationApprovalError,
-    UnsafeExternalVerificationError,
-)
-from rivumi.gateway import ModelGateway
-from rivumi.loop import AgentRunner, UnsafeLocalExecutionError
-from rivumi.models import (
-    AnthropicModel,
-    GeminiModel,
-    ModelProvider,
-    OpenAICompatibleModel,
-    ProviderError,
-    WorkersAIModel,
-)
-from rivumi.oauth_login import parse_codex_callback, wait_for_codex_callback
-from rivumi.session import SessionStore, SessionValidationError
+
+if TYPE_CHECKING:
+    from rivumi.approvals import TTYApprovalPolicy
+    from rivumi.codex_oauth import CodexOAuthClient
+    from rivumi.console import ConsoleEventSink
+    from rivumi.conversation_controller import ConversationController
+    from rivumi.loop import AgentRunner
+    from rivumi.models import ModelProvider
+
+    NativeControllerCache = dict[
+        tuple[str, Path, str | None, str | None], "ConversationController"
+    ]
 
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 MAX_OLLAMA_TAGS_BYTES = 256 * 1024
@@ -87,11 +69,6 @@ EXTERNAL_RUNTIME_MODELS = {
         ("GPT-5.6 Luna · fast", "gpt-5.6-luna"),
     ),
 }
-
-
-NativeControllerCache = dict[
-    tuple[str, Path, str | None, str | None], "ConversationController"
-]
 
 
 async def _dispose_controller(controller: ConversationController) -> None:
@@ -123,6 +100,10 @@ def _acquire_native_controller(
     :meth:`ConversationTurnHandle.run`) is discarded and replaced so a single
     protocol failure does not poison every later run in the session.
     """
+
+    from rivumi.claude_conversation import IsolatedClaudeConversation
+    from rivumi.codex_conversation import IsolatedCodexConversation
+    from rivumi.conversation_controller import ConversationController
 
     controller = cache.get(identity)
     if controller is not None and controller.is_closed:
@@ -532,6 +513,15 @@ def chat(
 ) -> None:
     """Start this agent's own loop in the current repository."""
 
+    from rivumi.approvals import TTYApprovalPolicy
+    from rivumi.claude_backend import ClaudeCodeBackend
+    from rivumi.codex_backend import CodexCliBackend
+    from rivumi.console import ConsoleEventSink
+    from rivumi.conversation import ConversationStore
+    from rivumi.conversation_controller import decide_runtime_approval
+    from rivumi.external_runner import ExternalCodingRunner
+    from rivumi.loop import AgentRunner, UnsafeLocalExecutionError
+
     requested_provider = provider
     requested_model = model
     requested_api_url = api_url
@@ -792,6 +782,19 @@ def _model_from_env(
     allow_custom_provider_endpoint: bool,
     experimental_subscription: bool = False,
 ) -> ModelProvider:
+    from rivumi.codex_oauth import (
+        CodexCredentialManager,
+        CodexCredentialStore,
+        CodexOAuthClient,
+        OpenAICodexResponsesModel,
+    )
+    from rivumi.models import (
+        AnthropicModel,
+        GeminiModel,
+        OpenAICompatibleModel,
+        WorkersAIModel,
+    )
+
     if provider == "openai-compatible":
         return OpenAICompatibleModel(
             model=model,
@@ -904,6 +907,13 @@ def run_claude_code_backend(
 ) -> None:
     """Let official Claude Code edit a disposable clone, then audit it with Rivumi."""
 
+    from rivumi.claude_backend import ClaudeCodeBackend
+    from rivumi.external_runner import (
+        ExternalCodingRunner,
+        ExternalModificationApprovalError,
+        UnsafeExternalVerificationError,
+    )
+
     instruction = _prompt_or_task(prompt, instruction)
     if instruction is None:
         raise typer.BadParameter("PROMPT or --task is required")
@@ -991,6 +1001,13 @@ def run_codex_cli_backend(
 ) -> None:
     """Let official Codex CLI edit a sandboxed clone, then audit it with Rivumi."""
 
+    from rivumi.codex_backend import CodexCliBackend
+    from rivumi.external_runner import (
+        ExternalCodingRunner,
+        ExternalModificationApprovalError,
+        UnsafeExternalVerificationError,
+    )
+
     instruction = _prompt_or_task(prompt, instruction)
     if instruction is None:
         raise typer.BadParameter("PROMPT or --task is required")
@@ -1051,6 +1068,10 @@ def login_codex(
 ) -> None:
     """Create this application's own experimental ChatGPT/Codex OAuth grant."""
 
+    from rivumi.codex_oauth import CodexCredentialStore, CodexOAuthClient
+    from rivumi.models import ProviderError
+    from rivumi.oauth_login import parse_codex_callback, wait_for_codex_callback
+
     oauth = CodexOAuthClient()
     exchange_started = False
     try:
@@ -1092,6 +1113,8 @@ def login_codex(
 def status_codex() -> None:
     """Report redacted status for this application's Codex grant."""
 
+    from rivumi.codex_oauth import CodexCredentialStore
+
     try:
         credentials = CodexCredentialStore(_codex_credential_path()).load()
     except (OSError, PermissionError, ValueError) as exc:
@@ -1107,6 +1130,8 @@ def status_codex() -> None:
 @auth_app.command("logout-codex")
 def logout_codex() -> None:
     """Delete this application's Codex grant without touching another CLI."""
+
+    from rivumi.codex_oauth import CodexCredentialStore
 
     path = _codex_credential_path()
     store = CodexCredentialStore(path)
@@ -1169,6 +1194,10 @@ def resume(
     ] = False,
 ) -> None:
     """Resume a validated non-terminal session in its existing disposable workspace."""
+
+    from rivumi.approvals import TTYApprovalPolicy
+    from rivumi.console import ConsoleEventSink, LiveEventProjection
+    from rivumi.session import SessionStore, SessionValidationError
 
     try:
         run_dir = _resolve_resume_dir(run_root, session)
@@ -1288,6 +1317,10 @@ def serve_gateway(
 ) -> None:
     """Expose one configured provider through a bounded OpenAI Chat gateway."""
 
+    import uvicorn
+
+    from rivumi.gateway import ModelGateway
+
     if host not in {"localhost", "127.0.0.1", "::1"}:
         raise typer.BadParameter(
             "the MVP gateway only binds loopback; put an authenticated TLS proxy in front later"
@@ -1374,6 +1407,8 @@ def run(
 ) -> None:
     """Run one non-interactive task (Codex-style `exec`; `run` remains an alias)."""
 
+    from rivumi.loop import AgentRunner, UnsafeLocalExecutionError
+
     instruction = _prompt_or_task(prompt, instruction)
     if instruction is None:
         raise typer.BadParameter("PROMPT or --task is required")
@@ -1435,6 +1470,8 @@ async def _resume_and_close(
     approval_policy: TTYApprovalPolicy,
     event_sink: ConsoleEventSink,
 ):
+    from rivumi.loop import AgentRunner
+
     try:
         runner = await AgentRunner.resume(
             run_dir,

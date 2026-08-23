@@ -10,8 +10,12 @@ from typer.testing import CliRunner
 
 from rivumi import cli
 from rivumi.approvals import HeadlessApprovalPolicy
+from rivumi.claude_conversation import IsolatedClaudeConversation
+from rivumi.codex_conversation import IsolatedCodexConversation
 from rivumi.codex_oauth import CodexCredentials, CodexCredentialStore
 from rivumi.contracts import ModelTurn, RunResult, RunStatus, ToolCall
+from rivumi.conversation_controller import ConversationController
+from rivumi.loop import AgentRunner
 from rivumi.models import ScriptedModel
 
 FIX_PATCH = """\
@@ -38,8 +42,7 @@ def test_bare_rivumi_runs_our_agent_loop_with_trace_and_session(
     monkeypatch.setattr(cli, "_model_from_env", lambda **_: model)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(
-        cli,
-        "TTYApprovalPolicy",
+        "rivumi.approvals.TTYApprovalPolicy",
         lambda *_: HeadlessApprovalPolicy(allow_modify=True, allow_execute=True),
     )
     run_root = tmp_path / "runs"
@@ -104,7 +107,7 @@ def test_positional_prompt_cd_alias_and_print_mode_use_own_loop(
 ) -> None:
     model = ScriptedModel([ModelTurn(content="No source change was needed.")])
     captured: dict[str, object] = {}
-    original_runner = cli.AgentRunner
+    original_runner = AgentRunner
 
     class CapturingRunner(original_runner):
         def __init__(self, task, selected_model, run_root, **kwargs) -> None:
@@ -112,7 +115,7 @@ def test_positional_prompt_cd_alias_and_print_mode_use_own_loop(
             captured["kwargs"] = kwargs
             super().__init__(task, selected_model, run_root, **kwargs)
 
-    monkeypatch.setattr(cli, "AgentRunner", CapturingRunner)
+    monkeypatch.setattr("rivumi.loop.AgentRunner", CapturingRunner)
     monkeypatch.setattr(cli, "_model_from_env", lambda **_: model)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
@@ -284,7 +287,7 @@ def test_exec_positional_and_legacy_run_flags_share_headless_contract(
                 artifacts={"patch": str(tmp_path / "changes.patch")},
             )
 
-    monkeypatch.setattr(cli, "AgentRunner", FakeRunner)
+    monkeypatch.setattr("rivumi.loop.AgentRunner", FakeRunner)
     model_options = []
 
     def fake_model(**kwargs):
@@ -326,7 +329,7 @@ def test_ollama_preset_retains_a_bounded_tool_turn_budget(monkeypatch) -> None:
         captured.update(kwargs)
         return sentinel
 
-    monkeypatch.setattr(cli, "OpenAICompatibleModel", fake_model)
+    monkeypatch.setattr("rivumi.models.OpenAICompatibleModel", fake_model)
 
     model = cli._model_from_env(
         provider="ollama",
@@ -350,7 +353,7 @@ def test_remote_ollama_uses_explicit_key_but_loopback_never_receives_it(monkeypa
         captured.append(kwargs)
         return object()
 
-    monkeypatch.setattr(cli, "OpenAICompatibleModel", fake_model)
+    monkeypatch.setattr("rivumi.models.OpenAICompatibleModel", fake_model)
     monkeypatch.setenv("OLLAMA_API_KEY", "remote-only-secret")
 
     cli._model_from_env(
@@ -398,8 +401,8 @@ def test_claude_backend_requires_explicit_coding_boundaries(
                 artifacts={"patch": str(tmp_path / "changes.patch")},
             )
 
-    monkeypatch.setattr(cli, "ClaudeCodeBackend", FakeBackend)
-    monkeypatch.setattr(cli, "ExternalCodingRunner", FakeRunner)
+    monkeypatch.setattr("rivumi.claude_backend.ClaudeCodeBackend", FakeBackend)
+    monkeypatch.setattr("rivumi.external_runner.ExternalCodingRunner", FakeRunner)
 
     rejected = CliRunner().invoke(
         cli.app,
@@ -464,7 +467,7 @@ def test_codex_login_closes_oauth_client_when_callback_fails(monkeypatch) -> Non
             nonlocal closed
             closed = True
 
-    monkeypatch.setattr(cli, "CodexOAuthClient", FakeOAuth)
+    monkeypatch.setattr("rivumi.codex_oauth.CodexOAuthClient", FakeOAuth)
     monkeypatch.setattr(cli.webbrowser, "open", lambda _: True)
 
     def fail_after_listening(_, *, on_listening, **__) -> None:
@@ -472,8 +475,7 @@ def test_codex_login_closes_oauth_client_when_callback_fails(monkeypatch) -> Non
         raise TimeoutError("callback timed out")
 
     monkeypatch.setattr(
-        cli,
-        "wait_for_codex_callback",
+        "rivumi.oauth_login.wait_for_codex_callback",
         fail_after_listening,
     )
 
@@ -505,9 +507,9 @@ def test_codex_login_opens_browser_only_after_listener_is_ready(monkeypatch) -> 
         on_listening(("127.0.0.1", 1455))
         raise TimeoutError("callback timed out")
 
-    monkeypatch.setattr(cli, "CodexOAuthClient", FakeOAuth)
+    monkeypatch.setattr("rivumi.codex_oauth.CodexOAuthClient", FakeOAuth)
     monkeypatch.setattr(cli.webbrowser, "open", open_browser)
-    monkeypatch.setattr(cli, "wait_for_codex_callback", fail_after_listening)
+    monkeypatch.setattr("rivumi.oauth_login.wait_for_codex_callback", fail_after_listening)
 
     result = CliRunner().invoke(cli.app, ["auth", "login-codex", "--timeout", "1"])
 
@@ -547,7 +549,7 @@ def test_codex_manual_login_hides_callback_and_never_opens_browser(
         prompt_options.update(kwargs)
         return "http://localhost:1455/auth/callback?code=short-lived&state=expected"
 
-    monkeypatch.setattr(cli, "CodexOAuthClient", FakeOAuth)
+    monkeypatch.setattr("rivumi.codex_oauth.CodexOAuthClient", FakeOAuth)
     monkeypatch.setattr(cli, "_codex_credential_path", lambda: credential_path)
     monkeypatch.setattr(cli.typer, "prompt", prompt)
     monkeypatch.setattr(
@@ -660,8 +662,8 @@ def test_real_tty_routes_bare_prompt_to_full_screen_tui(
 @pytest.mark.parametrize(
     ("runtime", "model", "session_type"),
     [
-        ("claude-code", "sonnet", cli.IsolatedClaudeConversation),
-        ("codex-cli", None, cli.IsolatedCodexConversation),
+        ("claude-code", "sonnet", IsolatedClaudeConversation),
+        ("codex-cli", None, IsolatedCodexConversation),
     ],
 )
 def test_tui_subscription_runtime_routes_to_long_lived_isolated_session(
@@ -708,7 +710,7 @@ def test_tui_subscription_runtime_routes_to_long_lived_isolated_session(
     )
     runner, resource = captured["runner_factory"](request, None, None)
 
-    assert isinstance(resource, cli.ConversationController)
+    assert isinstance(resource, ConversationController)
     assert runner.controller is resource
     assert isinstance(resource.session, session_type)
     assert resource.session.model == model
@@ -734,7 +736,7 @@ def test_tui_codex_uses_one_isolated_long_lived_conversation(
     monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
     monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
     monkeypatch.setattr(tui, "RivumiApp", FakeApp)
-    monkeypatch.setattr(cli, "ExternalCodingRunner", None)
+    monkeypatch.setattr("rivumi.external_runner.ExternalCodingRunner", None)
 
     result = CliRunner().invoke(cli.app, ["-C", str(tiny_bug_repo)])
     assert result.exit_code == 0, result.output
@@ -754,9 +756,9 @@ def test_tui_codex_uses_one_isolated_long_lived_conversation(
     )
 
     assert resource is not None
-    assert isinstance(resource, cli.ConversationController)
+    assert isinstance(resource, ConversationController)
     assert runner.controller is resource
-    assert isinstance(resource.session, cli.IsolatedCodexConversation)
+    assert isinstance(resource.session, IsolatedCodexConversation)
 
 
 def test_acquire_native_controller_reuses_open_and_recreates_closed(
@@ -767,7 +769,7 @@ def test_acquire_native_controller_reuses_open_and_recreates_closed(
     first = cli._acquire_native_controller(
         cache, identity, runtime="codex-cli", repository=tmp_path, model=None
     )
-    assert isinstance(first, cli.ConversationController)
+    assert isinstance(first, ConversationController)
     assert not first.is_closed
     assert cache[identity] is first
 
@@ -808,7 +810,7 @@ def test_rebuild_controller_after_failure(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
     monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
     monkeypatch.setattr(tui, "RivumiApp", FakeApp)
-    monkeypatch.setattr(cli, "ExternalCodingRunner", None)
+    monkeypatch.setattr("rivumi.external_runner.ExternalCodingRunner", None)
 
     result = CliRunner().invoke(cli.app, ["-C", str(tmp_path)])
     assert result.exit_code == 0, result.output
@@ -827,7 +829,7 @@ def test_rebuild_controller_after_failure(tmp_path: Path, monkeypatch) -> None:
     first_controller._closed = True
     _runner2, resource2 = factory(request, None, None)
     assert resource2 is not first_controller
-    assert isinstance(resource2, cli.ConversationController)
+    assert isinstance(resource2, ConversationController)
     assert not resource2.is_closed
 
 
@@ -862,7 +864,7 @@ def test_plain_flag_never_launches_full_screen_tui(
         "_model_from_env",
         lambda **_: ScriptedModel([ModelTurn(content="unused")]),
     )
-    monkeypatch.setattr(cli, "AgentRunner", FakeRunner)
+    monkeypatch.setattr("rivumi.loop.AgentRunner", FakeRunner)
 
     result = CliRunner().invoke(
         cli.app,

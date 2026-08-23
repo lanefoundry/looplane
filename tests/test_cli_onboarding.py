@@ -183,7 +183,7 @@ def test_configured_bare_cli_shows_context_and_natural_task_prompt(
         "_model_from_env",
         lambda **_: ScriptedModel([ModelTurn(content="unused")]),
     )
-    monkeypatch.setattr(cli, "AgentRunner", FakeRunner)
+    monkeypatch.setattr("rivumi.loop.AgentRunner", FakeRunner)
 
     result = CliRunner().invoke(
         cli.app,
@@ -229,7 +229,7 @@ def test_positional_prompt_is_retained_after_first_time_setup(
         "_model_from_env",
         lambda **_: ScriptedModel([ModelTurn(content="unused")]),
     )
-    monkeypatch.setattr(cli, "AgentRunner", FakeRunner)
+    monkeypatch.setattr("rivumi.loop.AgentRunner", FakeRunner)
 
     result = CliRunner().invoke(
         cli.app,
@@ -293,8 +293,7 @@ def test_explicit_provider_is_locked_during_setup(
         lambda **_: ScriptedModel([ModelTurn(content="unused")]),
     )
     monkeypatch.setattr(
-        cli,
-        "AgentRunner",
+        "rivumi.loop.AgentRunner",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop after setup")),
     )
 
