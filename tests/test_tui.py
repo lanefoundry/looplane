@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 from rich.cells import cell_len
-from textual.widgets import Button, OptionList, Select, Static
+from textual.widgets import Button, Input, OptionList, Select, Static
 
 from rivumi.approvals import (
     ApprovalDecision,
@@ -57,7 +57,6 @@ from rivumi.loop import AgentRunner
 from rivumi.models import ScriptedModel
 from rivumi.runtime_semantics import ContextTelemetry, PermissionMode, ProcessLocalGrant
 from rivumi.tui import (
-    ApiKeyModal,
     ApprovalModal,
     ConversationRuntimeEventMessage,
     InlineApprovalBlock,
@@ -222,6 +221,9 @@ async def test_onboarding_modal_saves_private_non_secret_config(
 
     async with app.run_test(size=(100, 30)) as pilot:
         await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-add")
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "model")
         await pilot.click("#save")
         await _wait_until(config_path.exists)
         assert load_cli_config(config_path) == CliConfig(
@@ -248,7 +250,10 @@ async def test_onboarding_without_local_models_defers_model_until_main_screen(
     async with app.run_test(size=(100, 30)) as pilot:
         await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
         assert app.screen.query_one("#model-id").display is False
-        assert app.screen.query_one("#automatic-model").display is True
+        assert app.screen.query_one("#model-automatic-hint").display is True
+        await pilot.click("#overview-add")
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "model")
         await pilot.click("#use-once")
         await _wait_until(lambda: not isinstance(app.screen, OnboardingModal))
         assert app.query_one("#send", Button).disabled is True
@@ -271,7 +276,8 @@ async def test_onboarding_external_runtime_uses_automatic_model(
         await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
         assert app.screen.query_one("#automatic-model").display is True
         assert app.screen.query_one("#model-id").display is False
-        await pilot.click("#use-once")
+        await pilot.click("#overview-add")
+        await pilot.click("#connection-use-once")
         await _wait_until(lambda: not isinstance(app.screen, OnboardingModal))
         assert app.config.runtime == runtime
         assert app.config.model is None
@@ -337,6 +343,11 @@ async def test_api_runtime_can_enter_main_screen_then_choose_model(tmp_path: Pat
         assert "model required" in str(app.query_one("#context").content).lower()
         await pilot.press("ctrl+l")
         await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-add")
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "credential")
+        await pilot.click("#credential-later")
+        await _wait_until(lambda: app.screen._step == "model")
         model_input = app.screen.query_one("#model-id")
         assert model_input.display is True
         model_input.value = "claude-sonnet-test"
@@ -350,6 +361,293 @@ async def test_api_runtime_can_enter_main_screen_then_choose_model(tmp_path: Pat
         assert captured["request"].runtime == "rivumi-agent"
         assert captured["request"].provider == "anthropic"
         assert captured["request"].model == "claude-sonnet-test"
+
+
+async def test_onboarding_overview_lists_configured_providers_with_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from rivumi.native_credentials import save_native_credential
+    from rivumi.provider_verification import VerificationResult
+
+    save_native_credential("anthropic", {"api_key": "sk-verified"})
+    save_native_credential("groq", {"api_key": "sk-unverified"})
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+    app._verification_cache["anthropic"] = VerificationResult(
+        ok=True, message="Connected to anthropic."
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+l")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        overview_anthropic = app.screen.query_one("#overview-anthropic", Button)
+        overview_groq = app.screen.query_one("#overview-groq", Button)
+        assert str(overview_anthropic.label).startswith("✓")
+        assert str(overview_groq.label).startswith("⚠")
+        await pilot.pause()
+
+
+async def test_onboarding_overview_selecting_existing_provider_jumps_to_credential_step(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from rivumi.native_credentials import save_native_credential
+
+    save_native_credential("anthropic", {"api_key": "sk-existing"})
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+l")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-anthropic")
+        await _wait_until(lambda: app.screen._step == "credential")
+        assert app.screen._active_provider == "anthropic"
+        assert app.screen.query_one("#field-api_key").value == ""
+
+
+async def test_onboarding_credential_step_verify_failure_disables_continue_button(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from rivumi.provider_verification import VerificationResult
+
+    async def fake_verify(provider, fields, **_kwargs):
+        return VerificationResult(ok=False, message="anthropic rejected the credential (401).")
+
+    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+l")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-add")
+        app.screen.query_one("#provider", Select).value = "anthropic"
+        await pilot.pause()
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "credential")
+        app.screen.query_one("#field-api_key").value = "sk-bad"
+        await pilot.click("#credential-continue")
+        await _wait_until(
+            lambda: app.screen.query_one("#credential-continue", Button).disabled is True
+        )
+        assert "401" in str(app.screen.query_one("#credential-result").content)
+        assert app.screen.query_one("#credential-skip", Button).disabled is False
+
+
+async def test_onboarding_credential_step_skip_verification_saves_and_marks_unverified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+l")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-add")
+        app.screen.query_one("#provider", Select).value = "anthropic"
+        await pilot.pause()
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "credential")
+        app.screen.query_one("#field-api_key").value = "sk-offline"
+        modal = app.screen
+        await pilot.click("#credential-skip")
+        await _wait_until(lambda: modal._step == "model")
+        assert modal.verified_providers["anthropic"].ok is False
+
+    from rivumi.native_credentials import resolve_native_field
+
+    assert resolve_native_field("anthropic", "api_key") == "sk-offline"
+
+
+async def test_onboarding_ollama_skips_credential_step(tmp_path: Path) -> None:
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="anthropic"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(
+            ("ollama", "Ollama local"),
+            ("anthropic", "Anthropic API"),
+        ),
+        ollama_models=("qwen3:4b",),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+l")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-add")
+        app.screen.query_one("#provider", Select).value = "ollama"
+        await pilot.pause()
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "model")
+        assert app.screen._step == "model"
+
+
+def test_api_key_modal_was_removed_in_favor_of_onboarding_modal_wizard() -> None:
+    from rivumi import tui as tui_module
+
+    assert not hasattr(tui_module, "ApiKeyModal")
+
+
+async def test_onboarding_model_step_uses_fetched_list_from_verification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from rivumi.provider_verification import VerificationResult
+
+    async def fake_verify(provider, fields, **_kwargs):
+        return VerificationResult(
+            ok=True,
+            message="Connected to anthropic.",
+            models=("claude-sonnet-5", "claude-opus-5"),
+        )
+
+    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+l")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-add")
+        app.screen.query_one("#provider", Select).value = "anthropic"
+        await pilot.pause()
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "credential")
+        app.screen.query_one("#field-api_key").value = "sk-good"
+        await pilot.click("#credential-continue")
+        await _wait_until(lambda: app.screen._step == "model")
+        await _wait_until(lambda: app.screen.query_one("#fetched-model", Select).display is True)
+        assert app.screen.query_one("#model-id", Input).display is False
+        fetched = app.screen.query_one("#fetched-model", Select)
+        assert fetched.value == "claude-sonnet-5"
+        fetched.value = "claude-opus-5"
+        await pilot.click("#save")
+        await _wait_until(lambda: not isinstance(app.screen, OnboardingModal))
+        assert app.config.model == "claude-opus-5"
+        assert app.config.provider == "anthropic"
+
+
+async def test_onboarding_model_step_falls_back_to_free_input_when_list_empty(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from rivumi.provider_verification import VerificationResult
+
+    async def fake_verify(provider, fields, **_kwargs):
+        return VerificationResult(ok=True, message="Connected to anthropic.", models=())
+
+    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+l")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-add")
+        app.screen.query_one("#provider", Select).value = "anthropic"
+        await pilot.pause()
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "credential")
+        app.screen.query_one("#field-api_key").value = "sk-good"
+        await pilot.click("#credential-continue")
+        await _wait_until(lambda: app.screen._step == "model")
+        await pilot.pause()
+        assert app.screen.query_one("#fetched-model", Select).display is False
+        assert app.screen.query_one("#model-id", Input).display is True
+
+
+async def test_credential_verification_in_flight_can_be_cancelled_without_orphan_worker(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Cancelling out of the credential step while a verify call is in flight (the
+
+    ``_verify_and_advance`` worker awaiting ``verify_native_credential``) must not leave
+    a dangling task that later touches a dismissed screen's widgets. Textual cancels a
+    screen's own workers when it is popped/dismissed; this asserts that guarantee holds
+    for this specific worker rather than relying on it implicitly.
+    """
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def slow_verify(provider, fields, **_kwargs):
+        calls.append("start")
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            calls.append("cancelled")
+            raise
+        calls.append("finished")
+        from rivumi.provider_verification import VerificationResult
+
+        return VerificationResult(ok=True, message="Connected to anthropic.")
+
+    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", slow_verify)
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli", provider="anthropic"),
+        runner_factory=lambda *_: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"), ("rivumi-agent", "Rivumi")),
+        providers=(("anthropic", "Anthropic API"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        task = app.query_one("#task", MessageComposer)
+        task.load_text("/runtime rivumi-agent")
+        await pilot.press("enter")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        app.screen.query_one("#field-api_key").value = "sk-test-secret"
+        await pilot.click("#save")
+        await _wait_until(
+            lambda: app.screen.query_one("#credential-spinner").phase == LoadingPhase.VERIFYING
+        )
+        await pilot.click("#cancel")
+        await _wait_until(lambda: not isinstance(app.screen, OnboardingModal))
+        assert app.config.runtime == "codex-cli"
+        assert calls == ["start", "cancelled"]
+        # The worker was cancelled, not merely still pending: releasing it now must not
+        # resume any continuation that would touch the (dismissed) modal's widgets.
+        release.set()
+        await pilot.pause()
+        assert calls == ["start", "cancelled"]
 
 
 @pytest.mark.parametrize("runtime", ["claude-code", "codex-cli"])
@@ -759,6 +1057,13 @@ async def test_runtime_switch_to_native_prompts_for_missing_credential(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
+    from rivumi.provider_verification import VerificationResult
+
+    async def fake_verify(provider, fields, **_kwargs):
+        return VerificationResult(ok=True, message="Connected to anthropic.")
+
+    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+
     app = RivumiApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli", provider="anthropic"),
@@ -771,12 +1076,12 @@ async def test_runtime_switch_to_native_prompts_for_missing_credential(
         task = app.query_one("#task", MessageComposer)
         task.load_text("/runtime rivumi-agent")
         await pilot.press("enter")
-        await _wait_until(lambda: isinstance(app.screen, ApiKeyModal))
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
         assert app.config.runtime == "codex-cli"
         key_input = app.screen.query_one("#field-api_key")
         key_input.value = "sk-test-secret"
         await pilot.click("#save")
-        await _wait_until(lambda: not isinstance(app.screen, ApiKeyModal))
+        await _wait_until(lambda: not isinstance(app.screen, OnboardingModal))
         await _wait_until(lambda: app.config.runtime == "rivumi-agent")
         assert "Credentials saved" in "\n".join(
             entry.title for entry in app.query(TimelineEntry)
@@ -805,9 +1110,9 @@ async def test_runtime_switch_to_native_cancelled_credential_prompt_leaves_runti
         task = app.query_one("#task", MessageComposer)
         task.load_text("/runtime rivumi-agent")
         await pilot.press("enter")
-        await _wait_until(lambda: isinstance(app.screen, ApiKeyModal))
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
         await pilot.click("#cancel")
-        await _wait_until(lambda: not isinstance(app.screen, ApiKeyModal))
+        await _wait_until(lambda: not isinstance(app.screen, OnboardingModal))
         assert app.config.runtime == "codex-cli"
         assert "Runtime switch cancelled" in str(app.query_one("#status").content)
 

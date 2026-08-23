@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from time import monotonic
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 from rich.syntax import Syntax
@@ -93,6 +93,9 @@ from rivumi.slash_commands import (
 )
 from rivumi.transcript import infer_tool_detail_kind
 from rivumi.transcript_export import TranscriptReducer
+
+if TYPE_CHECKING:
+    from rivumi.provider_verification import VerificationResult
 
 ProviderOption = tuple[str, str]
 RuntimeOption = tuple[str, str]
@@ -1048,6 +1051,16 @@ class ToolGroupBlock(Collapsible):
 
 
 class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
+    """Runtime/provider/credential/model setup, as one modal with four steps.
+
+    Normal use (``credential_only=False``) composes all four step containers up front
+    and toggles which one is visible; this keeps the single ``push_screen_wait`` call
+    site in ``RivumiApp`` unchanged (one await, one dismiss) instead of pushing several
+    screens. ``credential_only=True`` composes just the credential step, replacing the
+    old standalone ``ApiKeyModal`` for the "an active runtime switch is missing a
+    credential" case (see ``RivumiApp._ensure_native_credentials``).
+    """
+
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
     DEFAULT_CSS = """
     OnboardingModal { align: center middle; background: $background 70%; }
@@ -1060,6 +1073,10 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
     OnboardingModal Label.field { margin-top: 1; }
     OnboardingModal Horizontal { height: auto; margin-top: 1; align-horizontal: right; }
     OnboardingModal Button { margin-left: 1; }
+    OnboardingModal #overview-list { height: auto; max-height: 12; margin-bottom: 1; }
+    OnboardingModal .overview-entry { width: 100%; margin-bottom: 1; }
+    OnboardingModal #credential-result { margin-top: 1; }
+    OnboardingModal #credential-spinner { height: 1; margin-top: 1; }
     """
 
     def __init__(
@@ -1072,6 +1089,10 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         runtime_models: Mapping[str, tuple[RuntimeModelOption, ...]] | None = None,
         locked_provider: str | None = None,
         defer_model: bool = False,
+        verified_providers: Mapping[str, VerificationResult] | None = None,
+        initial_step: str = "overview",
+        focus_provider: str | None = None,
+        credential_only: bool = False,
     ) -> None:
         super().__init__()
         self.current = current
@@ -1081,7 +1102,12 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         self.runtime_models = runtime_models or {}
         self.locked_provider = locked_provider
         self.defer_model = defer_model
-        self._active_provider: str | None = None
+        self.verified_providers: dict[str, VerificationResult] = dict(verified_providers or {})
+        self.credential_only = credential_only
+        self._step = "credential" if credential_only else initial_step
+        self._active_provider: str | None = focus_provider
+        self._active_runtime: str = "rivumi-agent"
+        self._fetched_models: tuple[str, ...] = ()
 
     def _initial_runtime(self) -> str:
         slugs = [slug for slug, _ in self.runtimes]
@@ -1101,7 +1127,33 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
             return self.current.provider
         return "ollama" if self.ollama_models else "openai-compatible"
 
+    @staticmethod
+    def _provider_fields(provider: str) -> tuple[str, ...]:
+        from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS
+
+        return NATIVE_CREDENTIAL_FIELDS.get(provider, ())
+
+    @staticmethod
+    def _configured_native_providers() -> tuple[str, ...]:
+        from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS, missing_native_fields
+
+        return tuple(
+            provider
+            for provider in sorted(NATIVE_CREDENTIAL_FIELDS)
+            if not missing_native_fields(provider)
+        )
+
+    def _provider_label(self, provider: str) -> str:
+        return dict(self.providers).get(provider, provider)
+
+    def _status_icon(self, provider: str) -> str:
+        result = self.verified_providers.get(provider)
+        return "✓" if result is not None and result.ok else "⚠"
+
     def compose(self) -> ComposeResult:
+        if self.credential_only:
+            yield from self._compose_credential_only()
+            return
         runtime = self._initial_runtime()
         provider = self._initial_provider()
         provider_options = list(self.providers)
@@ -1114,71 +1166,142 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
             else (self.ollama_models[0] if self.ollama_models else Select.NULL)
         )
         with Vertical():
-            yield Label("Welcome to Rivumi", classes="title")
+            with Vertical(id="step-overview"):
+                yield Label("Welcome to Rivumi", classes="title")
+                yield Static(
+                    "Providers already set up for the rivumi-agent runtime.",
+                    classes="hint",
+                )
+                with VerticalScroll(id="overview-list"):
+                    for configured in self._configured_native_providers():
+                        icon = self._status_icon(configured)
+                        yield Button(
+                            f"{icon} {self._provider_label(configured)}",
+                            id=f"overview-{configured}",
+                            classes="overview-entry",
+                        )
+                with Horizontal():
+                    yield Button("Cancel", id="overview-cancel")
+                    yield Button("+ New Provider", id="overview-add", variant="primary")
+
+            with Vertical(id="step-connection"):
+                yield Label("Welcome to Rivumi", classes="title")
+                yield Static(
+                    "Choose who runs the coding loop. Credentials stay with the selected runtime.",
+                    classes="hint",
+                )
+                yield Label("Runtime", classes="field")
+                yield Select(
+                    tuple((label, slug) for slug, label in self.runtimes),
+                    value=runtime,
+                    allow_blank=False,
+                    disabled=self.locked_provider is not None,
+                    id="runtime",
+                )
+                yield Static("", id="runtime-hint", markup=False, classes="hint")
+                yield Label("Connection", classes="field", id="provider-label")
+                yield Select(
+                    tuple((label, slug) for slug, label in provider_options),
+                    value=provider,
+                    allow_blank=False,
+                    disabled=self.locked_provider is not None,
+                    id="provider",
+                )
+                yield Select(
+                    (("Automatic", _AUTOMATIC_MODEL),),
+                    value=_AUTOMATIC_MODEL,
+                    allow_blank=False,
+                    id="runtime-model",
+                )
+                yield Static("Automatic · managed by the selected runtime", id="automatic-model")
+                with Horizontal():
+                    yield Button("Cancel", id="connection-cancel")
+                    yield Button("Use once", id="connection-use-once")
+                    yield Button("Save & Continue", id="connection-save", variant="primary")
+                    yield Button("Next", id="connection-next", variant="primary")
+
+            with Vertical(id="step-credential"):
+                yield Label("Connect provider", id="credential-title", classes="title")
+                yield Static(
+                    "Stored locally for rivumi-agent only (0600, never sent elsewhere).",
+                    classes="hint",
+                )
+                yield Vertical(id="credential-fields")
+                yield RuntimeLoadingIndicator(id="credential-spinner")
+                yield Static("", id="credential-result", markup=False)
+                with Horizontal():
+                    yield Button("Cancel", id="credential-cancel")
+                    yield Button("Set up later", id="credential-later")
+                    yield Button("Skip verification & Save", id="credential-skip")
+                    yield Button("Verify & Continue", id="credential-continue", variant="primary")
+
+            with Vertical(id="step-model"):
+                yield Label("Model", classes="field", id="model-label")
+                yield Select(
+                    model_options,
+                    value=model_value,
+                    allow_blank=not bool(model_options),
+                    id="ollama-model",
+                )
+                yield Input(
+                    value=self.current.model or "",
+                    placeholder="Provider model ID",
+                    id="model-id",
+                )
+                yield Select((), allow_blank=True, id="fetched-model")
+                yield Static(
+                    "Automatic · managed by the selected runtime", id="model-automatic-hint"
+                )
+                yield Static("", id="setup-error", markup=False)
+                with Horizontal():
+                    yield Button("Cancel", id="cancel")
+                    yield Button("Use once", id="use-once")
+                    yield Button("Save & Continue", id="save", variant="primary")
+
+    def _compose_credential_only(self) -> ComposeResult:
+        provider = self._active_provider or ""
+        with Vertical():
+            yield Label(f"Connect {provider}", id="credential-title", classes="title")
             yield Static(
-                "Choose who runs the coding loop. Credentials stay with the selected runtime.",
+                "Stored locally for rivumi-agent only (0600, never sent elsewhere).",
                 classes="hint",
             )
-            yield Label("Runtime", classes="field")
-            yield Select(
-                tuple((label, slug) for slug, label in self.runtimes),
-                value=runtime,
-                allow_blank=False,
-                disabled=self.locked_provider is not None,
-                id="runtime",
-            )
-            yield Static("", id="runtime-hint", markup=False, classes="hint")
-            yield Label("Connection", classes="field", id="provider-label")
-            yield Select(
-                tuple((label, slug) for slug, label in provider_options),
-                value=provider,
-                allow_blank=False,
-                disabled=self.locked_provider is not None,
-                id="provider",
-            )
-            yield Label("Model", classes="field", id="model-label")
-            yield Select(
-                model_options,
-                value=model_value,
-                allow_blank=not bool(model_options),
-                id="ollama-model",
-            )
-            yield Input(
-                value=self.current.model or "",
-                placeholder="Provider model ID",
-                id="model-id",
-            )
-            yield Select(
-                (("Automatic", _AUTOMATIC_MODEL),),
-                value=_AUTOMATIC_MODEL,
-                allow_blank=False,
-                id="runtime-model",
-            )
-            yield Static("Automatic · managed by the selected runtime", id="automatic-model")
-            yield Static("", id="setup-error", markup=False)
+            yield Vertical(id="credential-fields")
+            yield RuntimeLoadingIndicator(id="credential-spinner")
+            yield Static("", id="credential-result", markup=False)
             with Horizontal():
                 yield Button("Cancel", id="cancel")
-                yield Button("Use once", id="use-once")
-                yield Button("Save & Continue", id="save", variant="primary")
+                yield Button("Skip verification & Save", id="skip-verify")
+                yield Button("Save", id="save", variant="primary")
 
     def on_mount(self) -> None:
-        self._active_provider = self._initial_provider()
-        self._sync_controls(self._initial_runtime(), self._active_provider)
+        if self.credential_only:
+            if self._active_provider:
+                self._mount_credential_fields_worker(self._active_provider)
+            return
+        runtime = self._initial_runtime()
+        provider = self._initial_provider()
+        self._active_provider = provider
+        self._active_runtime = runtime
+        self._sync_connection_controls(runtime, provider)
+        self._sync_model_controls()
+        # ``self._step`` is always "overview" here (credential_only handled above; no
+        # caller passes a different initial_step), so this never needs to await the
+        # credential-field-mounting branch of ``_goto_step``.
+        self.query_one("#step-overview", Vertical).display = True
+        self.query_one("#step-connection", Vertical).display = False
+        self.query_one("#step-credential", Vertical).display = False
+        self.query_one("#step-model", Vertical).display = False
+        self.query_one("#overview-add", Button).focus()
 
-    def _sync_controls(self, runtime: str, provider: str) -> None:
+    @work(exclusive=True, group="credential-mount")
+    async def _mount_credential_fields_worker(self, provider: str) -> None:
+        await self._mount_credential_fields(provider)
+
+    def _sync_connection_controls(self, runtime: str, provider: str) -> None:
         rivumi_runtime = runtime == "rivumi-agent"
-        use_list = (
-            rivumi_runtime
-            and not self.defer_model
-            and provider == "ollama"
-            and bool(self.ollama_models)
-        )
-        use_input = rivumi_runtime and not self.defer_model and not use_list
         self.query_one("#provider-label", Label).display = rivumi_runtime
         self.query_one("#provider", Select).display = rivumi_runtime
-        self.query_one("#model-label", Label).display = True
-        self.query_one("#ollama-model", Select).display = use_list
-        self.query_one("#model-id", Input).display = use_input
         runtime_model = self.query_one("#runtime-model", Select)
         external_options = self.runtime_models.get(runtime, ())
         select_options = tuple(
@@ -1197,7 +1320,7 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         runtime_model.display = not rivumi_runtime and bool(external_options)
         self.query_one("#automatic-model", Static).display = (
             not rivumi_runtime and not external_options
-        ) or (rivumi_runtime and not use_list and not use_input)
+        )
         adapter = runtime_registry.RUNTIME_REGISTRY.get(runtime)
         if adapter is None:
             hint = ""
@@ -1214,6 +1337,38 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
                 "your provider keys stay in its config."
             )
         self.query_one("#runtime-hint", Static).update(hint)
+        self.query_one("#connection-next", Button).display = rivumi_runtime
+        self.query_one("#connection-use-once", Button).display = not rivumi_runtime
+        self.query_one("#connection-save", Button).display = not rivumi_runtime
+
+    def _sync_model_controls(self) -> None:
+        rivumi_runtime = self._active_runtime == "rivumi-agent"
+        provider = self._active_provider
+        use_list = (
+            rivumi_runtime
+            and not self.defer_model
+            and provider == "ollama"
+            and bool(self.ollama_models)
+        )
+        use_fetched = (
+            rivumi_runtime and not self.defer_model and not use_list and bool(self._fetched_models)
+        )
+        use_input = rivumi_runtime and not self.defer_model and not use_list and not use_fetched
+        self.query_one("#ollama-model", Select).display = use_list
+        self.query_one("#fetched-model", Select).display = use_fetched
+        self.query_one("#model-id", Input).display = use_input
+        self.query_one("#model-label", Label).display = rivumi_runtime and not self.defer_model
+        self.query_one("#model-automatic-hint", Static).display = (
+            rivumi_runtime and self.defer_model
+        )
+        if use_fetched:
+            self._populate_fetched_model_select()
+
+    def _populate_fetched_model_select(self) -> None:
+        select = self.query_one("#fetched-model", Select)
+        select.set_options(tuple((model, model) for model in self._fetched_models))
+        if self._fetched_models:
+            select.value = self._fetched_models[0]
 
     @on(Select.Changed, "#runtime")
     def runtime_changed(self, event: Select.Changed) -> None:
@@ -1223,41 +1378,173 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         provider = (
             self._initial_provider() if provider_value is Select.NULL else str(provider_value)
         )
-        self._sync_controls(str(event.value), provider)
+        runtime = str(event.value)
+        self._active_provider = provider
+        self._active_runtime = runtime
+        self._sync_connection_controls(runtime, provider)
+        self._sync_model_controls()
 
     @on(Select.Changed, "#provider")
     def provider_changed(self, event: Select.Changed) -> None:
-        if event.value is not Select.NULL:
-            provider = str(event.value)
-            if self._active_provider is not None and provider != self._active_provider:
-                self.query_one("#model-id", Input).value = ""
-                ollama = self.query_one("#ollama-model", Select)
-                ollama.value = self.ollama_models[0] if self.ollama_models else Select.NULL
-            self._active_provider = provider
-            runtime_value = self.query_one("#runtime", Select).value
-            runtime = "rivumi-agent" if runtime_value is Select.NULL else str(runtime_value)
-            self._sync_controls(runtime, provider)
-
-    @on(Button.Pressed)
-    def choose(self, event: Button.Pressed) -> None:
-        button_id = event.button.id or "cancel"
-        if button_id == "cancel":
-            self.dismiss(None)
+        if event.value is Select.NULL:
             return
+        provider = str(event.value)
+        if self._active_provider is not None and provider != self._active_provider:
+            self.query_one("#model-id", Input).value = ""
+            ollama = self.query_one("#ollama-model", Select)
+            ollama.value = self.ollama_models[0] if self.ollama_models else Select.NULL
+            self._fetched_models = ()
+        self._active_provider = provider
         runtime_value = self.query_one("#runtime", Select).value
         runtime = "rivumi-agent" if runtime_value is Select.NULL else str(runtime_value)
-        if runtime != "rivumi-agent":
-            selected = self.query_one("#runtime-model", Select).value
-            runtime_model = (
-                None if selected in {Select.NULL, _AUTOMATIC_MODEL} else str(selected).strip()
-            )
-            configured = self.current.model_copy(
-                update={"runtime": runtime, "runtime_model": runtime_model}
-            )
-            self.dismiss(TuiConfigurationSelection(config=configured, persist=button_id == "save"))
+        self._active_runtime = runtime
+        self._sync_connection_controls(runtime, provider)
+        self._sync_model_controls()
+
+    async def _goto_step(self, step: str) -> None:
+        self._step = step
+        self.query_one("#step-overview", Vertical).display = step == "overview"
+        self.query_one("#step-connection", Vertical).display = step == "connection"
+        self.query_one("#step-credential", Vertical).display = step == "credential"
+        self.query_one("#step-model", Vertical).display = step == "model"
+        if step == "overview":
+            self.query_one("#overview-add", Button).focus()
+        elif step == "credential" and self._active_provider:
+            await self._mount_credential_fields(self._active_provider)
+        elif step == "model":
+            self._sync_model_controls()
+            self._fetch_models_for_active_provider()
+
+    async def _mount_credential_fields(self, provider: str) -> None:
+        container = self.query_one("#credential-fields", Vertical)
+        await container.remove_children()
+        fields = self._provider_fields(provider)
+        for field in fields:
+            await container.mount(Label(field.replace("_", " ").title(), classes="field"))
+            await container.mount(Input(password=True, id=f"field-{field}"))
+        if not self.credential_only:
+            self.query_one("#credential-title", Label).update(f"Connect {provider}")
+        self.query_one("#credential-result", Static).update("")
+        self._set_credential_verifying(False)
+        continue_id = "save" if self.credential_only else "credential-continue"
+        self.query_one(f"#{continue_id}", Button).disabled = False
+        if fields:
+            self.query_one(f"#field-{fields[0]}", Input).focus()
+
+    def _set_credential_verifying(self, verifying: bool) -> None:
+        spinner = self.query_one("#credential-spinner", RuntimeLoadingIndicator)
+        spinner.set_phase(LoadingPhase.VERIFYING if verifying else None)
+        continue_id = "save" if self.credential_only else "credential-continue"
+        skip_id = "skip-verify" if self.credential_only else "credential-skip"
+        self.query_one(f"#{continue_id}", Button).disabled = verifying
+        self.query_one(f"#{skip_id}", Button).disabled = verifying
+
+    @work(exclusive=True, group="model-fetch")
+    async def _fetch_models_for_active_provider(self) -> None:
+        provider = self._active_provider
+        if provider is None or provider == "ollama" or self.defer_model:
             return
+        cached = self.verified_providers.get(provider)
+        if cached is not None and cached.models:
+            self._fetched_models = cached.models
+            if self._step == "model":
+                self._sync_model_controls()
+            return
+        from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS, resolve_native_field
+
+        fields = NATIVE_CREDENTIAL_FIELDS.get(provider)
+        if fields is None:
+            return
+        values: dict[str, str] = {}
+        for field in fields:
+            value = resolve_native_field(provider, field)
+            if value is None:
+                return
+            values[field] = value
+
+        from rivumi.provider_verification import list_provider_models
+
+        models = await list_provider_models(provider, values)
+        if models and self._active_provider == provider and self._step == "model":
+            self._fetched_models = models
+            self._sync_model_controls()
+
+    def _submit_credential(self, *, skip_verification: bool) -> None:
+        provider = self._active_provider
+        if provider is None:
+            return
+        fields = self._provider_fields(provider)
+        values: dict[str, str] = {}
+        for field in fields:
+            value = self.query_one(f"#field-{field}", Input).value.strip()
+            if not value:
+                self.query_one("#credential-result", Static).update("All fields are required.")
+                return
+            values[field] = value
+
+        from rivumi.native_credentials import save_native_credential
+
+        try:
+            save_native_credential(provider, values)
+        except (OSError, PermissionError, ValueError) as exc:
+            self.query_one("#credential-result", Static).update(f"Could not save: {exc}")
+            return
+        self._verify_and_advance(provider, values, skip_verification=skip_verification)
+
+    @work(exclusive=True, group="verify")
+    async def _verify_and_advance(
+        self, provider: str, values: dict[str, str], *, skip_verification: bool
+    ) -> None:
+        if skip_verification:
+            from rivumi.provider_verification import VerificationResult
+
+            self.verified_providers[provider] = VerificationResult(
+                ok=False, message="Verification skipped by user."
+            )
+        else:
+            self._set_credential_verifying(True)
+            from rivumi.provider_verification import verify_native_credential
+
+            result = await verify_native_credential(provider, values)
+            self._set_credential_verifying(False)
+            self.verified_providers[provider] = result
+            if not result.ok:
+                self.query_one("#credential-result", Static).update(f"✗ {result.message}")
+                continue_id = "save" if self.credential_only else "credential-continue"
+                self.query_one(f"#{continue_id}", Button).disabled = True
+                return
+            self.query_one("#credential-result", Static).update(f"✓ {result.message}")
+
+        if self.credential_only:
+            self.dismiss(TuiConfigurationSelection(config=self.current, persist=False))
+            return
+        await self._goto_step("model")
+
+    async def _advance_from_connection(self) -> None:
         provider_value = self.query_one("#provider", Select).value
-        provider = str(provider_value)
+        provider = (
+            self._initial_provider() if provider_value is Select.NULL else str(provider_value)
+        )
+        self._active_provider = provider
+        if provider == "ollama" or self.defer_model:
+            await self._goto_step("model")
+        else:
+            await self._goto_step("credential")
+
+    def _dismiss_external_runtime(self, *, persist: bool) -> None:
+        runtime_value = self.query_one("#runtime", Select).value
+        runtime = "rivumi-agent" if runtime_value is Select.NULL else str(runtime_value)
+        selected = self.query_one("#runtime-model", Select).value
+        runtime_model = (
+            None if selected in {Select.NULL, _AUTOMATIC_MODEL} else str(selected).strip()
+        )
+        configured = self.current.model_copy(
+            update={"runtime": runtime, "runtime_model": runtime_model}
+        )
+        self.dismiss(TuiConfigurationSelection(config=configured, persist=persist))
+
+    def _dismiss_native_runtime(self, *, persist: bool) -> None:
+        provider = self._active_provider or self._initial_provider()
         if self.defer_model:
             model = (
                 self.current.model
@@ -1268,6 +1555,9 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
             )
         elif provider == "ollama" and self.ollama_models:
             selected = self.query_one("#ollama-model", Select).value
+            model = None if selected is Select.NULL else str(selected).strip()
+        elif self._fetched_models:
+            selected = self.query_one("#fetched-model", Select).value
             model = None if selected is Select.NULL else str(selected).strip()
         else:
             model = self.query_one("#model-id", Input).value.strip() or None
@@ -1284,68 +1574,44 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
                     model=model,
                     api_url=api_url,
                 ),
-                persist=button_id == "save",
+                persist=persist,
             )
         )
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class ApiKeyModal(ModalScreen[dict[str, str] | None]):
-    """Collect the missing credential field(s) for a rivumi-agent provider."""
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-    DEFAULT_CSS = """
-    ApiKeyModal { align: center middle; background: $background 70%; }
-    ApiKeyModal > Vertical {
-        width: 64; max-width: 92%; height: auto; padding: 1 2;
-        border: round $accent; background: $surface;
-    }
-    ApiKeyModal .title { text-style: bold; color: $accent; }
-    ApiKeyModal .hint { color: $text-muted; margin-bottom: 1; }
-    ApiKeyModal Label.field { margin-top: 1; }
-    ApiKeyModal Horizontal { height: auto; margin-top: 1; align-horizontal: right; }
-    ApiKeyModal Button { margin-left: 1; }
-    """
-
-    def __init__(self, *, provider: str, fields: tuple[str, ...]) -> None:
-        super().__init__()
-        self.provider = provider
-        self.fields = fields
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(f"Connect {self.provider}", classes="title")
-            yield Static(
-                "Stored locally for rivumi-agent only (0600, never sent elsewhere).",
-                classes="hint",
-            )
-            for field in self.fields:
-                yield Label(field.replace("_", " ").title(), classes="field")
-                yield Input(password=True, id=f"field-{field}")
-            yield Static("", id="api-key-error", markup=False)
-            with Horizontal():
-                yield Button("Cancel", id="cancel")
-                yield Button("Save", id="save", variant="primary")
-
-    def on_mount(self) -> None:
-        if self.fields:
-            self.query_one(f"#field-{self.fields[0]}", Input).focus()
-
     @on(Button.Pressed)
-    def choose(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
+    async def handle_button(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if self.credential_only:
+            if button_id == "cancel":
+                self.dismiss(None)
+            elif button_id in {"save", "skip-verify"}:
+                self._submit_credential(skip_verification=button_id == "skip-verify")
+            return
+        if button_id in {"overview-cancel", "connection-cancel", "credential-cancel", "cancel"}:
             self.dismiss(None)
             return
-        values: dict[str, str] = {}
-        for field in self.fields:
-            value = self.query_one(f"#field-{field}", Input).value.strip()
-            if not value:
-                self.query_one("#api-key-error", Static).update("All fields are required.")
-                return
-            values[field] = value
-        self.dismiss(values)
+        if button_id == "overview-add":
+            await self._goto_step("connection")
+            return
+        if button_id.startswith("overview-"):
+            self._active_provider = button_id.removeprefix("overview-")
+            await self._goto_step("credential")
+            return
+        if button_id == "connection-next":
+            await self._advance_from_connection()
+            return
+        if button_id in {"connection-use-once", "connection-save"}:
+            self._dismiss_external_runtime(persist=button_id == "connection-save")
+            return
+        if button_id in {"credential-continue", "credential-skip"}:
+            self._submit_credential(skip_verification=button_id == "credential-skip")
+            return
+        if button_id == "credential-later":
+            await self._goto_step("model")
+            return
+        if button_id in {"use-once", "save"}:
+            self._dismiss_native_runtime(persist=button_id == "save")
+            return
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1593,6 +1859,9 @@ class RivumiApp(App[RunResult | None]):
         self._exit_confirm_at: float | None = None
         self._reducer = TranscriptReducer()
         self._final_transcript_cache: str | None = None
+        # Connection checks run once per provider per process; not persisted to disk, so a
+        # fresh run always starts every saved provider back at "saved, not verified yet".
+        self._verification_cache: dict[str, VerificationResult] = {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="workspace"):
@@ -1742,17 +2011,18 @@ class RivumiApp(App[RunResult | None]):
     async def _run_configuration(
         self, *, defer_model: bool = False, exit_on_cancel: bool = False
     ) -> None:
-        selection = await self.push_screen_wait(
-            OnboardingModal(
-                current=self.config,
-                runtimes=self.runtimes,
-                providers=self.providers,
-                ollama_models=self.ollama_models,
-                runtime_models=self.runtime_models,
-                locked_provider=self.locked_provider,
-                defer_model=defer_model,
-            )
+        modal = OnboardingModal(
+            current=self.config,
+            runtimes=self.runtimes,
+            providers=self.providers,
+            ollama_models=self.ollama_models,
+            runtime_models=self.runtime_models,
+            locked_provider=self.locked_provider,
+            defer_model=defer_model,
+            verified_providers=self._verification_cache,
         )
+        selection = await self.push_screen_wait(modal)
+        self._verification_cache.update(modal.verified_providers)
         if selection is None:
             if exit_on_cancel:
                 self.exit(None)
@@ -2403,11 +2673,7 @@ class RivumiApp(App[RunResult | None]):
         user supplied and saved it) and ``False`` when the user cancelled.
         """
 
-        from rivumi.native_credentials import (
-            NATIVE_CREDENTIAL_FIELDS,
-            missing_native_fields,
-            save_native_credential,
-        )
+        from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS, missing_native_fields
 
         provider = self.config.provider
         if provider is None:
@@ -2415,13 +2681,19 @@ class RivumiApp(App[RunResult | None]):
         fields = NATIVE_CREDENTIAL_FIELDS.get(provider)
         if fields is None or not missing_native_fields(provider):
             return True
-        result = await self.push_screen_wait(ApiKeyModal(provider=provider, fields=fields))
-        if result is None:
-            return False
-        try:
-            save_native_credential(provider, result)
-        except (OSError, PermissionError, ValueError) as exc:
-            self.query_one("#status", Static).update(f"Could not save credentials: {exc}")
+        modal = OnboardingModal(
+            current=self.config,
+            runtimes=self.runtimes,
+            providers=self.providers,
+            ollama_models=self.ollama_models,
+            runtime_models=self.runtime_models,
+            verified_providers=self._verification_cache,
+            focus_provider=provider,
+            credential_only=True,
+        )
+        selection = await self.push_screen_wait(modal)
+        self._verification_cache.update(modal.verified_providers)
+        if selection is None:
             return False
         self._write_timeline(
             "Credentials saved",
