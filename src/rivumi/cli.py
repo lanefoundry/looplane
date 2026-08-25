@@ -872,6 +872,7 @@ def _model_from_env(
         AnthropicModel,
         GeminiModel,
         OpenAICompatibleModel,
+        ResponsesModel,
         WorkersAIModel,
     )
     from rivumi.native_credentials import resolve_native_field
@@ -947,10 +948,19 @@ def _model_from_env(
         api_key = _required_native_field(
             provider, "api_key", env_hint=_SIMPLE_API_KEY_PROVIDERS[provider]
         )
+        base_url = base_url or _SIMPLE_API_KEY_BASE_URLS[provider]
+        if provider_catalog.uses_responses_protocol(provider, model):
+            return ResponsesModel(
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                supports_tool_calling=tool_calling,
+                allow_custom_endpoint=True,  # base_url comes from the fixed provider catalog
+            )
         return OpenAICompatibleModel(
             model=model,
             api_key=api_key,
-            base_url=base_url or _SIMPLE_API_KEY_BASE_URLS[provider],
+            base_url=base_url,
             supports_tool_calling=tool_calling,
             provider_name=provider,
         )

@@ -28,6 +28,20 @@ OPENAI_COMPATIBLE_BASE_URLS: dict[str, str] = {
 }
 
 
+# Models that only implement the OpenAI Responses API on their provider's endpoint.
+# These bypass OpenAICompatibleModel (whose /chat/completions passthrough fails on them,
+# e.g. Zen muse-spark returning 500 on 2026-08-24) and are routed to ResponsesModel.
+RESPONSES_PROTOCOL_MODELS: dict[str, frozenset[str]] = {
+    "opencode-zen": frozenset({"muse-spark-1.2-contributor-free"}),
+}
+
+
+def uses_responses_protocol(provider: str, model: str) -> bool:
+    """Whether ``model`` on ``provider`` must be reached via the Responses API."""
+
+    return model in RESPONSES_PROTOCOL_MODELS.get(provider, frozenset())
+
+
 def provider_base_url(provider: str) -> str | None:
     """Fixed base URL for ``provider``.
 

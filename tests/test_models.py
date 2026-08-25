@@ -22,6 +22,7 @@ from rivumi.models import (
     OpenAICompatibleModel,
     ProviderError,
     ProviderErrorKind,
+    ResponsesModel,
     ScriptedModel,
     WorkersAIModel,
 )
@@ -661,3 +662,151 @@ async def test_openai_status_errors_are_normalized(
     assert caught.value.kind == expected_kind
     assert caught.value.status_code == status_code
     assert caught.value.retry_after_seconds == 2
+
+RESPONSES_PAYLOAD = {
+    "id": "resp-1",
+    "status": "completed",
+    "output": [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "I will inspect the file."}],
+        },
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "read_file",
+            "arguments": json.dumps({"path": "src/example.py"}),
+        },
+    ],
+    "usage": {
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "input_tokens_details": {"cached_tokens": 3},
+        "output_tokens_details": {"reasoning_tokens": 2},
+        "total_tokens": 18,
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_responses_model_text_tool_and_usage_roundtrip() -> None:
+    client = make_json_client(RESPONSES_PAYLOAD)
+    model = ResponsesModel(
+        model="muse-spark-1.2-contributor-free",
+        api_key="test",
+        base_url="https://opencode.ai/zen/v1",
+        client=client,
+        allow_custom_endpoint=True,
+        supports_tool_calling=True,
+    )
+
+    try:
+        turn = await model.complete(MESSAGES, (TOOL,))
+    finally:
+        await client.aclose()
+
+    assert_common_turn(turn)
+    assert turn.tool_calls[0].tool_call_id == "call-1"
+    assert turn.finish_reason == "tool_calls"
+    assert turn.usage.cached_input_tokens == 3
+    assert turn.usage.reasoning_tokens == 2
+
+
+@pytest.mark.asyncio
+async def test_responses_model_translates_canonical_request_shape() -> None:
+    client, requests = make_capturing_json_client(RESPONSES_PAYLOAD)
+    model = ResponsesModel(
+        model="muse-spark-1.2-contributor-free",
+        api_key="test",
+        base_url="https://opencode.ai/zen/v1",
+        client=client,
+        allow_custom_endpoint=True,
+        supports_tool_calling=True,
+    )
+
+    try:
+        await model.complete(SECOND_TURN_MESSAGES, (TOOL,))
+    finally:
+        await client.aclose()
+
+    request = requests[0]
+    # system messages hoist into top-level instructions
+    assert request["instructions"] == "Use tools."
+    # tools flatten one level versus Chat Completions
+    assert request["tools"] == [
+        {
+            "type": "function",
+            "name": "read_file",
+            "description": TOOL.description,
+            "parameters": TOOL.input_schema,
+        }
+    ]
+    # assistant tool_calls and observations survive as paired items
+    function_calls = [item for item in request["input"] if item.get("type") == "function_call"]
+    outputs = [item for item in request["input"] if item.get("type") == "function_call_output"]
+    assert [call["call_id"] for call in function_calls] == ["call-ok", "call-failed"]
+    assert [item["call_id"] for item in outputs] == ["call-ok", "call-failed"]
+    assert outputs[0]["output"] == "GOOD = True"
+    assert "PathPolicyError: denied" in outputs[1]["output"]
+
+
+@pytest.mark.asyncio
+async def test_responses_model_incomplete_maps_to_length_finish_reason() -> None:
+    payload = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "partial"}],
+            }
+        ],
+        "usage": {"input_tokens": 5, "output_tokens": 10},
+    }
+    client = make_json_client(payload)
+    model = ResponsesModel(
+        model="fake", api_key="test", base_url="https://opencode.ai/zen/v1",
+        client=client, allow_custom_endpoint=True, supports_tool_calling=True,
+    )
+
+    try:
+        turn = await model.complete(MESSAGES)
+    finally:
+        await client.aclose()
+
+    assert turn.finish_reason == "length"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_kind"),
+    [
+        (401, ProviderErrorKind.AUTH),
+        (429, ProviderErrorKind.RATE_LIMIT),
+        (500, ProviderErrorKind.RETRYABLE),
+    ],
+)
+async def test_responses_model_status_errors_are_normalized(
+    status_code: int, expected_kind: ProviderErrorKind
+) -> None:
+    client = make_json_client({"error": "injected failure"}, status_code=status_code)
+    model = ResponsesModel(
+        model="fake",
+        api_key="test",
+        base_url="https://opencode.ai/zen/v1",
+        client=client,
+        allow_custom_endpoint=True,
+        supports_tool_calling=True,
+    )
+
+    try:
+        with pytest.raises(ProviderError) as caught:
+            await model.complete(MESSAGES)
+    finally:
+        await client.aclose()
+
+    assert caught.value.kind == expected_kind
+    assert caught.value.status_code == status_code
+    assert caught.value.provider_name == "openai-responses"

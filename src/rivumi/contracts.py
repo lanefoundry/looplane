@@ -183,6 +183,7 @@ class ModelProtocol(StrEnum):
 
     SCRIPTED = "scripted"
     OPENAI_CHAT = "openai_chat"
+    OPENAI_RESPONSES = "openai_responses"
     OPENAI_CODEX_RESPONSES = "openai_codex_responses"
     ANTHROPIC_MESSAGES = "anthropic_messages"
     GEMINI_GENERATE_CONTENT = "gemini_generate_content"

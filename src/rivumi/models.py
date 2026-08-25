@@ -478,6 +478,197 @@ class _HttpModel:
             await self._http.aclose()
 
 
+class ResponsesModel(_HttpModel):
+    """OpenAI Responses API adapter for endpoints that do not offer Chat Completions.
+
+    Motivated by opencode Zen's muse-spark models, which are responses-only and
+    whose /chat/completions passthrough returns 500 (2026-08-24 incident). The
+    translation mirrors codex_oauth.OpenAICodexResponsesModel but speaks plain
+    request/response JSON instead of Codex's authenticated SSE stream.
+    """
+
+    provider_name = "openai-responses"
+    protocol = ModelProtocol.OPENAI_RESPONSES
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        base_url: str = "https://api.openai.com/v1",
+        client: httpx.AsyncClient | None = None,
+        supports_tool_calling: bool | None = None,
+        capabilities: ModelCapabilities | None = None,
+        allow_custom_endpoint: bool = False,
+        max_output_tokens: int = 4096,
+    ) -> None:
+        validated_base_url = _validated_native_base_url(
+            base_url,
+            official_base_url="https://api.openai.com/v1",
+            allow_custom_endpoint=allow_custom_endpoint,
+        )
+        super().__init__(client)
+        if max_output_tokens < 1:
+            raise ValueError("max_output_tokens must be positive")
+        self.model_id = model
+        self._api_key = api_key
+        self.base_url = validated_base_url
+        self.max_output_tokens = max_output_tokens
+        self.capabilities = _capabilities(capabilities, supports_tool_calling)
+
+    async def complete(
+        self,
+        messages: Sequence[ConversationItem],
+        tools: Sequence[ToolDefinition] = (),
+    ) -> ModelTurn:
+        instructions, native_input = _responses_input(messages)
+        payload: dict[str, Any] = {
+            "model": self.model_id,
+            "input": native_input,
+            "max_output_tokens": self.max_output_tokens,
+        }
+        if instructions:
+            payload["instructions"] = instructions
+        if tools:
+            payload["tools"] = _responses_tools(tools)
+        body = await _post_json(
+            self._http,
+            provider_name=self.provider_name,
+            url=f"{self.base_url}/responses",
+            headers={"authorization": f"Bearer {self._api_key}"},
+            payload=payload,
+        )
+        text_parts: list[str] = []
+        calls: list[ToolCall] = []
+        for item in body.get("output", ()):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message":
+                for content in item.get("content", ()):
+                    if isinstance(content, dict) and content.get("type") == "output_text":
+                        text = content.get("text")
+                        if isinstance(text, str):
+                            text_parts.append(text)
+            elif item.get("type") == "function_call":
+                calls.append(_responses_tool_call(item))
+        content = "".join(text_parts) or None
+        if content is None and not calls:
+            raise ProviderError(
+                "responses API output contained no assistant output",
+                kind=ProviderErrorKind.PROVIDER,
+                provider_name=self.provider_name,
+            )
+        raw_usage = body.get("usage") or {}
+        input_details = raw_usage.get("input_tokens_details", {})
+        output_details = raw_usage.get("output_tokens_details", {})
+        finish_reason = (
+            "tool_calls"
+            if calls
+            else "length"
+            if (body.get("incomplete_details") or {}).get("reason")
+            == "max_output_tokens"
+            else "stop"
+        )
+        return ModelTurn(
+            content=content,
+            tool_calls=tuple(calls),
+            usage=Usage(
+                input_tokens=int(raw_usage.get("input_tokens", 0) or 0),
+                output_tokens=int(raw_usage.get("output_tokens", 0) or 0),
+                cached_input_tokens=int(
+                    (input_details or {}).get("cached_tokens", 0) or 0
+                ),
+                reasoning_tokens=int(
+                    (output_details or {}).get("reasoning_tokens", 0) or 0
+                ),
+                provider_total_tokens=raw_usage.get("total_tokens"),
+            ),
+            finish_reason=finish_reason,
+        )
+
+
+def _responses_input(
+    messages: Sequence[ConversationItem],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Canonical items → (instructions, responses ``input`` items)."""
+
+    instructions: list[str] = []
+    result: list[dict[str, Any]] = []
+    for item in messages:
+        if isinstance(item, ToolObservation):
+            result.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": item.tool_call_id,
+                    "output": _observation_content(item),
+                }
+            )
+        elif item.role == "system":
+            instructions.append(item.content or "")
+        elif item.role == "user":
+            result.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": item.content or ""}],
+                }
+            )
+        else:
+            if item.content:
+                result.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": item.content}],
+                    }
+                )
+            for call in item.tool_calls:
+                result.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call.tool_call_id,
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                    }
+                )
+    return "\n\n".join(instructions) or None, result
+
+
+def _responses_tools(tools: Sequence[ToolDefinition]) -> list[dict[str, Any]]:
+    # Responses API flattens the Chat Completions ``function`` wrapper one level.
+    return [
+        {
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema,
+        }
+        for tool in tools
+    ]
+
+
+def _responses_tool_call(item: Mapping[str, Any]) -> ToolCall:
+    arguments = item.get("arguments", "{}")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError as exc:
+            raise ProviderError(
+                "responses API returned malformed tool arguments",
+                kind=ProviderErrorKind.PROVIDER,
+                provider_name="openai-responses",
+            ) from exc
+    if not isinstance(arguments, dict):
+        raise ProviderError(
+            "responses API returned non-object tool arguments",
+            kind=ProviderErrorKind.PROVIDER,
+            provider_name="openai-responses",
+        )
+    return ToolCall(
+        tool_call_id=str(item.get("call_id") or item.get("id")),
+        name=str(item["name"]),
+        arguments=arguments,
+    )
+
+
 class AnthropicModel(_HttpModel):
     """Native Anthropic Messages API adapter."""
 
