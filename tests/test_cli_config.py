@@ -37,6 +37,7 @@ async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: 
         "api_url",
         "runtime",
         "runtime_model",
+        "statusline_command",
     }
 
 

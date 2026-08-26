@@ -142,14 +142,44 @@ def _error_kind(status_code: int | None) -> ProviderErrorKind:
         return ProviderErrorKind.AUTH
     if status_code == 429:
         return ProviderErrorKind.RATE_LIMIT
-    if status_code in {400, 404, 405, 409, 415, 422}:
+    # 408/409 follow the OpenAI/Anthropic SDK retry convention; 529 is the
+    # Cloudflare "overloaded" status used by several upstream providers.
+    if status_code in {400, 404, 405, 415, 422}:
         return ProviderErrorKind.INVALID_REQUEST
-    if status_code is not None and status_code >= 500:
+    if status_code is not None and (status_code >= 500 or status_code in {408, 409}):
         return ProviderErrorKind.RETRYABLE
     return ProviderErrorKind.PROVIDER
 
 
+# Known provider-specific failure messages get an actionable hint appended, so
+# the UI shows what to do instead of a bare HTTP status.
+_PROVIDER_ERROR_HINTS: tuple[tuple[str, str], ...] = (
+    (
+        "guardrail restrictions",
+        "Hint: your OpenRouter privacy settings exclude every endpoint serving this "
+        "model. Adjust https://openrouter.ai/settings/privacy or pick a different "
+        "model with /model.",
+    ),
+)
+
+
+def _apply_error_hint(message: str) -> str:
+    lowered = message.casefold()
+    for pattern, hint in _PROVIDER_ERROR_HINTS:
+        if pattern in lowered:
+            return f"{message}\n{hint}"
+    return message
+
+
 def _retry_after(headers: Mapping[str, str]) -> float | None:
+    """Server-provided retry hint in seconds; ``retry-after-ms`` wins when present."""
+
+    value = headers.get("retry-after-ms")
+    if value is not None:
+        try:
+            return float(value) / 1000.0
+        except ValueError:
+            pass
     value = headers.get("retry-after")
     if value is None:
         return None
@@ -159,14 +189,34 @@ def _retry_after(headers: Mapping[str, str]) -> float | None:
         return None
 
 
+def _should_retry_header(headers: Mapping[str, str]) -> bool | None:
+    """Honor the ``x-should-retry`` directive used by OpenAI-compatible gateways."""
+
+    value = headers.get("x-should-retry")
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    return None
+
+
 def _http_error(provider_name: str, response: httpx.Response) -> ProviderError:
     try:
         detail = response.json()
     except ValueError:
         detail = response.text
+    kind = _error_kind(response.status_code)
+    should_retry = _should_retry_header(response.headers)
+    if should_retry is False and kind is not ProviderErrorKind.AUTH:
+        kind = ProviderErrorKind.PROVIDER
+    elif should_retry is True and kind in {
+        ProviderErrorKind.PROVIDER,
+        ProviderErrorKind.INVALID_REQUEST,
+    }:
+        kind = ProviderErrorKind.RETRYABLE
     return ProviderError(
         f"{provider_name} request failed ({response.status_code}): {detail}",
-        kind=_error_kind(response.status_code),
+        kind=kind,
         provider_name=provider_name,
         status_code=response.status_code,
         retry_after_seconds=_retry_after(response.headers),
@@ -385,6 +435,11 @@ class OpenAICompatibleModel:
             # synthesized for an explicit loopback endpoint.
             api_key=supplied_api_key or "local-openai-compatible",
             base_url=validated_base_url,
+            # Retries are handled uniformly by AgentRunner._complete_model_with_retry
+            # (bounded attempts, exponential backoff, model.retry events); the
+            # SDK's built-in retries would multiply upstream requests and bypass
+            # that audit trail.
+            max_retries=0,
         )
 
     async def complete(
@@ -418,7 +473,7 @@ class OpenAICompatibleModel:
             if isinstance(exc, (APIConnectionError, APITimeoutError)):
                 kind = ProviderErrorKind.RETRYABLE
             raise ProviderError(
-                f"{self.provider_name} request failed: {exc}",
+                _apply_error_hint(f"{self.provider_name} request failed: {exc}"),
                 kind=kind,
                 provider_name=self.provider_name,
                 status_code=status_code,

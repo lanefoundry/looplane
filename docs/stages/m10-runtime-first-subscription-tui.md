@@ -82,9 +82,9 @@ and returned GO.
 
 ## Artifacts
 
-- Research: `.research/onboarding-runtime-model-ux.md`
-- Plan: `.work/runtime-onboarding-plan.md`
-- Ask/Agent plan: `.work/ask-agent-mode-plan.md`
+- Research: `docs/research/onboarding-runtime-model-ux.md`
+- Plan: `docs/plans/runtime-onboarding-plan.md`
+- Ask/Agent plan: `docs/plans/ask-agent-mode-plan.md`
 - Draft article:
   `quidproquo/src/content/posts/ai/2026-08-22-python-coding-agent-runtime-first-subscription-tui.md`
   (historical pre-rename filename)

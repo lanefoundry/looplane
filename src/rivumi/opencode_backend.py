@@ -21,7 +21,11 @@ class OpenCodeBackend(StreamJsonCliBackend):
     experimental = True
 
     def _argv(self, executable: str, instruction: str) -> tuple[str, ...]:
-        argv = [executable, "run", "--format", "json"]
+        # Rivumi already gates the whole delegation on --allow-external-modify and
+        # confines opencode to a disposable clone, so skip opencode's interactive
+        # permission prompts; otherwise headless edit tasks hang waiting for an
+        # approval that can never arrive (stdin is /dev/null).
+        argv = [executable, "run", "--format", "json", "--dangerously-skip-permissions"]
         if self.model is not None:
             argv += ["--model", self.model]
         argv.append(instruction)

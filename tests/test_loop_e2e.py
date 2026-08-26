@@ -18,10 +18,35 @@ from rivumi.contracts import (
     RunStatus,
     TaskContract,
     ToolCall,
+    Usage,
     VerificationCommand,
 )
 from rivumi.loop import AgentRunner
-from rivumi.models import ScriptedModel
+from rivumi.models import ProviderError, ProviderErrorKind, ScriptedModel
+
+BROKEN_PATCH = """\
+diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
+--- a/src/tiny_python_bug/calculator.py
++++ b/src/tiny_python_bug/calculator.py
+@@ -1,3 +1,3 @@
+ def add(left: int, right: int) -> int:
+-    \"\"\"Return the sum of two integers.\"\"\"
++    \"\"\"Add two integers together.\"\"\"
+     return left - right
+"""
+
+
+FIX_PATCH_AFTER_BROKEN = """\
+diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
+--- a/src/tiny_python_bug/calculator.py
++++ b/src/tiny_python_bug/calculator.py
+@@ -1,3 +1,3 @@
+ def add(left: int, right: int) -> int:
+     \"\"\"Add two integers together.\"\"\"
+-    return left - right
++    return left + right
+"""
+
 
 FIX_PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
@@ -163,10 +188,27 @@ def test_run_id_must_be_one_safe_relative_segment(
 async def test_max_steps_retains_failed_verification_and_failure_artifacts(
     tiny_bug_repo: Path, tmp_path: Path
 ) -> None:
-    task = make_task(tiny_bug_repo, limits=Limits(max_steps=1, wall_time_seconds=30))
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(max_steps=2, wall_time_seconds=30),
+        verification=(
+            VerificationCommand(
+                name="clean-diff",
+                argv=("git", "diff", "--exit-code"),
+                timeout_seconds=30,
+            ),
+        ),
+    )
     runner = AgentRunner(
         task,
-        ScriptedModel([ModelTurn(content="Done without fixing anything.")]),
+        ScriptedModel(
+            [
+                ModelTurn(
+                    tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)
+                ),
+                ModelTurn(content="Done, but the declared check will not accept this."),
+            ]
+        ),
         tmp_path / "runs",
         allow_unsafe_local_exec=True,
     )
@@ -190,6 +232,36 @@ async def test_max_steps_retains_failed_verification_and_failure_artifacts(
     assert [event["sequence"] for event in events] == list(range(len(events)))
     assert events[-1]["event_type"] == "run.failed"
     assert events[-1]["data"]["terminal_reason"] == "max_steps_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_conversational_run_skips_verification_and_completes_without_changes(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=4, wall_time_seconds=30))
+    model = ScriptedModel(
+        [
+            ModelTurn(tool_calls=(ToolCall(name="list_files", arguments={"path": "."}),)),
+            ModelTurn(content="Hi! Ask me to fix or inspect something in this repository."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert result.terminal_reason == "no_changes"
+    assert result.changed_files == ()
+    assert result.verification == ()
+    events = read_events(result)
+    assert not any(event["event_type"] == "verification.started" for event in events)
+    assert not any(event["event_type"].startswith("verification.") for event in events)
+    assert events[-1]["event_type"] == "run.completed"
+    assert events[-1]["data"]["terminal_reason"] == "no_changes"
 
 
 @pytest.mark.asyncio
@@ -300,14 +372,21 @@ async def test_verification_command_is_clamped_by_run_wall_time(
     )
     task = make_task(
         tiny_bug_repo,
-        limits=Limits(max_steps=2, wall_time_seconds=0.6),
+        limits=Limits(max_steps=3, wall_time_seconds=0.6),
         verification=(command,),
     )
     started = time.monotonic()
 
     result = await AgentRunner(
         task,
-        ScriptedModel([ModelTurn(content="Verify now.")]),
+        ScriptedModel(
+            [
+                ModelTurn(
+                    tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)
+                ),
+                ModelTurn(content="Verify now."),
+            ]
+        ),
         tmp_path / "runs",
         allow_unsafe_local_exec=True,
     ).run()
@@ -325,9 +404,13 @@ async def test_failed_final_verification_is_fed_back_then_retried(
     task = make_task(tiny_bug_repo, limits=Limits(max_steps=4, wall_time_seconds=30))
     model = ScriptedModel(
         [
+            ModelTurn(
+                tool_calls=(ToolCall(name="apply_patch", arguments={"patch": BROKEN_PATCH}),)
+            ),
             ModelTurn(content="I think it is already fixed."),
             ModelTurn(
-                tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)
+                tool_calls=(
+                    ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH_AFTER_BROKEN}),)
             ),
             ModelTurn(content="Fixed after reading the failed verification."),
         ]
@@ -344,7 +427,7 @@ async def test_failed_final_verification_is_fed_back_then_retried(
     assert result.terminal_reason == "verified"
     feedback_messages = [
         item
-        for item in model.calls[1][0]
+        for item in model.calls[2][0]
         if isinstance(item, Message)
         and item.role == "user"
         and item.content is not None
@@ -453,3 +536,244 @@ deleted file mode 100644
     patch_artifact = Path(result.artifacts["patch"]).read_text()
     assert "new file mode 100644" in patch_artifact
     assert "deleted file mode 100644" in patch_artifact
+
+
+def _retryable_error(status_code: int, **kwargs: object) -> ProviderError:
+    return ProviderError(
+        f"nvidia-nim request failed: error code {status_code}",
+        kind=ProviderErrorKind.RETRYABLE,
+        provider_name="nvidia-nim",
+        status_code=status_code,
+        **kwargs,
+    )
+
+
+def _clean_check_task(repository: Path) -> TaskContract:
+    return make_task(
+        repository,
+        limits=Limits(max_steps=8, wall_time_seconds=60),
+        verification=(
+            VerificationCommand(
+                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
+            ),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_token_budget_cap_fails_the_run_before_more_model_calls(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(
+            max_steps=8,
+            wall_time_seconds=60,
+            max_total_tokens=100,
+        ),
+        verification=(
+            VerificationCommand(
+                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
+            ),
+        ),
+    )
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                content="Working.",
+                usage=Usage(input_tokens=150, output_tokens=10),
+            ),
+            ModelTurn(content="Should never be requested."),
+        ]
+    )
+    runner = AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True)
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.FAILED
+    assert result.terminal_reason == "token_budget_exceeded"
+    assert result.error is not None
+    assert "160" in result.error
+    assert "100" in result.error
+    assert len(model.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_retryable_provider_errors_are_retried_until_success(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = _clean_check_task(tiny_bug_repo)
+    model = ScriptedModel(
+        [
+            _retryable_error(500),
+            ProviderError(
+                "nvidia-nim request failed: overloaded",
+                kind=ProviderErrorKind.RETRYABLE,
+                provider_name="nvidia-nim",
+                status_code=503,
+                retry_after_seconds=0.0,
+            ),
+            ModelTurn(content="The repository is clean; no change is needed."),
+        ]
+    )
+    runner = AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True)
+    runner.model_retry_delay = lambda attempt, retry_after_seconds: 0.0
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert len(model.calls) == 3
+    retries = [
+        event for event in read_events(result) if event["event_type"] == "model.retry"
+    ]
+    assert [event["data"]["attempt"] for event in retries] == [1, 2]
+    assert all(event["data"]["provider"] == "nvidia-nim" for event in retries)
+    assert [event["data"]["delay_seconds"] for event in retries] == [0.0, 0.0]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_retryable_provider_errors_fail_with_readable_error(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = _clean_check_task(tiny_bug_repo)
+    model = ScriptedModel(
+        [_retryable_error(code) for code in (500, 503, 500, 502, 504)]
+    )
+    runner = AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True)
+    runner.model_retry_delay = lambda attempt, retry_after_seconds: 0.0
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.FAILED
+    assert result.terminal_reason == "provider_retryable"
+    assert len(model.calls) == 5
+    assert result.error is not None
+    assert "nvidia-nim" in result.error
+    assert "5 consecutive" in result.error
+    assert "500" in result.error and "503" in result.error
+    events = read_events(result)
+    assert [e["data"]["attempt"] for e in events if e["event_type"] == "model.retry"] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+    failed = [e for e in events if e["event_type"] == "model.failed"]
+    assert failed and failed[0]["data"]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_retry_exhaustion_falls_back_to_next_model_with_fresh_budget(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = _clean_check_task(tiny_bug_repo)
+    primary = ScriptedModel(
+        [_retryable_error(500)] * 5, model_id="primary"
+    )
+    fallback = ScriptedModel(
+        [ModelTurn(content="The repository is clean; no change is needed.")],
+        model_id="fallback",
+    )
+    runner = AgentRunner(
+        task,
+        primary,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+        fallback_models=(fallback,),
+    )
+    runner.model_retry_delay = lambda attempt, retry_after_seconds: 0.0
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert len(primary.calls) == 5
+    assert len(fallback.calls) == 1
+    events = read_events(result)
+    fallback_events = [e for e in events if e["event_type"] == "model.fallback"]
+    assert len(fallback_events) == 1
+    data = fallback_events[0]["data"]
+    assert data["from_model"] == "primary"
+    assert data["to_model"] == "fallback"
+    assert data["failure_codes"] == [500, 500, 500, 500, 500]
+    assert [e["data"]["attempt"] for e in events if e["event_type"] == "model.retry"] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fallback_exhaustion_fails_after_all_candidates(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = _clean_check_task(tiny_bug_repo)
+    primary = ScriptedModel([_retryable_error(500)] * 5, model_id="primary")
+    fallback = ScriptedModel([_retryable_error(503)] * 5, model_id="fallback")
+    runner = AgentRunner(
+        task,
+        primary,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+        fallback_models=(fallback,),
+    )
+    runner.model_retry_delay = lambda attempt, retry_after_seconds: 0.0
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.FAILED
+    assert result.terminal_reason == "provider_retryable"
+    assert len(primary.calls) == 5
+    assert len(fallback.calls) == 5
+    events = read_events(result)
+    assert len([e for e in events if e["event_type"] == "model.fallback"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_provider_errors_fail_without_retrying(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = _clean_check_task(tiny_bug_repo)
+    model = ScriptedModel(
+        [
+            ProviderError(
+                "nvidia-nim request failed: invalid api key",
+                kind=ProviderErrorKind.AUTH,
+                provider_name="nvidia-nim",
+                status_code=401,
+            ),
+        ]
+    )
+    runner = AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True)
+    runner.model_retry_delay = lambda attempt, retry_after_seconds: 0.0
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.FAILED
+    assert result.terminal_reason == "provider_auth"
+    assert result.error is not None
+    assert "nvidia-nim" in result.error
+    assert "auth" in result.error
+    assert "invalid api key" in result.error
+    assert len(model.calls) == 1
+    assert not [
+        event for event in read_events(result) if event["event_type"] == "model.retry"
+    ]
+
+
+def test_retry_delay_uses_jitter_and_caps() -> None:
+    from rivumi.loop import (
+        RETRY_JITTER_FRACTION,
+        RETRY_MAX_DELAY_SECONDS,
+        RETRY_SERVER_HINT_MAX_SECONDS,
+        retry_delay_seconds,
+    )
+
+    for attempt in range(1, 12):
+        delay = retry_delay_seconds(attempt, None)
+        base = min(1.0 * 2 ** (attempt - 1), RETRY_MAX_DELAY_SECONDS)
+        assert base * (1 - RETRY_JITTER_FRACTION) <= delay <= base * (1 + RETRY_JITTER_FRACTION)
+    assert retry_delay_seconds(20, None) <= RETRY_MAX_DELAY_SECONDS * (1 + RETRY_JITTER_FRACTION)
+    hint = retry_delay_seconds(1, 120.0)
+    assert hint == 120.0
+    assert retry_delay_seconds(1, 9999.0) == RETRY_SERVER_HINT_MAX_SECONDS

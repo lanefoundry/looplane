@@ -6,7 +6,7 @@ import pytest
 from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS
 from rivumi.provider_verification import (
     VerificationResult,
-    list_provider_models,
+    fetch_models_result,
     verify_native_credential,
 )
 
@@ -222,32 +222,47 @@ async def test_verify_workers_ai_result_shape_mismatch_degrades_to_empty_models(
     assert result.ok is True
     assert result.models == ()
 
-
 @pytest.mark.asyncio
-async def test_list_provider_models_returns_models_from_verification() -> None:
+async def test_fetch_models_result_reports_models_and_reasons() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": [{"id": "model-a"}]}, request=request)
 
-    models = await list_provider_models("deepseek", {"api_key": "sk-test"}, client=_client(handler))
+    result = await fetch_models_result(
+        "deepseek", {"api_key": "sk-test"}, client=_client(handler)
+    )
 
-    assert models == ("model-a",)
+    assert result.ok is True
+    assert result.models == ("model-a",)
+
+
+@pytest.mark.asyncio
+async def test_fetch_models_result_keeps_provider_failure_message() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "bad key"}, request=request)
+
+    result = await fetch_models_result("deepseek", {"api_key": "bad"}, client=_client(handler))
+
+    assert result.ok is False
+    assert "401" in result.message
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", sorted(NATIVE_CREDENTIAL_FIELDS))
-async def test_list_provider_models_never_raises_on_network_failure(provider: str) -> None:
+async def test_fetch_models_result_never_raises_on_network_failure(provider: str) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
 
     fields = {field: "dummy-value" for field in NATIVE_CREDENTIAL_FIELDS[provider]}
 
-    models = await list_provider_models(provider, fields, client=_client(handler))
+    result = await fetch_models_result(provider, fields, client=_client(handler))
 
-    assert models == ()
+    assert result.ok is False
+    assert result.message
 
 
 @pytest.mark.asyncio
-async def test_list_provider_models_never_raises_for_unsupported_provider() -> None:
-    models = await list_provider_models("totally-unknown-provider", {})
+async def test_fetch_models_result_wraps_unsupported_provider() -> None:
+    result = await fetch_models_result("totally-unknown-provider", {})
 
-    assert models == ()
+    assert result.ok is False
+    assert "unsupported provider" in result.message

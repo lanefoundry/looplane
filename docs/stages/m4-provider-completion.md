@@ -42,8 +42,8 @@ remote API URL, and subscription paths still lacked live evidence. M4 requires:
 | QuidProQuo security article | Provider secrets stay outside repository subprocesses and untrusted tool output |
 
 Pinned source paths, policy links, and comparison details are retained in
-`.research/provider-bridge-comparison.md`, `.research/subscription-bridges.md`,
-`.research/m4-claude-subscription-boundary.md`, and `.research/m4-codex-live-readiness.md`.
+`docs/research/provider-bridge-comparison.md`, `docs/research/subscription-bridges.md`,
+`docs/research/m4-claude-subscription-boundary.md`, and `docs/research/m4-codex-live-readiness.md`.
 
 ## Ideas borrowed
 
@@ -139,7 +139,7 @@ The exact Git index tree `ecf588febfb1d25ebe4b19ac5e9ae297c63fc2ca` was exported
 Independent review reproduced the initial fail-open result, cancellation, documentation, and
 evidence-durability findings. Their fixes added positive result classification, prompt process-tree
 cancellation, an exact auth boundary, and all five raw bundles plus compact hashes. Final verdict is
-recorded in `.research/m4-release-review.md`.
+recorded in `docs/research/m4-release-review.md`.
 
 ## Known limitations
 
@@ -153,15 +153,15 @@ recorded in `.research/m4-release-review.md`.
 
 ## Artifact paths
 
-- Compact evidence: `.research/m4-live-evidence.md`
+- Compact evidence: `docs/research/m4-live-evidence.md`
 - Retained remote summary and five raw event/result/patch bundles:
   `.research/evidence/m4/remote-groq/`
 - TTY session/event/result/patch: `.research/evidence/m4/tty/`
 - Resume session/event/result/patch: `.research/evidence/m4/resume/`
-- Provider audit: `.research/m4-provider-completion-audit.md`
-- Claude policy boundary: `.research/m4-claude-subscription-boundary.md`
-- Codex readiness: `.research/m4-codex-live-readiness.md`
-- Independent review: `.research/m4-release-review.md`
+- Provider audit: `docs/research/m4-provider-completion-audit.md`
+- Claude policy boundary: `docs/research/m4-claude-subscription-boundary.md`
+- Codex readiness: `docs/research/m4-codex-live-readiness.md`
+- Independent review: `docs/research/m4-release-review.md`
 
 ## Commit
 

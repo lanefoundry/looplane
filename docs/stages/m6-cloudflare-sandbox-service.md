@@ -106,7 +106,7 @@ produced the exact subtraction-to-addition patch, and passed `python3 -m pytest 
 journal ends in `run.completed`; exact-value scans found neither control token nor provider key in
 the response.
 
-Independent review: `.research/m6-release-review.md`, final verdict GO before the deployed stream
+Independent review: `docs/research/m6-release-review.md`, final verdict GO before the deployed stream
 delta; the same reviewer performed a final delta review after the live fix.
 
 ## Known limitations
@@ -124,11 +124,11 @@ delta; the same reviewer performed a final delta review after the live fix.
 
 ## Artifact paths
 
-- Architecture: `.research/m6-cloudflare-sandbox-design.md`
-- Live evidence and hashes: `.research/m6-live-evidence.md`
+- Architecture: `docs/research/m6-cloudflare-sandbox-design.md`
+- Live evidence and hashes: `docs/research/m6-live-evidence.md`
 - Request/response: `.research/evidence/m6-live-request.json` and
   `.research/evidence/m6-live-response.raw.json`
-- Independent review: `.research/m6-release-review.md`
+- Independent review: `docs/research/m6-release-review.md`
 - Worker/service documentation: `cloudflare/README.md`
 - Draft practice article: QuidProQuo M6 post, kept uncommitted for review
 

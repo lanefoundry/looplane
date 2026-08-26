@@ -108,13 +108,13 @@ completed-turn semantic replay once.
   `pca --help`.
 
 Independent review evidence and protocol/lifecycle repros are recorded in
-`.research/m11-release-review.md`.
+`docs/research/m11-release-review.md`.
 
 ## Artifacts
 
-- Claude Code source audit: `.research/m11-claude-code-tui-reference.md`
-- Design: `.work/m11-claude-tui-design.md`
-- Plan: `.work/m11-conversation-tui-plan.md`
+- Claude Code source audit: `docs/research/m11-claude-code-tui-reference.md`
+- Design: `docs/plans/m11-claude-tui-design.md`
+- Plan: `docs/plans/m11-conversation-tui-plan.md`
 - Draft article:
   `quidproquo/src/content/posts/ai/2026-08-22-coding-agent-native-conversation-tui.md`
 

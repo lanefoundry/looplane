@@ -111,6 +111,7 @@ def test_opencode_normalizes_events(tmp_path: Path) -> None:
         "run",
         "--format",
         "json",
+        "--dangerously-skip-permissions",
         "prompt",
     )
     events, malformed = backend._normalize(OPENCODE_STREAM)

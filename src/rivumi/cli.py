@@ -489,6 +489,46 @@ def _show_context_header(*, repository: Path, provider: str, model: str) -> None
     typer.echo(f"  ·  {provider}/{model}  ·  {repository.name}")
 
 
+def _dangerous_acceptance_path() -> Path:
+    state_root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return state_root / "rivumi" / "dangerous-mode-accepted"
+
+
+def _enter_dangerous_mode(dangerous: bool):
+    """Resolve the effective approval mode, gating --dangerous entry."""
+
+    from rivumi.permissions import ApprovalMode, DangerousModeError, plan_dangerous_mode_entry
+
+    if not dangerous:
+        return ApprovalMode.DEFAULT
+    acceptance_path = _dangerous_acceptance_path()
+    try:
+        outcome = plan_dangerous_mode_entry(
+            accepted=acceptance_path.exists(),
+            env_acknowledged=os.environ.get("RIVUMI_ACCEPT_DANGEROUS_MODE") == "1",
+            is_tty=_stdin_is_tty(),
+            is_root=hasattr(os, "getuid") and os.getuid() == 0,
+            sandboxed=os.environ.get("RIVUMI_SANDBOX") == "1",
+        )
+    except DangerousModeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if outcome == "prompt":
+        typer.confirm(
+            "You are enabling --dangerous: read/modify actions run without approval "
+            "prompts. Forbidden-operation rules still apply. Continue?",
+            default=False,
+            abort=True,
+        )
+        try:
+            acceptance_path.parent.mkdir(parents=True, exist_ok=True)
+            acceptance_path.write_text(f"accepted {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
+        except OSError as exc:
+            raise typer.BadParameter(
+                f"could not record dangerous-mode acceptance: {exc}"
+            ) from exc
+    return ApprovalMode.DANGEROUS
+
+
 @app.command("chat", hidden=True, cls=DefaultChatCommand)
 def chat(
     prompt: Annotated[str | None, typer.Argument(help="Initial task prompt")] = None,
@@ -546,19 +586,101 @@ def chat(
             help="Allow exact checks from this trusted repository to run on the host.",
         ),
     ] = False,
+    dangerous: Annotated[
+        bool,
+        typer.Option(
+            "--dangerous",
+            help=(
+                "Auto-approve read/modify actions without prompting (EXTREMELY "
+                "DANGEROUS). Forbidden-operation rules still apply."
+            ),
+        ),
+    ] = False,
+    deny_tool: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--deny-tool",
+            help=(
+                "Forbidden-operation rule like 'read_file(.env*)' or "
+                "'run_check(git push:*)'; repeatable."
+            ),
+        ),
+    ] = None,
+    fallback_model: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--fallback-model",
+            help=(
+                "Provider/model takeover after retries are exhausted, "
+                "e.g. 'ollama/qwen3'; repeatable."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Start this agent's own loop in the current repository."""
 
-    from rivumi.approvals import TTYApprovalPolicy
+    from rivumi.approvals import HeadlessApprovalPolicy, TTYApprovalPolicy
     from rivumi.console import ConsoleEventSink
     from rivumi.conversation import ConversationStore
     from rivumi.conversation_controller import decide_runtime_approval
     from rivumi.external_runner import ExternalCodingRunner
     from rivumi.loop import AgentRunner, UnsafeLocalExecutionError
+    from rivumi.permissions import ApprovalMode, DenyRule, GuardedApprovalPolicy, PermissionGuard
 
     requested_provider = provider
     requested_model = model
     requested_api_url = api_url
+    try:
+        deny_rules = tuple(DenyRule.parse(spec) for spec in (deny_tool or ()))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    dangerous_mode = _enter_dangerous_mode(dangerous)
+    permission_guard = PermissionGuard(
+        mode=dangerous_mode,
+        deny_rules=deny_rules,
+    )
+    guard_needed = dangerous_mode is ApprovalMode.DANGEROUS or bool(deny_rules)
+
+    def guarded(policy):
+        if not guard_needed:
+            return policy
+        base = (
+            policy
+            if policy is not None
+            else HeadlessApprovalPolicy(
+                allow_modify=True,
+                allow_execute=unsafe_local_exec,
+            )
+        )
+        return GuardedApprovalPolicy(base, permission_guard)
+
+    fallback_specs = fallback_model or ()
+    fallback_cache: list = []
+
+    def build_fallback_models():
+        """Construct --fallback-model candidates lazily (credentials resolve at call time)."""
+
+        if not fallback_specs:
+            return ()
+        if not fallback_cache:
+            for spec in fallback_specs:
+                if "/" not in spec:
+                    raise typer.BadParameter(
+                        f"--fallback-model requires provider/model format: {spec!r}"
+                    )
+                fb_provider, fb_model = spec.split("/", 1)
+                fallback_cache.append(
+                    _model_from_env(
+                        provider=fb_provider,
+                        model=fb_model,
+                        base_url=api_url,
+                        tool_calling=True,
+                        allow_custom_provider_endpoint=allow_custom_provider_endpoint,
+                        experimental_subscription=experimental_subscription,
+                    )
+                )
+        return tuple(fallback_cache)
+
     if print_mode and prompt in SUPPORTED_PROVIDERS and provider is None:
         raise typer.BadParameter("-p now means --print; select a provider with --provider instead")
     instruction = _prompt_or_task(prompt, instruction)
@@ -613,6 +735,7 @@ def chat(
         ] = {}
 
         def make_runner(request: TuiRunRequest, approval_policy, event_sink):
+            approval_policy = guarded(approval_policy)
             adapter = runtime_registry.RUNTIME_REGISTRY.get(request.runtime)
             if adapter is None:
                 raise ValueError(f"Unknown runtime: {request.runtime}")
@@ -692,6 +815,8 @@ def chat(
                     run_root,
                     allow_unsafe_local_exec=unsafe_local_exec,
                     approval_policy=approval_policy,
+                    permission_guard=permission_guard,
+                    fallback_models=build_fallback_models(),
                     event_sink=event_sink,
                 ),
                 selected_model,
@@ -811,9 +936,11 @@ def chat(
                     selected_model,
                     run_root,
                     allow_unsafe_local_exec=unsafe_local_exec,
-                    approval_policy=(
+                    approval_policy=guarded(
                         None if print_mode else TTYApprovalPolicy(sys.stdin, sys.stderr)
                     ),
+                    permission_guard=permission_guard,
+                    fallback_models=build_fallback_models(),
                     event_sink=None if print_mode else ConsoleEventSink(sys.stderr),
                 ),
                 selected_model,
@@ -1676,6 +1803,63 @@ def resume(
         raise typer.Exit(code=1)
 
 
+@app.command("sessions")
+def sessions(
+    run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+) -> None:
+    """List recent agent runs and saved conversations with their usage."""
+
+    import json
+
+    def _read_json(path: Path) -> dict[str, object] | None:
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+
+    rows: list[tuple[str, str, str, str, str]] = []
+    if run_root.exists():
+        run_dirs = sorted(
+            (path for path in run_root.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for run_dir in run_dirs[:limit]:
+            manifest = _read_json(run_dir / "session.json")
+            result = _read_json(run_dir / "result.json")
+            if manifest is None and result is None:
+                continue
+            source = manifest if manifest is not None else result
+            assert source is not None
+            status = str(source.get("status") or source.get("phase") or "?")
+            model = str(source.get("model_id") or "?")
+            usage = source.get("usage") or {}
+            total = usage.get("provider_total_tokens") or usage.get("input_tokens", 0)
+            if isinstance(total, dict):  # defensive: computed field serialization
+                total = 0
+            wall = source.get("active_wall_time_seconds")
+            wall_text = f"{wall:.0f}s" if isinstance(wall, (int, float)) else "-"
+            rows.append((run_dir.name[:12], status, model, f"{total:,}", wall_text))
+
+    state_root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    conversation_root = state_root / "rivumi" / "conversations"
+    if conversation_root.exists():
+        for conv_dir in sorted(
+            (path for path in conversation_root.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:limit]:
+            rows.append((conv_dir.name[:12], "conversation", "-", "-", "-"))
+
+    if not rows:
+        typer.echo(f"No sessions found under {run_root}")
+        return
+    typer.echo(f"{'ID':<14}{'STATUS':<16}{'MODEL':<24}{'TOKENS':>12}  TIME")
+    for row in rows[:limit]:
+        typer.echo(f"{row[0]:<14}{row[1]:<16}{row[2]:<24}{row[3]:>12}  {row[4]}")
+
+
 @app.command("config")
 def configure(
     provider: Annotated[
@@ -1903,6 +2087,42 @@ async def _run_and_close(runner: AgentRunner, model: ModelProvider):
         return await runner.run()
     finally:
         await model.aclose()
+
+
+@app.command("export-otel")
+def export_otel(
+    run_id: Annotated[str, typer.Argument(help="Run id (or 'last')")],
+    run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write OTLP-JSON to a file")
+    ] = None,
+) -> None:
+    """Export a run as OpenTelemetry GenAI OTLP-JSON."""
+
+    from rivumi.otel_export import export_run
+
+    run_dir = run_root / run_id
+    if run_id == "last" or not run_dir.exists():
+        candidates = sorted(
+            (
+                path
+                for path in run_root.glob("*/result.json")
+                if path.parent.name.startswith(run_id)
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            typer.echo(f"error: no run matching '{run_id}' under {run_root}", err=True)
+            raise typer.Exit(code=2)
+        run_dir = candidates[0].parent
+    try:
+        payload = export_run(run_dir, output)
+    except FileNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if output is None:
+        typer.echo(payload)
 
 
 async def _resume_and_close(

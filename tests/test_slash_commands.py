@@ -21,6 +21,7 @@ def test_default_registry_exposes_discoverable_metadata() -> None:
     commands = DEFAULT_SLASH_COMMAND_REGISTRY.commands
 
     assert [metadata.command for metadata in commands] == [
+        SlashCommand.PROVIDER,
         SlashCommand.MODEL,
         SlashCommand.RUNTIME,
         SlashCommand.NEW,
@@ -32,6 +33,7 @@ def test_default_registry_exposes_discoverable_metadata() -> None:
         SlashCommand.HELP,
         SlashCommand.COMPACT,
         SlashCommand.CONTEXT,
+        SlashCommand.USAGE,
         SlashCommand.PERMISSIONS,
         SlashCommand.EXIT,
     ]

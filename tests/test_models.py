@@ -25,6 +25,8 @@ from rivumi.models import (
     ResponsesModel,
     ScriptedModel,
     WorkersAIModel,
+    _http_error,
+    _retry_after,
 )
 
 TOOL = ToolDefinition(
@@ -785,7 +787,10 @@ async def test_responses_model_incomplete_maps_to_length_finish_reason() -> None
     [
         (401, ProviderErrorKind.AUTH),
         (429, ProviderErrorKind.RATE_LIMIT),
-        (500, ProviderErrorKind.RETRYABLE),
+        (408, ProviderErrorKind.RETRYABLE),
+        (409, ProviderErrorKind.RETRYABLE),
+        (503, ProviderErrorKind.RETRYABLE),
+        (529, ProviderErrorKind.RETRYABLE),
     ],
 )
 async def test_responses_model_status_errors_are_normalized(
@@ -810,3 +815,44 @@ async def test_responses_model_status_errors_are_normalized(
     assert caught.value.kind == expected_kind
     assert caught.value.status_code == status_code
     assert caught.value.provider_name == "openai-responses"
+
+
+def _response(status_code: int, headers: dict[str, str] | None = None) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        json={"error": "injected"},
+        headers=headers or {},
+        request=httpx.Request("POST", "https://provider.test/v1"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    (
+        ({"retry-after": "7"}, 7.0),
+        ({"retry-after-ms": "250"}, 0.25),
+        ({"retry-after-ms": "250", "retry-after": "7"}, 0.25),
+        ({}, None),
+        ({"retry-after": "soon"}, None),
+    ),
+)
+def test_retry_after_prefers_millisecond_header(headers: dict[str, str], expected: float | None):
+    assert _retry_after(headers) == expected
+
+
+def test_x_should_retry_false_downgrades_5xx_to_non_retryable() -> None:
+    error = _http_error("test", _response(503, {"x-should-retry": "false"}))
+    assert error.kind is ProviderErrorKind.PROVIDER
+    assert error.retryable is False
+
+
+def test_x_should_retry_true_upgrades_invalid_request_to_retryable() -> None:
+    error = _http_error("test", _response(400, {"x-should-retry": "true"}))
+    assert error.kind is ProviderErrorKind.RETRYABLE
+    assert error.retryable is True
+
+
+def test_x_should_retry_does_not_override_auth() -> None:
+    error = _http_error("test", _response(401, {"x-should-retry": "true"}))
+    assert error.kind is ProviderErrorKind.AUTH
+    assert error.retryable is False

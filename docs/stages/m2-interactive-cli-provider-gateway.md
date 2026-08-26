@@ -23,7 +23,7 @@ model gateway. Launching an installed coding-agent CLI is explicitly not the pro
 | QuidProQuo harness articles | The model API is replaceable; permissions, checkpoints, security, and eval evidence belong to the harness |
 
 Pinned-source evidence and file-level links are retained in
-`.research/provider-bridge-comparison.md`. No credential value from another application was read.
+`docs/research/provider-bridge-comparison.md`. No credential value from another application was read.
 
 ## Architecture
 
@@ -165,7 +165,7 @@ git diff --check
 - Implementation commit: `8151447` (`feat(cli): 建立可恢復的互動 coding agent`).
 - The exact staged snapshot passed Ruff, all 128 tests, and package build before this commit.
 - The independent release review reached GO after approval, journal, budget, and credential
-  lifecycle fault-injection fixes; its report is `.research/m2-release-review.md`.
+  lifecycle fault-injection fixes; its report is `docs/research/m2-release-review.md`.
 - The practice article is drafted at
   `quidproquo/src/content/posts/ai/2026-08-21-python-coding-agent-interactive-cli-provider-gateway.md`
   and remains uncommitted for user review.

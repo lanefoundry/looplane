@@ -271,7 +271,7 @@ def run_bounded_command(
         list(argv),
         cwd=cwd,
         env=dict(env) if env is not None else sanitized_subprocess_env(),
-        stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        stdin=subprocess.PIPE if isinstance(stdin, str) else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         shell=False,

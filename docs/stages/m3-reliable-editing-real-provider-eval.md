@@ -37,8 +37,8 @@ the tiny calculator task did not complete. M3 requires:
 | QuidProQuo agent-walls article | Keep verification, isolation, and rollback outside the model's discretion |
 
 The detailed option comparison and pinned implementation references are retained in
-`.research/m3-edit-tool-options.md`. Provider availability and the E0-E8 evidence matrix are in
-`.research/m3-provider-e2e-audit.md`.
+`docs/research/m3-edit-tool-options.md`. Provider availability and the E0-E8 evidence matrix are in
+`docs/research/m3-provider-e2e-audit.md`.
 
 ## Ideas borrowed
 
@@ -128,7 +128,7 @@ uv run python scripts/eval_live_provider.py --help
 - Package build produced both the source distribution and wheel.
 - Independent review reproduced and closed untracked-file, NUL-output, cumulative structural-limit,
   and eval false-positive findings, then verified the 4096-token Ollama delta and final hashes; its
-  final verdict is GO in `.research/m3-release-review.md`.
+  final verdict is GO in `docs/research/m3-release-review.md`.
 - The exact staged snapshot was exported to `/private/tmp/pca-m3-stage.FJfcZV`; from its own fresh
   `.venv`, Ruff passed, all 144 tests passed in 17.53 seconds, and both distributions built.
 
@@ -148,12 +148,12 @@ uv run python scripts/eval_live_provider.py --help
 
 - Manifest: `evals/live/tiny-python-bug.json`
 - Eval runner: `scripts/eval_live_provider.py`
-- Durable compact evidence and hashes: `.research/m3-live-eval-evidence.md`
+- Durable compact evidence and hashes: `docs/research/m3-live-eval-evidence.md`
 - Live summary: `/private/tmp/pca-m3-release-eval.46EMiT/ollama-qwen3-4b/summary.json`
 - Per-attempt stdout, stderr, source, run workspace, events, patch, verification, and result:
   `/private/tmp/pca-m3-release-eval.46EMiT/ollama-qwen3-4b/attempt-01` through `attempt-05`
-- Editing research: `.research/m3-edit-tool-options.md`
-- Provider audit: `.research/m3-provider-e2e-audit.md`
+- Editing research: `docs/research/m3-edit-tool-options.md`
+- Provider audit: `docs/research/m3-provider-e2e-audit.md`
 
 ## Commit
 

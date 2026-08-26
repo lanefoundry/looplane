@@ -113,3 +113,41 @@ def cached_scan(
         value = compute()
         _store(cache_key, version, value)
         return value
+
+
+def read_entry(key: str, version: str) -> tuple[float, object] | None:
+    """Read one entry ignoring its TTL -- the stale-while-revalidate escape hatch.
+
+    Returns ``(fetched_at_epoch, value)`` so callers can decide staleness
+    themselves (show stale data instantly, refresh in the background). ``None``
+    when the entry is missing, corrupt, or written under a different version.
+    """
+
+    cache_key = f"{version}:{key}"
+    with _lock_for(cache_key):
+        path = _cache_dir() / _safe_filename(cache_key)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, OSError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != version:
+        return None
+    if "value" not in data:
+        return None
+    try:
+        fetched_at = float(data.get("ts", 0.0))
+    except (TypeError, ValueError):
+        fetched_at = 0.0
+    return fetched_at, data["value"]
+
+
+def write_entry(key: str, version: str, value: object) -> None:
+    """Store one entry; I/O failures are swallowed like ``cached_scan``."""
+
+    cache_key = f"{version}:{key}"
+    with _lock_for(cache_key):
+        _store(cache_key, version, value)

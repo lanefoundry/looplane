@@ -81,20 +81,27 @@ async def verify_native_credential(
     raise ValueError(f"unsupported provider for verification: {provider}")
 
 
-async def list_provider_models(
+async def fetch_models_result(
     provider: str,
     fields: Mapping[str, str],
     *,
     timeout: float = 10.0,
     client: httpx.AsyncClient | None = None,
-) -> tuple[str, ...]:
-    """Best-effort model discovery; any failure returns ``()`` so the UI can fall back."""
+) -> VerificationResult:
+    """Model discovery that reports *why* a listing came back empty.
+
+    Unlike a bare models-tuple return this keeps the reason for UI callers:
+    ``ok=False`` carries the provider's failure message; ``ok=True`` with empty
+    models means the endpoint answered but exposes no listing (degraded).
+    Never raises on provider/network failures -- unexpected programming errors
+    still propagate.
+    """
 
     try:
         result = await verify_native_credential(provider, fields, timeout=timeout, client=client)
-    except Exception:  # noqa: BLE001 - this is the UI's fallback-to-free-input safety net
-        return ()
-    return result.models
+    except Exception as exc:  # noqa: BLE001 - this is the UI's fallback-to-free-input safety net
+        return VerificationResult(ok=False, message=f"{provider} model listing failed: {exc}")
+    return result
 
 
 def _auth_failure(provider: str, status_code: int) -> VerificationResult:
@@ -129,8 +136,12 @@ async def _verify_openai_compatible(
     if provider == "openai-compatible" and base_url is None:
         base_url = os.environ.get("OPENAI_BASE_URL")
 
+    # Retries are handled uniformly by AgentRunner._complete_model_with_retry for
+    # agent traffic; verification is a one-shot call, so the SDK's built-in
+    # retries are disabled to keep failures immediate and observable.
     sdk_client = AsyncOpenAI(
-        api_key=api_key, base_url=base_url, timeout=timeout, http_client=client
+        api_key=api_key, base_url=base_url, timeout=timeout, http_client=client,
+        max_retries=0,
     )
     try:
         page = await sdk_client.models.list()

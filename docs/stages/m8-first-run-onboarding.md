@@ -93,7 +93,7 @@ config persistence, and the real two-model local Ollama setup.
 
 ## Artifact paths
 
-- Independent review: `.research/m8-onboarding-release-review.md`
+- Independent review: `docs/research/m8-onboarding-release-review.md`
 - Draft practice article:
   `quidproquo/src/content/posts/ai/2026-08-22-python-coding-agent-first-run-onboarding.md`
 

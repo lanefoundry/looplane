@@ -17,6 +17,7 @@ from typing import Final
 class SlashCommand(StrEnum):
     """Canonical command identifiers understood by Rivumi."""
 
+    PROVIDER = "provider"
     MODEL = "model"
     RUNTIME = "runtime"
     NEW = "new"
@@ -28,6 +29,7 @@ class SlashCommand(StrEnum):
     HELP = "help"
     COMPACT = "compact"
     CONTEXT = "context"
+    USAGE = "usage"
     PERMISSIONS = "permissions"
     EXIT = "exit"
 
@@ -212,6 +214,12 @@ def _is_command_name(value: str) -> bool:
 
 DEFAULT_COMMANDS: Final[tuple[CommandMetadata, ...]] = (
     CommandMetadata(
+        SlashCommand.PROVIDER,
+        "Switch the rivumi-agent API provider.",
+        ArgumentExpectation.OPTIONAL,
+        "provider",
+    ),
+    CommandMetadata(
         SlashCommand.MODEL,
         "Choose or inspect the active model.",
         ArgumentExpectation.OPTIONAL,
@@ -249,6 +257,7 @@ DEFAULT_COMMANDS: Final[tuple[CommandMetadata, ...]] = (
         "instructions",
     ),
     CommandMetadata(SlashCommand.CONTEXT, "Inspect conversation context usage."),
+    CommandMetadata(SlashCommand.USAGE, "Show token usage for this session."),
     CommandMetadata(
         SlashCommand.PERMISSIONS,
         "Inspect or change process-local tool permissions.",

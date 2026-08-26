@@ -185,7 +185,7 @@ Final release-gate result:
 - Fixture: `evals/fixtures/tiny-python-bug/`
 - Tests: `tests/`
 - Offline smoke: `runs/m1-release/eb638d159c184786915dba3fef0045ce/` (ignored by Git)
-- Active plan: `progress.md`
+- Active plan: `docs/progress.md`
 
 ## Commit
 

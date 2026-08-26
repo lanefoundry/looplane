@@ -394,5 +394,5 @@ project-owned Python runtime behind a thin Worker and Cloudflare Sandbox with a 
 capability. It remains synchronous and ephemeral; consumer subscription logins are not relayed
 there. See [cloudflare/README.md](cloudflare/README.md) for its exact API and deployment boundary.
 
-See [progress.md](progress.md) for current acceptance criteria and
+See [docs/progress.md](docs/progress.md) for current acceptance criteria and
 [docs/stages](docs/stages/README.md) for milestone evidence.

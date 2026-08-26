@@ -46,6 +46,7 @@ class CliConfig(BaseModel):
     api_url: str | None = None
     runtime: str | None = None
     runtime_model: str | None = None
+    statusline_command: str | None = None
 
     @field_validator("runtime")
     @classmethod

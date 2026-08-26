@@ -47,6 +47,7 @@ class Limits(ContractModel):
     wall_time_seconds: float = Field(default=900.0, gt=0)
     max_tool_output_bytes: int = Field(default=200_000, ge=1)
     max_patch_bytes: int = Field(default=100_000, ge=1)
+    max_total_tokens: int | None = Field(default=None, ge=1)
 
 
 class TaskContract(ContractModel):

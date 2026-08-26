@@ -6,8 +6,9 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any, TypeVar
@@ -39,6 +40,7 @@ from rivumi.contracts import (
 )
 from rivumi.events import EventWriter, RunEvent, atomic_write_json
 from rivumi.models import ModelProvider, ProviderError
+from rivumi.permissions import PermissionGuard
 from rivumi.policy import SafePathPolicy
 from rivumi.prompts import CODING_AGENT_PROMPT_VERSION, CODING_AGENT_SYSTEM_PROMPT
 from rivumi.runtime import (
@@ -64,6 +66,24 @@ class UnsafeLocalExecutionError(RuntimeError):
 
 
 BlockingResult = TypeVar("BlockingResult")
+MODEL_ATTEMPTS = 5
+RETRY_BACKOFF_BASE_SECONDS = 1.0
+RETRY_MAX_DELAY_SECONDS = 30.0
+RETRY_SERVER_HINT_MAX_SECONDS = 300.0
+RETRY_JITTER_FRACTION = 0.15
+
+
+def retry_delay_seconds(attempt: int, retry_after_seconds: float | None) -> float:
+    """Exponential backoff with ±15% jitter; a server Retry-After hint wins verbatim.
+
+    The hint bypasses the local backoff curve but is capped for safety, mirroring
+    how Claude Code treats the header as a server directive above local policy.
+    """
+
+    if retry_after_seconds is not None:
+        return min(max(retry_after_seconds, 0.0), RETRY_SERVER_HINT_MAX_SECONDS)
+    base = min(RETRY_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1), RETRY_MAX_DELAY_SECONDS)
+    return base * random.uniform(1.0 - RETRY_JITTER_FRACTION, 1.0 + RETRY_JITTER_FRACTION)
 
 
 class AgentRunner:
@@ -79,10 +99,14 @@ class AgentRunner:
         durable_events: bool = True,
         allow_unsafe_local_exec: bool = False,
         approval_policy: ApprovalPolicy | None = None,
+        permission_guard: PermissionGuard | None = None,
+        fallback_models: Sequence[ModelProvider] = (),
         event_sink: EventSink | None = None,
     ) -> None:
         self.task = task
-        self.model = model
+        self.model_retry_delay = retry_delay_seconds
+        self._model_candidates: tuple[ModelProvider, ...] = (model, *fallback_models)
+        self._active_model_index = 0
         self.run_root = Path(run_root).resolve(strict=False)
         self.run_id = run_id or uuid4().hex
         run_id_path = Path(self.run_id)
@@ -100,6 +124,7 @@ class AgentRunner:
         self.run_dir = self.run_root / self.run_id
         self.events = EventWriter(self.run_dir / "events.jsonl", durable=durable_events)
         self.allow_unsafe_local_exec = allow_unsafe_local_exec
+        self.permission_guard = permission_guard
         self.approvals = approval_policy or HeadlessApprovalPolicy(
             allow_modify=True,
             allow_execute=allow_unsafe_local_exec,
@@ -117,6 +142,7 @@ class AgentRunner:
         self._step = 0
         self._last_fingerprint: str | None = None
         self._repeat_count = 0
+        self._made_changes = False
         self._test_log: list[str] = []
         self._executor: ToolExecutor | None = None
         self._last_verification: tuple[VerificationOutcome, ...] = ()
@@ -128,6 +154,12 @@ class AgentRunner:
         self._manifest: SessionManifest | None = None
         self._resume_ready = False
         self._cancel_requested = asyncio.Event()
+
+    @property
+    def model(self) -> ModelProvider:
+        """The active model candidate; advances when a fallback is applied."""
+
+        return self._model_candidates[self._active_model_index]
 
     def request_cancel(self) -> None:
         """Request a cooperative stop at the next side-effect-safe boundary."""
@@ -192,8 +224,10 @@ class AgentRunner:
             runner._usage = manifest.usage
             runner._step = manifest.step
             runner._last_fingerprint = manifest.last_action_fingerprint
-            runner._repeat_count = manifest.repeat_count
             runner._last_verification = manifest.verification
+            # A resumed workspace may already contain modifications from before the
+            # interruption, so keep the final-verification gate conservatively armed.
+            runner._made_changes = True
             runner._run_dir_initialized = True
             workspace = resolved / "workspace"
             runner._executor = ToolExecutor(
@@ -272,7 +306,19 @@ class AgentRunner:
             tool_call=tool_call,
             command=command,
         )
-        if self._manifest is not None and effect in self._manifest.granted_effects:
+        # Deny-first guard: forbidden operations win even over session grants
+        # and dangerous-mode auto-approval, so evaluate it before reuse.
+        pre_decision: ApprovalDecision | None = None
+        if self.permission_guard is not None:
+            pre_decision = self.permission_guard.pre_decision(
+                request,
+                self._guard_subjects(tool_call=tool_call, command=command),
+            )
+        if (
+            pre_decision is None
+            and self._manifest is not None
+            and effect in self._manifest.granted_effects
+        ):
             self._manifest = self._manifest.model_copy(
                 update={
                     "phase": SessionPhase.RUNNING,
@@ -304,7 +350,11 @@ class AgentRunner:
             reason=reason.value,
             preview=request.preview,
         )
-        decision = await self.approvals.decide(request)
+        decision = (
+            pre_decision
+            if pre_decision is not None
+            else await self.approvals.decide(request)
+        )
         if self._manifest is not None:
             granted_effects = self._manifest.granted_effects
             if decision == ApprovalDecision.ALLOW_SESSION:
@@ -409,6 +459,29 @@ class AgentRunner:
                 indent=2,
             )
         return json.dumps(call.arguments, ensure_ascii=False, sort_keys=True, indent=2)
+
+    def _guard_subjects(
+        self,
+        *,
+        tool_call: ToolCall | None,
+        command: VerificationCommand | None,
+    ) -> tuple[str, ...]:
+        """Text subjects the permission guard matches deny rules against."""
+
+        parts: list[str] = []
+        if command is not None:
+            parts.append(" ".join(command.argv))
+        if tool_call is not None:
+            if tool_call.name == "run_check" and self._executor is not None:
+                check = self._executor.verification_commands.get(
+                    str(tool_call.arguments.get("name", ""))
+                )
+                if check is not None:
+                    parts.append(" ".join(check.argv))
+            parts.extend(
+                str(value) for value in tool_call.arguments.values() if isinstance(value, str)
+            )
+        return tuple(parts)
 
     async def _checkpoint(self, status: RunStatus, **metadata: Any) -> None:
         checkpoint = Checkpoint(
@@ -643,6 +716,66 @@ class AgentRunner:
             with contextlib.suppress(asyncio.CancelledError):
                 await cancel_task
 
+    async def _complete_model_with_retry(self, deadline: float) -> ModelTurn | None:
+        """One logical model step, retrying transient provider failures in place.
+
+        Retryable errors (server 5xx, rate limits, transport drops) are retried up
+        to ``MODEL_ATTEMPTS`` times with jittered exponential backoff; auth and
+        invalid-request failures re-raise immediately. When a candidate exhausts
+        its retry budget, the next fallback model (if any) takes over with a
+        fresh budget. Cancellation during backoff shortens the wait, and the
+        next attempt observes it immediately.
+        """
+
+        last_error: ProviderError | None = None
+        for candidate_index, candidate in enumerate(self._model_candidates):
+            self._active_model_index = candidate_index
+            self._provider_failure_codes = []
+            for attempt in range(1, MODEL_ATTEMPTS + 1):
+                try:
+                    return await self._complete_model_or_cancel(self._remaining(deadline))
+                except ProviderError as exc:
+                    if not exc.retryable:
+                        raise
+                    last_error = exc
+                    self._provider_failure_codes.append(exc.status_code)
+                    if attempt == MODEL_ATTEMPTS:
+                        break
+                    delay = self.model_retry_delay(attempt, exc.retry_after_seconds)
+                    await self._event(
+                        "model.retry",
+                        attempt=attempt,
+                        provider=exc.provider_name,
+                        error=str(exc),
+                        delay_seconds=delay,
+                    )
+                    await self._backoff_sleep(delay)
+            if candidate_index + 1 < len(self._model_candidates):
+                successor = self._model_candidates[candidate_index + 1]
+                await self._event(
+                    "model.fallback",
+                    from_provider=candidate.provider_name,
+                    from_model=candidate.model_id,
+                    to_provider=successor.provider_name,
+                    to_model=successor.model_id,
+                    failure_codes=list(self._provider_failure_codes),
+                )
+                continue
+            assert last_error is not None
+            raise last_error
+        raise AssertionError("unreachable: retry loop must return or raise")
+
+    async def _backoff_sleep(self, delay: float) -> None:
+        """Wait out the retry backoff; user cancellation ends the wait early."""
+
+        wake = asyncio.create_task(self._cancel_requested.wait())
+        try:
+            await asyncio.wait((wake,), timeout=delay)
+        finally:
+            wake.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await wake
+
     async def _collect_patch(
         self, timeout_seconds: float | None = None
     ) -> tuple[str, tuple[str, ...]]:
@@ -665,6 +798,7 @@ class AgentRunner:
         status: RunStatus,
         terminal_reason: str,
         summary: str,
+        error: str | None = None,
         verification: tuple[VerificationOutcome, ...] = (),
         patch_timeout_seconds: float | None = None,
     ) -> RunResult:
@@ -688,6 +822,7 @@ class AgentRunner:
             verification=verification,
             usage=self._usage,
             terminal_reason=terminal_reason,
+            error=error,
             artifacts={
                 "request": str(self.run_dir / "request.json"),
                 "events": str(self.run_dir / "events.jsonl"),
@@ -817,7 +952,7 @@ class AgentRunner:
                         summary="Run cancelled by user.",
                     )
                 try:
-                    remaining = self._remaining(deadline)
+                    self._remaining(deadline)
                 except TimeoutError:
                     return await self._finish(
                         status=RunStatus.FAILED,
@@ -827,7 +962,7 @@ class AgentRunner:
                     )
                 self._step += 1
                 await self._event("model.requested", step=self._step)
-                turn = await self._complete_model_or_cancel(remaining)
+                turn = await self._complete_model_with_retry(deadline)
                 if turn is None:
                     return await self._finish(
                         status=RunStatus.CANCELLED,
@@ -835,6 +970,21 @@ class AgentRunner:
                         summary="Run cancelled by user while waiting for the model.",
                     )
                 self._usage = self._add_usage(self._usage, turn.usage)
+                max_total_tokens = self.task.limits.max_total_tokens
+                if (
+                    max_total_tokens is not None
+                    and self._usage.total_tokens > max_total_tokens
+                ):
+                    return await self._finish(
+                        status=RunStatus.FAILED,
+                        terminal_reason="token_budget_exceeded",
+                        summary=final_summary,
+                        error=(
+                            f"Token budget exceeded: {self._usage.total_tokens:,} tokens "
+                            f"> limit {max_total_tokens:,}."
+                        ),
+                        patch_timeout_seconds=1.0,
+                    )
                 assistant = turn.as_message()
                 self._messages.append(assistant)
                 await self._event(
@@ -932,6 +1082,8 @@ class AgentRunner:
                             error=observation.error,
                             preview=bounded_text(observation.content, 2_000),
                         )
+                        if effect is ToolEffect.MODIFY and observation.ok:
+                            self._made_changes = True
                         await self._checkpoint(RunStatus.IMPLEMENTING, last_tool=call.name)
                         if self._cancel_requested.is_set():
                             return await self._finish(
@@ -963,6 +1115,12 @@ class AgentRunner:
                         update={"final_summary": final_summary}
                     )
                     await self._save_manifest()
+                if not self._made_changes:
+                    return await self._finish(
+                        status=RunStatus.COMPLETED,
+                        terminal_reason="no_changes",
+                        summary=final_summary,
+                    )
                 try:
                     outcomes = await self._verify_all(deadline)
                 except asyncio.CancelledError:
@@ -1016,10 +1174,27 @@ class AgentRunner:
                 retryable=exc.retryable,
                 error=str(exc),
             )
+            error_text: str | None = None
+            if exc.retryable:
+                attempts = len(self._provider_failure_codes)
+                codes = ", ".join(
+                    str(code) if code is not None else "transport error"
+                    for code in self._provider_failure_codes
+                )
+                error_text = (
+                    f"{exc.provider_name} failed {attempts} consecutive model requests "
+                    f"({codes}); the service is temporarily unavailable. "
+                    "Retry shortly or switch to another provider/model."
+                )
+            else:
+                error_text = (
+                    f"{exc.provider_name} rejected the request ({exc.kind.value}): {exc}"
+                )
             return await self._finish(
                 status=RunStatus.FAILED,
                 terminal_reason=f"provider_{exc.kind.value}",
                 summary=str(exc),
+                error=error_text,
             )
         except Exception as exc:
             if self._run_dir_initialized:

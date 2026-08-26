@@ -111,7 +111,7 @@ rivumi 的賣點是 verified patches；agent 每秒能迭代幾次，取決於 l
 
 ## 5. 行動清單
 
-正式執行規劃：`.work/m12-startup-performance-plan.md`。外接 OpenCode／Pi／OMP 的 M13 必須建立
+正式執行規劃：`docs/plans/m12-startup-performance-plan.md`。外接 OpenCode／Pi／OMP 的 M13 必須建立
 在這個 lazy discovery 與 benchmark contract 上，避免新增 adapter 擴大共同啟動成本。
 
 - [ ] 新增 `scripts/bench_startup.sh`（hyperfine + importtime）

@@ -28,6 +28,7 @@ from rivumi.contracts import (
     RunStatus,
     TaskContract,
     ToolCall,
+    Usage,
     VerificationCommand,
 )
 from rivumi.conversation import (
@@ -68,11 +69,13 @@ from rivumi.tui import (
     RivumiApp,
     RunEventMessage,
     RuntimeLoadingIndicator,
+    RuntimeMetrics,
     RuntimeStatus,
     TextualApprovalPolicy,
     TimelineEntry,
     ToolActionBlock,
     ToolGroupBlock,
+    format_token_count,
 )
 
 
@@ -1228,6 +1231,60 @@ async def test_tui_approval_is_attached_inline_and_maps_once_decision(tmp_path: 
         assert decision["value"] == ApprovalDecision.ALLOW_ONCE
 
 
+async def test_approval_arrow_keys_work_without_option_list_focus(tmp_path: Path) -> None:
+    """↑/↓ must move the approval highlight even when focus was stolen."""
+    decision: dict[str, ApprovalDecision] = {}
+
+    class ApprovalRunner(FakeRunner):
+        async def run(self) -> RunResult:
+            request = ApprovalRequest(
+                run_id="approval-run",
+                action_id="edit-1",
+                effect=ToolEffect.MODIFY,
+                reason=ApprovalReason.MODEL_TOOL,
+                preview="replace src/example.py",
+                tool_call=ToolCall(name="replace_text"),
+            )
+            decision["value"] = await self.approval_policy.decide(request)
+            return await super().run()
+
+    def factory(_request, approval_policy, event_sink):
+        return ApprovalRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+        initial_prompt="Edit the example.",
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(lambda: bool(app.query(InlineApprovalBlock)))
+        await pilot.pause()
+        approval = app.query_one(InlineApprovalBlock)
+        choices = approval.query_one(".approval-choices", OptionList)
+        assert choices.highlighted == 0
+
+        app.query_one("#task", MessageComposer).focus()
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+        assert choices.highlighted == 1
+        assert str(choices.options[1].prompt).startswith("› 2")
+
+        await pilot.press("up")
+        await pilot.pause()
+        await pilot.press("up")
+        await pilot.pause()
+        assert choices.highlighted == 3  # wraps to the last choice
+
+        app.action_approval_choice(1)
+        await pilot.pause()
+        await _wait_until(lambda: app._result is not None)
+        assert decision["value"] == ApprovalDecision.ALLOW_SESSION
+
+
 async def test_blank_approval_preview_is_actionable_and_defaults_to_deny(
     tmp_path: Path,
 ) -> None:
@@ -1341,6 +1398,43 @@ async def test_allow_session_is_reused_across_bounded_tasks() -> None:
     )
     await TextualApprovalPolicy(app, grants).decide(core_request)
     assert app.calls == 2
+
+
+
+async def test_run_check_allow_session_is_scoped_by_command_name() -> None:
+    class ApprovalApp:
+        calls = 0
+
+        async def request_approval(self, _request):
+            self.calls += 1
+            return ApprovalDecision.ALLOW_SESSION
+
+    app = ApprovalApp()
+    grants: set[ProcessLocalGrant] = set()
+    first_request = ApprovalRequest(
+        run_id="approval-run",
+        action_id="check-1",
+        effect=ToolEffect.EXECUTE,
+        reason=ApprovalReason.MODEL_TOOL,
+        preview="$ git diff --check",
+        tool_call=ToolCall(name="run_check", arguments={"name": "check-1"}),
+    )
+    second_request = ApprovalRequest(
+        run_id="approval-run",
+        action_id="check-2",
+        effect=ToolEffect.EXECUTE,
+        reason=ApprovalReason.MODEL_TOOL,
+        preview="$ git diff --check",
+        tool_call=ToolCall(name="run_check", arguments={"name": "check-1"}),
+    )
+
+    first = await TextualApprovalPolicy(app, grants).decide(first_request)
+    second = await TextualApprovalPolicy(app, grants).decide(second_request)
+
+    assert first == ApprovalDecision.ALLOW_SESSION
+    assert second == ApprovalDecision.ALLOW_ONCE
+    assert grants == {ProcessLocalGrant(effect=ToolEffect.EXECUTE, scope="run_check:check-1")}
+    assert app.calls == 1
 
 
 async def test_permission_modes_enforce_read_only_and_accept_edits() -> None:
@@ -2299,6 +2393,76 @@ async def test_read_search_actions_collapse_into_one_keyboard_group(tmp_path: Pa
         assert groups[0].collapsed is False
 
 
+async def test_tool_group_respects_manual_toggle_over_auto_state(tmp_path: Path) -> None:
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), None),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        first = app._ensure_tool_action("read", "Read src/app.py", detail_kind="read")
+        first.set_state("completed", detail="84 lines")
+        await pilot.pause()
+
+        group = app.query_one(ToolGroupBlock)
+        assert group.collapsed is True  # auto-collapse on completion still applies
+
+        group.query_one("CollapsibleTitle").focus()
+        await pilot.press("enter")
+        assert group.collapsed is False
+
+        second = app._ensure_tool_action("search", 'Search "runner"', detail_kind="search")
+        second.set_state("completed", detail="6 matches")
+        await pilot.pause()
+        assert group.collapsed is False  # user intent wins over auto-collapse
+
+        group.query_one("CollapsibleTitle").focus()
+        await pilot.press("enter")
+        assert group.collapsed is True
+
+        third = app._ensure_tool_action("read", "Read src/main.py", detail_kind="read")
+        third.set_state("completed", detail="12 lines")
+        await pilot.pause()
+        assert group.collapsed is True  # user intent wins over auto-expand
+
+
+async def test_ctrl_o_toggles_global_tool_verbose(tmp_path: Path) -> None:
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), None),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        first = app._ensure_tool_action("read", "Read src/app.py", detail_kind="read")
+        first.set_state("completed", detail="84 lines")
+        await pilot.pause()
+
+        group = app.query_one(ToolGroupBlock)
+        assert group.collapsed is True
+
+        await pilot.press("ctrl+o")
+        assert app._tool_verbose is True
+        assert group.collapsed is False
+        assert first.has_class("verbose")
+
+        # New actions inherit verbose mode and survive completion without collapsing.
+        second = app._ensure_tool_action("search", 'Search "runner"', detail_kind="search")
+        second.set_state("completed", detail="6 matches")
+        await pilot.pause()
+        assert group.collapsed is False
+        assert second.has_class("verbose")
+
+        await pilot.press("ctrl+o")
+        assert app._tool_verbose is False
+        assert group.collapsed is True
+        assert not first.has_class("verbose")
+        detail = first.query_one(".tool-detail")
+        assert detail.styles.max_height is not None
+
 async def test_scrolled_transcript_reports_deduplicated_new_items(tmp_path: Path) -> None:
     app = RivumiApp(
         repository=tmp_path,
@@ -2501,15 +2665,19 @@ async def test_runtime_loading_status_glimmers_then_reveals_elapsed_time(
         status._loading_started_at = monotonic() - 18.6
 
         rendered = status.render()
-        assert rendered.plain == "Thinking… (18s)"
-        assert any(span.style == "not dim bold" for span in rendered.spans)
+        assert rendered.plain == "Thinking… (18s · esc to interrupt)"
+        primary = app.get_css_variables()["primary"]
+        assert any(
+            span.style.startswith("not dim bold") and primary in span.style
+            for span in rendered.spans
+        )
 
         app.animation_level = "none"
         status.set_loading("Thinking…", LoadingPhase.THINKING)
         assert status.auto_refresh is None
         reduced_motion = status.render()
-        assert reduced_motion.plain == "Thinking… (18s)"
-        assert not any(span.style == "not dim bold" for span in reduced_motion.spans)
+        assert reduced_motion.plain == "Thinking… (18s · esc to interrupt)"
+        assert not any(span.style.startswith("not dim bold") for span in reduced_motion.spans)
 
 
 async def test_runtime_loading_respects_reduced_motion(tmp_path: Path) -> None:
@@ -2955,3 +3123,466 @@ async def test_cancelled_turn_leaves_useful_transcript(tmp_path: Path) -> None:
         exported = app.export_final_transcript()
         assert "You › cancel me" in exported
         assert "Turn cancelled" in exported
+
+
+async def test_wizard_reports_fetch_failure_with_retry(tmp_path: Path, monkeypatch) -> None:
+    """A failed model listing must explain itself instead of silently degrading
+    to the manual model-ID input."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    from rivumi.provider_verification import VerificationResult
+
+    async def fake_verify(provider, fields, **_kwargs):
+        return VerificationResult(
+            ok=False, message=f"{provider} rejected the credential (401)."
+        )
+
+    monkeypatch.setattr(
+        "rivumi.provider_verification.verify_native_credential", fake_verify
+    )
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+l")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-add")
+        app.screen.query_one("#provider", Select).value = "anthropic"
+        await pilot.pause()
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "credential")
+        app.screen.query_one("#field-api_key").value = "sk-x"
+        await pilot.click("#credential-skip")
+        await _wait_until(lambda: app.screen._step == "model")
+
+        status = app.screen.query_one("#model-fetch-status", Static)
+        await _wait_until(lambda: "401" in str(status.content))
+        assert app.screen.query_one("#model-retry", Button).display is True
+        # Manual entry stays available alongside the explanation.
+        assert app.screen.query_one("#model-id", Input).display is True
+
+        # Retry re-runs the fetch without crashing and reports the same reason.
+        await pilot.click("#model-retry")
+        await _wait_until(lambda: "401" in str(status.content))
+
+
+@pytest.mark.asyncio
+async def test_onboarding_uses_disk_cached_catalog_without_network(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-cached")
+
+    from rivumi import model_catalog
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("network verification must not run for a fresh catalog")
+
+    monkeypatch.setattr(
+        "rivumi.provider_verification.verify_native_credential", fail_if_called
+    )
+    model_catalog.store_models("anthropic", ("cached-a", "cached-b"))
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+l")
+        await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
+        await pilot.click("#overview-add")
+        app.screen.query_one("#provider", Select).value = "anthropic"
+        await pilot.pause()
+        await pilot.click("#connection-next")
+        await _wait_until(lambda: app.screen._step == "credential")
+        app.screen.query_one("#field-api_key").value = "sk-cached"
+        await pilot.click("#credential-skip")
+        await _wait_until(lambda: app.screen._step == "model")
+
+        fetched = app.screen.query_one("#fetched-model", Select)
+        await _wait_until(lambda: fetched.display is True and fetched.value == "cached-a")
+
+
+@pytest.mark.asyncio
+async def test_session_model_selector_lists_catalog_models_and_refreshes_in_place(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import model_catalog
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    model_catalog.store_models("openrouter", ("m/a", "m/b"))
+
+    async def fake_refresh(provider, **_kwargs):
+        return ("m/new",)
+
+    monkeypatch.setattr(model_catalog, "refresh", fake_refresh)
+    monkeypatch.setattr(model_catalog, "CATALOG_TTL_SECONDS", -1.0)  # force SWR path
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/b"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("openrouter", "OpenRouter"),),
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("/model")
+        await pilot.press("enter")
+        await _wait_until(lambda: bool(app.query(InlineSelectorBlock)))
+
+        selector = app.query_one(InlineSelectorBlock)
+        await _wait_until(
+            lambda: [option.value for option in selector.options]
+            == ["__automatic__", "m/new", "m/b"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_command_menu_prefix_matches_catalog_models(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import model_catalog
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    model_catalog.store_models("openrouter", ("m/a", "m/b"))
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("openrouter", "OpenRouter"),),
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.focus()
+        composer.load_text("/model b")
+        await pilot.pause()
+        menu = app.query_one("#command-menu", OptionList)
+        assert menu.display is True
+        assert [str(option.prompt) for option in menu.options] == ["m/b  m/b"]
+
+
+@pytest.mark.asyncio
+async def test_provider_switch_updates_config_and_defaults_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import model_catalog
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    model_catalog.store_models("deepseek", ("deepseek-chat",))
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("openrouter", "OpenRouter"), ("deepseek", "DeepSeek")),
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("/provider deepseek")
+        await pilot.press("enter")
+
+        await _wait_until(
+            lambda: any(item.title == "Provider switched" for item in app.query(TimelineEntry))
+        )
+        assert app.config.provider == "deepseek"
+        assert app.config.model == "deepseek-chat"
+
+    # The switch persists as the startup default (pi-style defaultProvider).
+    import json
+    import os
+
+    saved = json.loads(Path(os.environ["RIVUMI_CONFIG"]).read_text())
+    assert saved["provider"] == "deepseek"
+    assert saved["model"] == "deepseek-chat"
+
+
+@pytest.mark.asyncio
+async def test_provider_selector_lists_providers_and_rejects_unknown(
+    tmp_path: Path,
+) -> None:
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("openrouter", "OpenRouter"), ("groq", "Groq")),
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+
+        composer.load_text("/provider")
+        await pilot.press("enter")
+        await _wait_until(lambda: bool(app.query(InlineSelectorBlock)))
+        selector = app.query_one(InlineSelectorBlock)
+        assert selector.kind == "provider"
+        assert [option.value for option in selector.options] == ["openrouter", "groq"]
+        await pilot.press("escape")
+        await _wait_until(lambda: not app.query(InlineSelectorBlock))
+
+        composer.load_text("/provider nope")
+        await pilot.press("enter")
+        status = app.query_one("#status", Static)
+        await _wait_until(lambda: "Unknown provider" in str(status.content))
+
+
+@pytest.mark.asyncio
+async def test_provider_command_menu_prefix_filters(tmp_path: Path) -> None:
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("openrouter", "OpenRouter"), ("groq", "Groq")),
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.focus()
+        composer.load_text("/provider gr")
+        await pilot.pause()
+        menu = app.query_one("#command-menu", OptionList)
+        assert menu.display is True
+        assert [str(option.prompt) for option in menu.options] == ["Groq  groq"]
+
+
+@pytest.mark.asyncio
+async def test_provider_switch_defaults_to_preferred_model_not_first(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import model_catalog
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    # Alphabetically-first entry is a free variant; the known family wins.
+    model_catalog.store_models("deepseek", ("aardvark/experimental:free", "deepseek-chat"))
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("openrouter", "OpenRouter"), ("deepseek", "DeepSeek")),
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("/provider deepseek")
+        await pilot.press("enter")
+
+        await _wait_until(
+            lambda: any(item.title == "Provider switched" for item in app.query(TimelineEntry))
+        )
+        assert app.config.provider == "deepseek"
+        assert app.config.model == "deepseek-chat"
+
+
+def test_openrouter_guardrail_error_gets_actionable_hint() -> None:
+    from rivumi.models import _apply_error_hint
+
+    raw = (
+        "openrouter request failed: Error code: 404 - {'error': {'message': "
+        "'No endpoints available matching your guardrail restrictions and c...'}}"
+    )
+
+    hinted = _apply_error_hint(raw)
+
+    assert "openrouter.ai/settings/privacy" in hinted
+    assert hinted.startswith(raw)
+    # Unrelated errors pass through untouched.
+    assert _apply_error_hint("groq request failed: 500 oops") == "groq request failed: 500 oops"
+
+
+@pytest.mark.asyncio
+async def test_model_switch_persists_and_auto_keeps_saved_default(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+    import os
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    config_path = Path(os.environ["RIVUMI_CONFIG"])
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a").model_dump_json()
+    )
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("openrouter", "OpenRouter"),),
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+
+        composer.load_text("/model m/b")
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: any(item.title == "Model switched" for item in app.query(TimelineEntry))
+        )
+        saved = json.loads(config_path.read_text())
+        assert saved["model"] == "m/b"
+
+        composer.load_text("/model auto")
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: app.config.runtime_model is None
+            and any("Model switched" in item.title for item in app.query(TimelineEntry))
+        )
+        # "auto" is session-scoped: the persisted default keeps the last explicit model.
+        saved = json.loads(config_path.read_text())
+        assert saved["model"] == "m/b"
+
+
+@pytest.mark.asyncio
+async def test_runtime_switch_persists(tmp_path: Path) -> None:
+    import json
+    import os
+
+    config_path = Path(os.environ["RIVUMI_CONFIG"])
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a").model_dump_json()
+    )
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        runtimes=(("rivumi-agent", "Rivumi"), ("codex-cli", "Codex CLI")),
+        providers=(("openrouter", "OpenRouter"),),
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("/runtime codex-cli")
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: any(item.title == "Runtime switched" for item in app.query(TimelineEntry))
+        )
+
+    saved = json.loads(config_path.read_text())
+    assert saved["runtime"] == "codex-cli"
+
+
+def test_format_token_count() -> None:
+    assert format_token_count(999) == "999"
+    assert format_token_count(1_000) == "1k"
+    assert format_token_count(1_540) == "1.5k"
+    assert format_token_count(12_340) == "12.3k"
+
+
+async def test_runtime_metrics_renders_telemetry_model_and_elapsed(tmp_path: Path) -> None:
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+    async with app.run_test(size=(100, 30)):
+        metrics = RuntimeMetrics(id="metrics")
+        metrics.set_metrics()
+        assert metrics.render().plain == ""
+
+        metrics.set_metrics(model="qwen3:4b")
+        assert metrics.render().plain == "qwen3:4b"
+
+        metrics.set_metrics(
+            model="qwen3:4b",
+            input_tokens=1_540,
+            output_tokens=340,
+            context_percent=19.25,
+            elapsed_seconds=12.4,
+        )
+        rendered = metrics.render()
+        assert rendered.plain == "qwen3:4b · ↑1.5k ↓340 · ctx 19% · 12s"
+
+        metrics.set_metrics(input_tokens=1_000, output_tokens=0, context_percent=50.0)
+        rendered = metrics.render()
+        assert not any(
+            "yellow" in str(span.style) or "red" in str(span.style)
+            for span in rendered.spans
+        )
+
+        metrics.set_metrics(input_tokens=1_000, output_tokens=0, context_percent=75.0)
+        assert any("yellow" in str(span.style) for span in metrics.render().spans)
+
+        metrics.set_metrics(input_tokens=1_000, output_tokens=0, context_percent=95.0)
+        assert any("red" in str(span.style) for span in metrics.render().spans)
+
+
+async def test_update_metrics_projects_telemetry_into_footer(tmp_path: Path) -> None:
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._latest_context_telemetry = ContextTelemetry(
+            accuracy="exact",
+            input_tokens=1_540,
+            cached_input_tokens=200,
+            output_tokens=340,
+            total_tokens=1_880,
+            context_window=8_000,
+        )
+        app._runtime_reported_model = "qwen3:4b"
+        app._last_turn_seconds = 12.4
+        app._update_metrics()
+        await pilot.pause()
+        metrics = app.query_one("#metrics", RuntimeMetrics)
+        assert metrics.render().plain == "qwen3:4b · ↑1.5k ↓340 · ctx 19% · 12s"
+
+
+async def test_metrics_show_stream_estimate_hud_and_queued(tmp_path: Path) -> None:
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+    async with app.run_test(size=(100, 30)):
+        app._agent_running = True
+        app._stream_char_count = 1024
+        app._tool_actions["a1"] = type(
+            "FakeAction", (), {"status": "running"}
+        )()
+        app._queued_prompts.append("follow-up")
+        app._update_metrics()
+        metrics = app.query_one("#metrics", RuntimeMetrics)
+        assert metrics.render().plain == "⚙1 · ☰1 queued · ↓~256"
+
+
+async def test_usage_command_reports_session_totals(tmp_path: Path) -> None:
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._session_usage = Usage(
+            input_tokens=1_000,
+            output_tokens=500,
+            cached_input_tokens=200,
+            reasoning_tokens=100,
+        )
+        app._session_turns = 3
+        app._dispatch_command("/usage")
+        await pilot.pause()
+        entries = [item for item in app.query(TimelineEntry) if item.title == "Usage"]
+        assert entries, "expected a Usage timeline entry"
+        detail = entries[-1].query_one(".timeline-detail").render().plain if entries[-1].query(".timeline-detail") else ""
+        assert "total 1,500" in detail
+        assert "3 turn(s)" in detail

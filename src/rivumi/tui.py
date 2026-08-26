@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
+import json
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -21,6 +23,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Resize
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.theme import Theme
 from textual.widgets import (
     Button,
     Collapsible,
@@ -33,8 +36,10 @@ from textual.widgets import (
     Static,
     TextArea,
 )
+from textual.widgets._collapsible import CollapsibleTitle
 from textual.widgets.option_list import Option
 
+import rivumi.model_catalog as model_catalog
 import rivumi.runtime_registry as runtime_registry
 from rivumi.approvals import (
     ApprovalDecision,
@@ -46,7 +51,7 @@ from rivumi.approvals import (
 from rivumi.backends import ExternalAgentEvent
 from rivumi.cli_config import CliConfig, save_cli_config
 from rivumi.console import EventSink, LiveEventProjection
-from rivumi.contracts import RunResult, RunStatus
+from rivumi.contracts import RunResult, RunStatus, Usage
 from rivumi.conversation import (
     ConversationEventKind,
     ConversationStore,
@@ -93,7 +98,6 @@ from rivumi.slash_commands import (
 )
 from rivumi.transcript import infer_tool_detail_kind
 from rivumi.transcript_export import TranscriptReducer
-
 if TYPE_CHECKING:
     from rivumi.provider_verification import VerificationResult
 
@@ -181,6 +185,96 @@ class RuntimeLoadingIndicator(Static):
         return Text(self._FRAMES[frame])
 
 
+def format_token_count(count: int) -> str:
+    """Compact token count for status displays, e.g. 1234 -> 1.2k."""
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}".rstrip("0").rstrip(".") + "k"
+    return str(count)
+
+
+def _add_usage(left: Usage, right: Usage) -> Usage:
+    return Usage(
+        input_tokens=left.input_tokens + right.input_tokens,
+        output_tokens=left.output_tokens + right.output_tokens,
+        cached_input_tokens=left.cached_input_tokens + right.cached_input_tokens,
+        reasoning_tokens=left.reasoning_tokens + right.reasoning_tokens,
+        provider_total_tokens=(
+            (left.provider_total_tokens or left.total_tokens)
+            + (right.provider_total_tokens or right.total_tokens)
+        ),
+    )
+
+
+def _usage_bar(percent: float, *, width: int = 10) -> str:
+    filled = max(0, min(width, round(percent / 100 * width)))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def _rivumi_version() -> str:
+    try:
+        return importlib.metadata.version("rivumi")
+    except importlib.metadata.PackageNotFoundError:
+        return "dev"
+
+
+class RuntimeMetrics(Static):
+    """Persistent turn metrics: tokens, context pressure, elapsed time."""
+
+    _CONTEXT_WARNING_PERCENT = 70.0
+    _CONTEXT_CRITICAL_PERCENT = 90.0
+
+    def __init__(self, *, id: str) -> None:
+        super().__init__("", id=id, markup=False)
+
+    def set_metrics(
+        self,
+        *,
+        model: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        context_percent: float | None = None,
+        elapsed_seconds: float | None = None,
+        stream_output_tokens: int | None = None,
+        running_tools: int | None = None,
+        queued_prompts: int | None = None,
+    ) -> None:
+        text = Text()
+        if model:
+            text.append(model, style="dim")
+        if running_tools:
+            if text.plain:
+                text.append(" · ", style="dim")
+            text.append(f"⚙{running_tools}", style="dim")
+        if queued_prompts:
+            if text.plain:
+                text.append(" · ", style="dim")
+            text.append(f"☰{queued_prompts} queued", style="dim")
+        if stream_output_tokens is not None:
+            if text.plain:
+                text.append(" · ", style="dim")
+            text.append(f"↓~{format_token_count(stream_output_tokens)}", style="dim")
+        elif input_tokens is not None:
+            if text.plain:
+                text.append(" · ", style="dim")
+            text.append(f"↑{format_token_count(input_tokens)}", style="dim")
+            text.append(f" ↓{format_token_count(output_tokens or 0)}", style="dim")
+        if context_percent is not None:
+            if text.plain:
+                text.append(" · ", style="dim")
+            if context_percent >= self._CONTEXT_CRITICAL_PERCENT:
+                style = "bold red"
+            elif context_percent >= self._CONTEXT_WARNING_PERCENT:
+                style = "yellow"
+            else:
+                style = "dim"
+            text.append(f"ctx {context_percent:.0f}%", style=style)
+        if elapsed_seconds is not None:
+            if text.plain:
+                text.append(" · ", style="dim")
+            text.append(f"{elapsed_seconds:.0f}s", style="dim")
+        self.update(text)
+
+
 class RuntimeStatus(Static):
     """Status text with a restrained Claude-style loading glimmer."""
 
@@ -225,9 +319,13 @@ class RuntimeStatus(Static):
             radius = self._GLIMMER_WIDTH // 2
             start = max(0, center - radius)
             end = min(len(label), center + radius + 1)
-            text.stylize("not dim bold", start, end)
+            primary = self.app.get_css_variables().get("primary", "")
+            text.stylize(f"not dim bold {primary}".strip(), start, end)
         if elapsed >= self._ELAPSED_DELAY:
-            text.append(f" ({int(elapsed)}s)", style="dim")
+            text.append(f" ({int(elapsed)}s", style="dim")
+            text.append(" · esc to interrupt)", style="dim")
+        else:
+            text.append(" (esc to interrupt)", style="dim")
         return text
 
 
@@ -415,6 +513,10 @@ class TextualApprovalPolicy:
                 backend = request.tool_call.arguments.get("backend")
                 if isinstance(backend, str) and backend:
                     return f"external_agent:{backend}"[:4_096]
+            if request.tool_call.name == "run_check":
+                name = request.tool_call.arguments.get("name")
+                if isinstance(name, str) and name.strip():
+                    return f"run_check:{name.strip()}"[:4_096]
         if request.command is not None:
             return "command:" + "\u0000".join(request.command.argv)[:4_088]
         return None
@@ -896,6 +998,24 @@ class InlineSelectorBlock(Vertical):
         self._sync_prompts(choices.highlighted)
         choices.focus()
 
+    def set_options(self, options: tuple[InlineSelectorOption, ...]) -> None:
+        """Swap choices in place (e.g. a background model-catalog refresh landing)."""
+
+        if not options:
+            raise ValueError("inline selector requires at least one option")
+        choices = self.query_one(".selector-options", OptionList)
+        highlighted = min(choices.highlighted or 0, len(options) - 1)
+        self.options = options
+        choices.clear_options()
+        choices.add_options(
+            [
+                Option(self._prompt(index, highlighted=False), id=str(index))
+                for index in range(len(options))
+            ]
+        )
+        choices.highlighted = highlighted
+        self._sync_prompts(highlighted)
+
     def _sync_prompts(self, highlighted: int | None) -> None:
         choices = self.query_one(".selector-options", OptionList)
         for index in range(len(self.options)):
@@ -976,7 +1096,10 @@ class ToolActionBlock(Vertical):
         detail_kind: str | None = None,
     ) -> None:
         self.status = status
-        self.set_classes(f"tool-action {status}")
+        classes = ["tool-action", status]
+        if self.has_class("verbose"):
+            classes.append("verbose")
+        self.set_classes(" ".join(classes))
         if detail is not None:
             self.detail = detail
         if detail_kind is not None:
@@ -1027,21 +1150,40 @@ class ToolGroupBlock(Collapsible):
             classes="tool-group",
         )
         self.actions: list[ToolActionBlock] = [first_action]
+        self._user_toggled = False
+
+    @on(CollapsibleTitle.Toggle)
+    def _record_user_toggle(self, event: CollapsibleTitle.Toggle) -> None:
+        # Once the user toggles manually, auto-expand/collapse stops overriding
+        # this group for its lifetime; streaming updates only refresh the title.
+        # Decorated (not naming-convention) handler: Textual dispatches naming
+        # handlers once per MRO class, which would double-toggle with an override.
+        self._user_toggled = True
 
     def add_action(self, action: ToolActionBlock) -> None:
         self.actions.append(action)
-        self.collapsed = False
+        if not self._user_toggled:
+            self.collapsed = False
         self._refresh_title()
         if self.query(Collapsible.Contents):
             self.query_one(Collapsible.Contents).mount(action)
         else:
             self._contents_list.append(action)
 
+    def set_verbose(self, verbose: bool) -> None:
+        """Global verbose toggle: latch user intent and force the requested state."""
+        self._user_toggled = True
+        self.collapsed = not verbose
+
     def action_updated(self) -> None:
         terminal = {"completed", "failed", "denied", "cancelled"}
-        if self.actions and all(action.status in terminal for action in self.actions):
+        if (
+            not self._user_toggled
+            and not self.app._tool_verbose
+            and self.actions
+            and all(action.status in terminal for action in self.actions)
+        ):
             self.collapsed = True
-        self._refresh_title()
 
     def _refresh_title(self) -> None:
         done = sum(action.status == "completed" for action in self.actions)
@@ -1252,6 +1394,8 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
                 yield Static(
                     "Automatic · managed by the selected runtime", id="model-automatic-hint"
                 )
+                yield Static("", id="model-fetch-status", markup=False)
+                yield Button("Retry", id="model-retry")
                 yield Static("", id="setup-error", markup=False)
                 with Horizontal():
                     yield Button("Cancel", id="cancel")
@@ -1293,6 +1437,7 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         self.query_one("#step-credential", Vertical).display = False
         self.query_one("#step-model", Vertical).display = False
         self.query_one("#overview-add", Button).focus()
+        self.query_one("#model-retry", Button).display = False
 
     @work(exclusive=True, group="credential-mount")
     async def _mount_credential_fields_worker(self, provider: str) -> None:
@@ -1439,35 +1584,84 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         self.query_one(f"#{continue_id}", Button).disabled = verifying
         self.query_one(f"#{skip_id}", Button).disabled = verifying
 
+    def _report_model_fetch_issue(self, message: str) -> None:
+        """Make a failed/absent listing visible instead of silently degrading
+        to the manual model-ID input."""
+
+        self.query_one("#model-fetch-status", Static).update(message)
+        retry = self.query_one("#model-retry", Button)
+        retry.display = True
+
+    def _clear_model_fetch_issue(self) -> None:
+        self.query_one("#model-fetch-status", Static).update("")
+        self.query_one("#model-retry", Button).display = False
+
+    @on(Button.Pressed, "#model-retry")
+    def retry_model_fetch(self, _event: Button.Pressed) -> None:
+        self._clear_model_fetch_issue()
+        self._fetch_models_for_active_provider()
+
     @work(exclusive=True, group="model-fetch")
     async def _fetch_models_for_active_provider(self) -> None:
         provider = self._active_provider
         if provider is None or provider == "ollama" or self.defer_model:
             return
+        self._clear_model_fetch_issue()
         cached = self.verified_providers.get(provider)
         if cached is not None and cached.models:
             self._fetched_models = cached.models
             if self._step == "model":
                 self._sync_model_controls()
             return
-        from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS, resolve_native_field
+        # Disk-cached listing from an earlier session/wizard run: show instantly,
+        # refresh in the background only once it ages past the TTL.
+        snapshot = model_catalog.snapshot(provider)
+        if snapshot is not None and snapshot.models:
+            self._fetched_models = snapshot.models
+            if self._step == "model":
+                self._sync_model_controls()
+            if not model_catalog.is_stale(snapshot):
+                return
 
-        fields = NATIVE_CREDENTIAL_FIELDS.get(provider)
-        if fields is None:
+        from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS, resolve_native_field
+        from rivumi.provider_verification import fetch_models_result
+
+        fields_spec = NATIVE_CREDENTIAL_FIELDS.get(provider)
+        if fields_spec is None:
+            self._report_model_fetch_issue(
+                f"{provider} does not support model discovery; enter the model ID manually."
+            )
             return
         values: dict[str, str] = {}
-        for field in fields:
+        missing: list[str] = []
+        for field in fields_spec:
             value = resolve_native_field(provider, field)
             if value is None:
-                return
-            values[field] = value
+                missing.append(field)
+            else:
+                values[field] = value
+        if missing:
+            self._report_model_fetch_issue(
+                f"No credential found (missing: {', '.join(missing)}); "
+                "reconnect the provider or enter the model ID manually."
+            )
+            return
 
-        from rivumi.provider_verification import list_provider_models
-
-        models = await list_provider_models(provider, values)
-        if models and self._active_provider == provider and self._step == "model":
-            self._fetched_models = models
+        result = await fetch_models_result(provider, values)
+        if self._active_provider != provider or self._step != "model":
+            return  # user moved on while the request was in flight
+        if result.ok and result.models:
+            model_catalog.store_models(provider, result.models)
+            self._fetched_models = result.models
             self._sync_model_controls()
+            return
+        if result.ok:
+            # Connected, but the provider exposes no listing (degraded).
+            self._report_model_fetch_issue(f"{result.message} Enter the model ID manually.")
+        else:
+            self._report_model_fetch_issue(
+                f"{result.message} Retry, or enter the model ID manually."
+            )
 
     def _submit_credential(self, *, skip_verification: bool) -> None:
         provider = self._active_provider
@@ -1616,6 +1810,21 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+RIVUMI_THEME = Theme(
+    name="rivumi",
+    primary="#2DD4BF",
+    secondary="#F59E0B",
+    accent="#A3E635",
+    warning="#FBBF24",
+    error="#F87171",
+    success="#34D399",
+    foreground="#D7E4E1",
+    background="#0D1517",
+    surface="#14201F",
+    panel="#1C2E2B",
+    boost="#8FD6CC14",
+    dark=True,
+)
 
 class RivumiApp(App[RunResult | None]):
     """One-run full-screen host; durable run state remains owned by AgentRunner."""
@@ -1630,15 +1839,25 @@ class RivumiApp(App[RunResult | None]):
         Binding("2", "approval_choice(1)", "Approval choice 2", priority=True, show=False),
         Binding("3", "approval_choice(2)", "Approval choice 3", priority=True, show=False),
         Binding("4", "approval_choice(3)", "Approval choice 4", priority=True, show=False),
+        Binding("up", "approval_move(-1)", "Approval previous", priority=True, show=False),
+        Binding("down", "approval_move(1)", "Approval next", priority=True, show=False),
         Binding("escape", "handle_escape", "Close / interrupt", priority=True, show=False),
         Binding("ctrl+l", "configure_runtime", "Runtime / model"),
         Binding("q", "quit_when_idle", "Quit"),
+        Binding("ctrl+o", "toggle_tool_verbose", "Tool detail"),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "approval_choice":
+        if action in {"approval_choice", "approval_move"}:
             return bool(self.query(InlineApprovalBlock))
         return True
+
+    def action_approval_move(self, delta: int) -> None:
+        for approval in self.query(InlineApprovalBlock):
+            choices = approval.query_one(".approval-choices", OptionList)
+            if choices.highlighted is not None and choices.option_count:
+                choices.highlighted = (choices.highlighted + delta) % choices.option_count
+            break
 
     def action_approval_choice(self, index: int) -> None:
         for approval in self.query(InlineApprovalBlock):
@@ -1735,20 +1954,23 @@ class RivumiApp(App[RunResult | None]):
     ToolActionBlock .tool-detail {
         height: auto; max-height: 14; color: $text-muted; overflow-y: auto;
     }
+    ToolActionBlock.verbose .tool-detail { max-height: 100vh; }
     ToolGroupBlock { height: auto; margin-bottom: 1; padding-left: 1; }
     ToolGroupBlock > CollapsibleTitle { color: $text-muted; }
     ToolGroupBlock > CollapsibleTitle:focus { color: $accent; text-style: bold; }
     ToolGroupBlock > Contents { padding-left: 1; }
     #secondary { height: auto; }
+    #statusline { display: none; height: 1; padding: 0 2; color: $text-muted; }
     #status-row { height: 1; padding: 0 2; }
     #loading-indicator {
-        display: none; width: 8; height: 1; min-height: 1; color: $warning;
+        display: none; width: 8; height: 1; min-height: 1; color: $primary;
     }
     #activity {
         display: none; height: 7; margin: 0 2; border: round $panel; padding: 0 1;
         scrollbar-size-vertical: 1; color: $text-muted;
     }
     #status { width: 1fr; height: 1; color: $text-muted; }
+    #metrics { width: auto; height: 1; padding: 0 1; }
     #new-items { display: none; width: auto; min-width: 12; height: 1; }
     #composer { height: auto; max-height: 15; padding: 0 2; border-top: solid $panel; }
     #command-menu {
@@ -1775,6 +1997,7 @@ class RivumiApp(App[RunResult | None]):
     }
     #configure, #send { display: none; }
     .narrow #brand { width: 8; }
+    .narrow #metrics { display: none; }
     .narrow #context { content-align: left middle; }
     .narrow #transcript { padding: 0 1; }
     .narrow #composer { padding: 0 1 1 1; }
@@ -1803,6 +2026,7 @@ class RivumiApp(App[RunResult | None]):
         self.runner_factory = runner_factory
         self.runtimes = tuple(runtimes)
         self.runtime_models = runtime_models or {}
+        self._tool_verbose = False
         self.providers = tuple(providers)
         self.ollama_models = ollama_models
         self.initial_prompt = initial_prompt
@@ -1833,6 +2057,11 @@ class RivumiApp(App[RunResult | None]):
         self._runtime_stream_last_flush: dict[str, float] = {}
         self._latest_context_telemetry: ContextTelemetry | None = None
         self._runtime_reported_model: str | None = None
+        self._turn_started_at: float | None = None
+        self._last_turn_seconds: float | None = None
+        self._stream_char_count = 0
+        self._session_usage = Usage()
+        self._session_turns = 0
         self._runtime_capabilities = RuntimeCapabilities()
         self._loading_phase: LoadingPhase | None = None
         self._activity_visible = False
@@ -1877,9 +2106,11 @@ class RivumiApp(App[RunResult | None]):
                     markup=False,
                 )
             with Vertical(id="secondary"):
+                yield Static("", id="statusline", markup=False)
                 with Horizontal(id="status-row"):
                     yield RuntimeLoadingIndicator(id="loading-indicator")
                     yield RuntimeStatus("Ready", id="status")
+                    yield RuntimeMetrics(id="metrics")
                     yield Button("New items", id="new-items", flat=True)
                 yield RichLog(highlight=False, markup=False, wrap=True, id="activity")
             with Vertical(id="composer"):
@@ -1906,7 +2137,8 @@ class RivumiApp(App[RunResult | None]):
                     yield Button("Send", id="send", variant="primary")
 
     def on_mount(self) -> None:
-        self.query_one("#task", MessageComposer).cursor_blink = False
+        self.register_theme(RIVUMI_THEME)
+        self.theme = "rivumi"
         self.query_one("#task", MessageComposer).move_cursor(
             self.query_one("#task", MessageComposer).document.end
         )
@@ -1980,6 +2212,102 @@ class RivumiApp(App[RunResult | None]):
         self.query_one("#context", Static).update(f"{identity}  ·  {self.repository.name}")
         self.query_one("#context", Static).tooltip = str(self.repository)
 
+    def _update_metrics(self) -> None:
+        if not self.query("#metrics"):
+            return
+        telemetry = self._latest_context_telemetry
+        context_percent: float | None = None
+        if telemetry is not None and telemetry.context_window:
+            context_percent = telemetry.input_tokens / telemetry.context_window * 100
+        streaming = self._agent_running and self._stream_char_count > 0
+        running_tools = (
+            sum(
+                1
+                for action in self._tool_actions.values()
+                if getattr(action, "status", None) == "running"
+            )
+            if self._agent_running
+            else None
+        )
+        queued = len(self._queued_prompts) if self._agent_running else None
+        self.query_one("#metrics", RuntimeMetrics).set_metrics(
+            model=self._runtime_reported_model,
+            input_tokens=telemetry.input_tokens if telemetry is not None else None,
+            output_tokens=telemetry.output_tokens if telemetry is not None else None,
+            context_percent=context_percent,
+            elapsed_seconds=self._last_turn_seconds,
+            stream_output_tokens=self._stream_char_count // 4 if streaming else None,
+            running_tools=running_tools,
+            queued_prompts=queued,
+        )
+
+    def _mark_turn_finished(self) -> None:
+        if self._turn_started_at is not None:
+            self._last_turn_seconds = monotonic() - self._turn_started_at
+            self._turn_started_at = None
+        self._stream_char_count = 0
+        self._update_metrics()
+        self._refresh_statusline()
+
+    def _statusline_payload(self) -> dict[str, Any]:
+        telemetry = self._latest_context_telemetry
+        context: dict[str, Any] = {}
+        if telemetry is not None:
+            context = {
+                "input_tokens": telemetry.input_tokens,
+                "output_tokens": telemetry.output_tokens,
+                "context_window_size": telemetry.context_window,
+                "used_percentage": (
+                    round(telemetry.input_tokens / telemetry.context_window * 100, 1)
+                    if telemetry.context_window
+                    else None
+                ),
+            }
+        return {
+            "model": self._runtime_reported_model or self.config.runtime_model,
+            "runtime": self._runtime(),
+            "mode": self._mode,
+            "context_window": context,
+            "session_usage": {
+                "total_tokens": self._session_usage.total_tokens,
+                "input_tokens": self._session_usage.input_tokens,
+                "output_tokens": self._session_usage.output_tokens,
+            },
+            "session_turns": self._session_turns,
+            "elapsed_seconds": self._last_turn_seconds,
+            "workspace": {"current_dir": str(self.repository)},
+            "version": _rivumi_version(),
+        }
+
+    def _refresh_statusline(self) -> None:
+        """Render the user-configured statusline command (claude-code style)."""
+        command = self.config.statusline_command
+        if not command or not self.query("#statusline"):
+            return
+        payload = json.dumps(self._statusline_payload(), ensure_ascii=False)
+        widget = self.query_one("#statusline", Static)
+        widget.display = True
+
+        async def render() -> None:
+            try:
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                stdout, _ = await asyncio.wait_for(
+                    process.communicate(payload.encode()), timeout=3
+                )
+            except Exception:
+                return
+            if not self.query("#statusline"):
+                return
+            line = " ".join(stdout.decode(errors="replace").splitlines()).strip()
+            self.query_one("#statusline", Static).update(line[:500])
+
+        asyncio.create_task(render())
+
     def _refresh_mode(self) -> None:
         native_session = self._uses_native_conversation()
         picker = self.query_one("#mode", Select)
@@ -2026,7 +2354,6 @@ class RivumiApp(App[RunResult | None]):
         if selection is None:
             if exit_on_cancel:
                 self.exit(None)
-            return
         if selection.persist:
             try:
                 await save_cli_config(selection.config)
@@ -2093,6 +2420,14 @@ class RivumiApp(App[RunResult | None]):
     def configure_pressed(self, _event: Button.Pressed) -> None:
         if not self._agent_running:
             self._run_configuration()
+
+    def action_toggle_tool_verbose(self) -> None:
+        """Global tool-detail verbosity, like Claude Code's ctrl+o / opencode tool_details."""
+        self._tool_verbose = not self._tool_verbose
+        for group in self.query(ToolGroupBlock):
+            group.set_verbose(self._tool_verbose)
+        for action in self.query(ToolActionBlock):
+            action.set_class(self._tool_verbose, "verbose")
 
     def action_configure_runtime(self) -> None:
         if not self._agent_running and not isinstance(self.screen, OnboardingModal):
@@ -2174,6 +2509,18 @@ class RivumiApp(App[RunResult | None]):
                     )
                 )
             return tuple(choices)
+        if exact and separator and metadata.command is SlashCommand.PROVIDER:
+            for value, label in self.providers:
+                if prefix and prefix not in value.casefold() and prefix not in label.casefold():
+                    continue
+                choices.append(
+                    CommandMenuChoice(
+                        prompt=f"{label}  {value}",
+                        replacement=f"/provider {value}",
+                        execute=True,
+                    )
+                )
+            return tuple(choices)
         if exact and separator and metadata.command is SlashCommand.PERMISSIONS:
             permission_options = (
                 ("Ask before side effects", "ask"),
@@ -2193,7 +2540,11 @@ class RivumiApp(App[RunResult | None]):
                 )
             return tuple(choices)
         if exact and separator and metadata.command is SlashCommand.MODEL:
-            model_options = self.runtime_models.get(self._runtime(), ())
+            model_options = list(self.runtime_models.get(self._runtime(), ()))
+            provider = self.config.provider if self._runtime() == "rivumi-agent" else None
+            snapshot = model_catalog.snapshot(provider) if provider is not None else None
+            if snapshot is not None:
+                self._merge_catalog_models(model_options, snapshot.models)
             for label, value in model_options:
                 argument = value or "auto"
                 if prefix and prefix not in argument.casefold() and prefix not in label.casefold():
@@ -2271,6 +2622,38 @@ class RivumiApp(App[RunResult | None]):
             lambda: self.query_one("#transcript", TranscriptScroll).scroll_end(animate=False)
         )
 
+    def _model_selector_options(
+        self,
+        available: list[tuple[str, str | None]],
+        selected: str | None,
+    ) -> tuple[InlineSelectorOption, ...]:
+        return tuple(
+            InlineSelectorOption(
+                value=value or _AUTOMATIC_MODEL,
+                label=label,
+                description=("Account or runtime default" if value is None else str(value)),
+                selected=value == selected,
+            )
+            for label, value in available
+        )
+
+    @staticmethod
+    def _merge_catalog_models(
+        available: list[tuple[str, str | None]],
+        models: tuple[str, ...],
+    ) -> None:
+        known = {value for _label, value in available}
+        available.extend((model, model) for model in models if model not in known)
+
+    @staticmethod
+    def _ensure_automatic_entry(available: list[tuple[str, str | None]]) -> None:
+        """Keep a reset-to-default choice even when only catalog entries exist."""
+
+        if all(value is not None for _label, value in available):
+            available.insert(0, ("Automatic", None))
+        elif not available:
+            available.append(("Automatic", None))
+
     def _show_model_selector(self) -> None:
         runtime = self._runtime()
         if runtime == "rivumi-agent" and not self._is_ready():
@@ -2282,19 +2665,14 @@ class RivumiApp(App[RunResult | None]):
             else self.config.model
         )
         available = list(self.runtime_models.get(runtime, ()))
-        if not available:
-            available.append(("Automatic", None))
+        provider = self.config.provider if runtime == "rivumi-agent" else None
+        snapshot = model_catalog.snapshot(provider) if provider is not None else None
+        if snapshot is not None:
+            self._merge_catalog_models(available, snapshot.models)
+        self._ensure_automatic_entry(available)
         if selected is not None and all(value != selected for _label, value in available):
             available.append((selected, selected))
-        options = tuple(
-            InlineSelectorOption(
-                value=value or _AUTOMATIC_MODEL,
-                label=label,
-                description=("Account or runtime default" if value is None else str(value)),
-                selected=value == selected,
-            )
-            for label, value in available
-        )
+        options = self._model_selector_options(available, selected)
         active = self._runtime_reported_model
         description = "Switch models for this conversation."
         if active and selected is None:
@@ -2306,6 +2684,127 @@ class RivumiApp(App[RunResult | None]):
             options=options,
             hint="↑/↓ to move · Enter to use this session · Esc to cancel",
         )
+        # Stale-while-revalidate: the selector above already shows whatever was
+        # cached; a background refresh swaps fresh options into the open picker.
+        if provider is not None and model_catalog.is_stale(snapshot):
+            self._refresh_model_catalog(provider)
+
+    @work(exclusive=True, group="catalog-refresh")
+    async def _refresh_model_catalog(self, provider: str) -> None:
+        models = await model_catalog.refresh(provider)
+        selector = self._active_selector
+        if (
+            not models
+            or selector is None
+            or selector.kind != "model"
+            or self._runtime() != "rivumi-agent"
+            or self.config.provider != provider
+        ):
+            return
+        selected = (
+            self.config.runtime_model
+            if self._uses_native_conversation("rivumi-agent")
+            else self.config.model
+        )
+        available = list(self.runtime_models.get("rivumi-agent", ()))
+        self._merge_catalog_models(available, models)
+        self._ensure_automatic_entry(available)
+        if selected is not None and all(value != selected for _label, value in available):
+            available.append((selected, selected))
+        # The selector may still be mid-mount (an instant refresh can outrun
+        # compose); defer one refresh cycle so query_one finds the OptionList.
+        options = self._model_selector_options(available, selected)
+        self.call_after_refresh(self._apply_selector_options, options)
+
+    def _apply_selector_options(self, options: tuple[InlineSelectorOption, ...]) -> None:
+        selector = self._active_selector
+        if selector is None or selector.kind != "model":
+            return
+        try:
+            selector.set_options(options)
+        except Exception:  # noqa: BLE001 - selector closed between schedule and run
+            return
+
+    def _show_provider_selector(self) -> None:
+        if self._runtime() != "rivumi-agent":
+            self.query_one("#status", Static).update(
+                "Provider applies to the Rivumi runtime · /runtime rivumi to switch"
+            )
+            return
+        current = self.config.provider
+        self._show_inline_selector(
+            command="provider",
+            title="Select provider",
+            description=(
+                f"API provider for rivumi-agent · active: {current or 'none'}. "
+                "Switching keeps the transcript and resets the model loop."
+            ),
+            options=tuple(
+                InlineSelectorOption(
+                    value=value,
+                    label=label,
+                    description=("Active" if value == current else value),
+                    selected=value == current,
+                )
+                for value, label in self.providers
+            ),
+        )
+
+    @work(exclusive=True, group="configuration")
+    async def _apply_provider_command(self, requested: str) -> None:
+        normalized = requested.strip().casefold()
+        available = {value.casefold(): (value, label) for value, label in self.providers}
+        if normalized not in available:
+            choices = ", ".join(value for value, _label in self.providers)
+            self.query_one("#status", Static).update(
+                f"Unknown provider: {requested} · choose {choices}"
+            )
+            return
+        if self._runtime() != "rivumi-agent":
+            self.query_one("#status", Static).update(
+                "Provider applies to the Rivumi runtime · /runtime rivumi first"
+            )
+            return
+        provider = available[normalized][0]
+        previous = self.config.provider
+        if provider == previous:
+            self.query_one("#status", Static).update(f"Provider unchanged · {provider}")
+            return
+        if not await self._ensure_native_credentials(provider):
+            self.query_one("#status", Static).update("Provider switch cancelled")
+            return
+        # The old model id belongs to the old provider; prefer the new provider's
+        # cached catalog so the session stays ready without a manual re-pick.
+        snapshot = model_catalog.snapshot(provider)
+        model = (
+            model_catalog.default_model(snapshot.models, provider)
+            if snapshot is not None and snapshot.models
+            else None
+        )
+        previous_config = self.config
+        self.config = self.config.model_copy(update={"provider": provider, "model": model})
+        try:
+            await self.aclose_resources()
+        except Exception as exc:
+            self.config = previous_config
+            self.query_one("#status", Static).update(f"Provider switch failed: {exc}")
+            return
+        await self._persist_default_config()
+        self._write_timeline(
+            "Provider switched",
+            f"{previous or 'none'} → {provider} · "
+            + (
+                f"model defaulted to {model} · /model to change · persisted as default"
+                if model is not None
+                else "no model chosen yet · run /model once the list loads"
+            ),
+        )
+        self._native_session_has_context = False
+        self._runtime_reported_model = None
+        if model is None:
+            self._refresh_model_catalog(provider)
+        self._refresh_context()
+        self.query_one("#status", Static).update(f"Using provider · {provider}")
 
     def _show_runtime_selector(self) -> None:
         current = self._runtime()
@@ -2391,6 +2890,8 @@ class RivumiApp(App[RunResult | None]):
             self._apply_model_command("auto" if value == _AUTOMATIC_MODEL else value)
         elif kind == "runtime":
             self._apply_runtime_command(value)
+        elif kind == "provider":
+            self._apply_provider_command(value)
         elif kind == "permissions":
             self._apply_permission_command(value)
         elif kind == "rewind":
@@ -2455,6 +2956,7 @@ class RivumiApp(App[RunResult | None]):
                     if parsed.command not in {
                         SlashCommand.STATUS,
                         SlashCommand.CONTEXT,
+                        SlashCommand.USAGE,
                         SlashCommand.PERMISSIONS,
                         SlashCommand.HELP,
                         SlashCommand.EXIT,
@@ -2510,6 +3012,7 @@ class RivumiApp(App[RunResult | None]):
         if self._agent_running and command not in {
             SlashCommand.STATUS,
             SlashCommand.CONTEXT,
+            SlashCommand.USAGE,
             SlashCommand.PERMISSIONS,
             SlashCommand.HELP,
             SlashCommand.EXIT,
@@ -2517,6 +3020,12 @@ class RivumiApp(App[RunResult | None]):
             self.query_one("#status", Static).update(
                 f"/{command.value} cannot run during an active turn"
             )
+            return
+        if command is SlashCommand.PROVIDER:
+            if argument:
+                self._apply_provider_command(argument)
+            else:
+                self._show_provider_selector()
             return
         if command is SlashCommand.MODEL:
             if argument:
@@ -2572,11 +3081,28 @@ class RivumiApp(App[RunResult | None]):
                 if telemetry.context_window is not None:
                     percent = telemetry.total_tokens / telemetry.context_window * 100
                     usage += f" · {percent:.1f}% of {telemetry.context_window:,}"
+                    usage += f"\n{_usage_bar(percent)}"
             self._write_timeline(
                 "Context",
                 f"{usage}\nRuntime context {self._runtime_context_id[:8]} · "
                 "isolated committed-HEAD workspace",
             )
+        elif command is SlashCommand.USAGE:
+            session = self._session_usage
+            if session.total_tokens == 0:
+                detail = "No token usage recorded yet in this session."
+            else:
+                detail = (
+                    f"total {session.total_tokens:,} · "
+                    f"input {session.input_tokens:,} "
+                    f"(cached {session.cached_input_tokens:,}) · "
+                    f"output {session.output_tokens:,} "
+                    f"(reasoning {session.reasoning_tokens:,})"
+                )
+                turns = self._session_turns
+                if turns:
+                    detail += f"\n{turns} turn(s) · avg {session.total_tokens // turns:,} tokens/turn"
+            self._write_timeline("Usage", detail)
         elif command is SlashCommand.PERMISSIONS:
             if argument:
                 self._apply_permission_command(argument)
@@ -2659,6 +3185,10 @@ class RivumiApp(App[RunResult | None]):
             self._native_session_has_context = False
         else:
             self.config = self.config.model_copy(update={"model": selected})
+        if self.config.model is not None:
+            # Persist like pi's setDefaultModelAndProvider: last explicit choice
+            # becomes the startup default. "auto" keeps the saved default.
+            await self._persist_default_config()
         self._write_timeline(
             "Model switched",
             f"{previous or 'Automatic'} → {selected or 'Automatic'} · conversation retained",
@@ -2666,16 +3196,24 @@ class RivumiApp(App[RunResult | None]):
         self._refresh_context()
         self.query_one("#status", Static).update(f"Using model · {selected or 'Automatic'}")
 
-    async def _ensure_native_credentials(self) -> bool:
+    async def _persist_default_config(self) -> None:
+        """Best-effort persistence of the current config as the startup default."""
+
+        try:
+            await save_cli_config(self.config)
+        except OSError as exc:
+            self._write_timeline("Config", f"Could not persist default: {exc}")
+
+    async def _ensure_native_credentials(self, provider: str | None = None) -> bool:
         """Prompt for and store a missing rivumi-agent provider credential, if any.
 
-        Returns ``True`` when the runtime switch should proceed (nothing was missing, or the
+        Returns ``True`` when the switch should proceed (nothing was missing, or the
         user supplied and saved it) and ``False`` when the user cancelled.
         """
 
         from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS, missing_native_fields
 
-        provider = self.config.provider
+        provider = provider or self.config.provider
         if provider is None:
             return True
         fields = NATIVE_CREDENTIAL_FIELDS.get(provider)
@@ -2751,6 +3289,7 @@ class RivumiApp(App[RunResult | None]):
         self._native_session_has_context = False
         self._runtime_reported_model = None
         self._mode = "ask" if self._uses_native_conversation(selected) else "agent"
+        await self._persist_default_config()
         self._write_timeline("Runtime switched", f"{previous} → {selected} · transcript retained")
         self._refresh_context()
         self._refresh_mode()
@@ -2943,6 +3482,10 @@ class RivumiApp(App[RunResult | None]):
     @work(exclusive=True, group="agent-run")
     async def _run_agent(self, instruction: str) -> None:
         self._set_running(True)
+        self._turn_started_at = monotonic()
+        self._last_turn_seconds = None
+        self._stream_char_count = 0
+        self._refresh_statusline()
         self._projection = LiveEventProjection()
         self._generation += 1
         generation = self._generation
@@ -3020,6 +3563,8 @@ class RivumiApp(App[RunResult | None]):
             while True:
                 try:
                     self._result = await asyncio.shield(run_task)
+                    self._session_usage = _add_usage(self._session_usage, self._result.usage)
+                    self._session_turns += 1
                     break
                 except asyncio.CancelledError:
                     if run_task.done():
@@ -3035,6 +3580,7 @@ class RivumiApp(App[RunResult | None]):
             if self._uses_native_conversation() and self._result.status == RunStatus.COMPLETED:
                 self._native_session_has_context = True
             if self.query("#status"):
+                self._mark_turn_finished()
                 self.query_one("#status", Static).update(self._result_status(self._result))
                 if self._result.summary:
                     if self._mode != "ask" or generation not in self._external_message_generations:
@@ -3419,6 +3965,9 @@ class RivumiApp(App[RunResult | None]):
         return "\n".join(lines)
 
     def _result_status(self, result: RunResult) -> str:
+        usage_suffix = ""
+        if result.usage.total_tokens:
+            usage_suffix = f" · {format_token_count(result.usage.total_tokens)} tokens"
         if result.status == RunStatus.FAILED:
             status = "Failed"
             if result.error:
@@ -3427,11 +3976,11 @@ class RivumiApp(App[RunResult | None]):
             if changed_count:
                 noun = "file" if changed_count == 1 else "files"
                 status += f" · {changed_count} {noun} changed before failure"
-            return status
+            return status + usage_suffix
         status = f"{result.status.value} · {result.terminal_reason}"
         if self._mode == "agent":
             status += f" · {len(result.changed_files)} changed file(s)"
-        return status
+        return status + usage_suffix
 
     def _ensure_tool_action(
         self,
@@ -3447,6 +3996,7 @@ class RivumiApp(App[RunResult | None]):
         for empty_state in self.query("#empty-state"):
             empty_state.remove()
         action = ToolActionBlock(action_id, title, detail=detail, detail_kind=detail_kind)
+        action.set_class(self._tool_verbose, "verbose")
         self._tool_actions[action_id] = action
         self._track_transcript_item(f"tool:{action_id}")
         if detail_kind in {"read", "search"}:
@@ -3674,11 +4224,16 @@ class RivumiApp(App[RunResult | None]):
         if isinstance(event, TurnStartedEvent):
             self._runtime_stream_text[event.turn_id] = ""
             self._runtime_stream_visible_length[event.turn_id] = 0
+            self._turn_started_at = monotonic()
+            self._stream_char_count = 0
             self._set_loading("Thinking…", phase=LoadingPhase.REQUESTING)
             return
         if isinstance(event, TextDeltaEvent):
             streamed = self._runtime_stream_text.get(event.turn_id, "") + event.text
             self._runtime_stream_text[event.turn_id] = streamed
+            self._stream_char_count += len(event.text)
+            if self._stream_char_count % 256 < len(event.text):
+                self._update_metrics()
             self._external_message_generations.add(message.generation)
             if self.animation_level != "none" and self._flush_runtime_stream_preview(event.turn_id):
                 self._set_loading(
@@ -3694,10 +4249,12 @@ class RivumiApp(App[RunResult | None]):
             return
         elif isinstance(event, ContextUsageUpdatedEvent):
             self._latest_context_telemetry = event.telemetry
+            self._update_metrics()
             return
         elif isinstance(event, RuntimeModelUpdatedEvent):
             self._runtime_reported_model = event.model
             self._refresh_context()
+            self._update_metrics()
             return
         elif isinstance(event, CompactionStartedEvent):
             self.query_one("#status", Static).update("Compacting native context…")
@@ -3802,6 +4359,7 @@ class RivumiApp(App[RunResult | None]):
             self._runtime_stream_visible_length.pop(event.turn_id, None)
             self._runtime_stream_last_flush.pop(event.turn_id, None)
             self._set_loading(None)
+            self._mark_turn_finished()
             if self._result is not None:
                 self.query_one("#status", Static).update(self._result_status(self._result))
                 return

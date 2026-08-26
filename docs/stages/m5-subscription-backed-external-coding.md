@@ -33,8 +33,8 @@ source isolation, approval acknowledgements, patch acceptance, final verificatio
 | QuidProQuo harness-system article | PCA keeps deterministic policy, verification, state, and artifact ownership |
 | QuidProQuo security article | prompt scope is not enforcement; guards belong at the tool/output boundary |
 
-Detailed source and policy notes are retained in `.research/m5-codex-cli-backend.md` and
-`.research/m5-claude-coding-backend-design.md`.
+Detailed source and policy notes are retained in `docs/research/m5-codex-cli-backend.md` and
+`docs/research/m5-claude-coding-backend-design.md`.
 
 ## Implementation
 
@@ -103,7 +103,7 @@ Both final runs used clean temporary repositories copied from the tiny Python fi
 - A secret-pattern scan of retained evidence returned no matches.
 
 Complete hashes and the two fail-closed Codex attempts are documented in
-`.research/m5-live-evidence.md`; raw artifacts are retained below `.research/evidence/m5/`.
+`docs/research/m5-live-evidence.md`; raw artifacts are retained below `.research/evidence/m5/`.
 
 ## Verification
 
@@ -114,7 +114,7 @@ uv build                      sdist and wheel built
 git diff --check              passed
 ```
 
-Independent review report and final verdict: `.research/m5-release-review.md`.
+Independent review report and final verdict: `docs/research/m5-release-review.md`.
 
 ## Known limitations
 
@@ -133,12 +133,12 @@ Independent review report and final verdict: `.research/m5-release-review.md`.
 
 ## Artifacts
 
-- Live evidence and hashes: `.research/m5-live-evidence.md`
+- Live evidence and hashes: `docs/research/m5-live-evidence.md`
 - Raw bundles: `.research/evidence/m5/`
-- Codex implementation research: `.research/m5-codex-cli-backend.md`
-- Claude design/policy research: `.research/m5-claude-coding-backend-design.md`
-- Goal gap audit: `.research/m5-goal-gap-audit.md`
-- Independent review: `.research/m5-release-review.md`
+- Codex implementation research: `docs/research/m5-codex-cli-backend.md`
+- Claude design/policy research: `docs/research/m5-claude-coding-backend-design.md`
+- Goal gap audit: `docs/research/m5-goal-gap-audit.md`
+- Independent review: `docs/research/m5-release-review.md`
 - Draft practice article:
   `quidproquo/src/content/posts/ai/2026-08-21-python-coding-agent-subscription-cli-isolated-clone.md`
 

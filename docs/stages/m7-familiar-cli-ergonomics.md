@@ -148,7 +148,7 @@ the package `__init__.py`. It remains diagnostic evidence only and is not the co
 
 ## Artifact paths
 
-- Independent review: `.research/m7-cli-release-review.md` (generated before closure)
+- Independent review: `docs/research/m7-cli-release-review.md` (generated before closure)
 - Verified local smoke:
   `/tmp/pca-m7-verified.hqkGDW/runs/60d1b14436a147768f35715827aae3df`
 - Draft practice article: `quidproquo/src/content/posts/ai/2026-08-22-python-coding-agent-familiar-cli.md`

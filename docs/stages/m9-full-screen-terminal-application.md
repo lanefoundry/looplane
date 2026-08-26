@@ -99,7 +99,7 @@ and delayed old events. After fixes it reran the original cancellation probe and
 
 ## Artifact paths
 
-- Independent review: `.research/m9-tui-release-review.md`
+- Independent review: `docs/research/m9-tui-release-review.md`
 - Draft practice article:
   `quidproquo/src/content/posts/ai/2026-08-22-python-coding-agent-full-screen-tui.md`
 - Real PTY setup: `/tmp/pca-m9-smoke.rMCMsU`
