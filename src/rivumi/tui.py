@@ -98,6 +98,7 @@ from rivumi.slash_commands import (
 )
 from rivumi.transcript import infer_tool_detail_kind
 from rivumi.transcript_export import TranscriptReducer
+
 if TYPE_CHECKING:
     from rivumi.provider_verification import VerificationResult
 
@@ -2354,7 +2355,7 @@ class RivumiApp(App[RunResult | None]):
         if selection is None:
             if exit_on_cancel:
                 self.exit(None)
-        if selection.persist:
+        elif selection.persist:
             try:
                 await save_cli_config(selection.config)
             except (OSError, ValueError) as exc:
@@ -3101,7 +3102,8 @@ class RivumiApp(App[RunResult | None]):
                 )
                 turns = self._session_turns
                 if turns:
-                    detail += f"\n{turns} turn(s) · avg {session.total_tokens // turns:,} tokens/turn"
+                    average = session.total_tokens // turns
+                    detail += f"\n{turns} turn(s) · avg {average:,} tokens/turn"
             self._write_timeline("Usage", detail)
         elif command is SlashCommand.PERMISSIONS:
             if argument:

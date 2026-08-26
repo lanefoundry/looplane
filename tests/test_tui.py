@@ -3583,6 +3583,7 @@ async def test_usage_command_reports_session_totals(tmp_path: Path) -> None:
         await pilot.pause()
         entries = [item for item in app.query(TimelineEntry) if item.title == "Usage"]
         assert entries, "expected a Usage timeline entry"
-        detail = entries[-1].query_one(".timeline-detail").render().plain if entries[-1].query(".timeline-detail") else ""
+        detail_node = entries[-1].query(".timeline-detail")
+        detail = entries[-1].query_one(".timeline-detail").render().plain if detail_node else ""
         assert "total 1,500" in detail
         assert "3 turn(s)" in detail
