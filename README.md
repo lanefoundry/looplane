@@ -175,6 +175,13 @@ prompts, assistant messages, tool outcomes, and notices plus a copyable `/resume
 terminal's primary buffer so history survives in scrollback. `RIVUMI_NO_TUI=1` is equivalent to
 `--plain` for terminals that cannot use an alternate screen.
 
+The full-screen TUI keeps a persistent metrics footer: the active model, a tool/queue HUD,
+an estimated streaming token count (chars/4), a context-pressure readout (`ctx %` turns yellow
+above the warning threshold and red above the critical threshold), and elapsed time. `/usage`
+shows the aggregated token usage for the session, and `/context` renders the context window as a
+segmented pressure bar. Optionally set `statusline_command` in the config so an external command
+receives a machine-readable status JSON and renders its own status line, Claude Code-style.
+
 The config path is `${RIVUMI_CONFIG:-${XDG_CONFIG_HOME:-~/.config}/rivumi/config.json}`.
 Its strict schema contains only non-secret `runtime`, `runtime_model`, `provider`, `model`, and
 `api_url` values; unknown fields, embedded URL credentials, and symlink config files are rejected.
@@ -304,6 +311,29 @@ real captures under `tests/fixtures/m13/`). The current OpenCode headless build 
 interactive approve step before editing, so autonomous edits require OpenCode to run with its own
 autonomous flag; the audit pipeline itself is exercised end-to-end by those recorded streams.
 
+## Provider credentials
+
+`rivumi auth` manages the API keys/secrets that Rivumi's own agent loop stores locally, separate
+from any external CLI's login. Credentials are written only to this application's store and are
+never forwarded to repository checks.
+
+```bash
+rivumi auth set-key openai-compatible   # prompts for the key, then verifies it live
+rivumi auth set-key anthropic
+rivumi auth set-key gemini
+rivumi auth set-key workers-ai          # prompts for account_id and api_token
+rivumi auth list                        # local state only, no network
+rivumi auth list --verify               # calls each configured provider's API once
+rivumi auth clear-key anthropic         # remove a stored credential
+```
+
+Supported providers: `anthropic`, `gemini`, `openai-compatible`, `workers-ai` (Ollama needs no
+key). `set-key` saves the key and immediately verifies it against the provider; if verification is
+unavailable (offline, provider outage) the key is still saved so you are never locked out, and
+`auth list --verify` re-runs the same check later. Verification covers OpenAI-compatible (`/models`)
+and Anthropic (`/v1/models`) model lists, Gemini model names (stripping the `models/` prefix), and
+Workers AI (`/ai/models/search`), which also confirms the account id matches the token.
+
 ## Local model gateway
 
 `rivumi gateway` is the OMP-inspired model gateway boundary. It translates OpenAI Chat wire messages
@@ -364,6 +394,21 @@ until `--tool-calling` explicitly asserts support. Native Anthropic, Gemini, and
 credentials are restricted to their official HTTPS hosts; a custom native endpoint additionally
 requires the explicit `--allow-custom-provider-endpoint` acknowledgement.
 
+## Session and telemetry tooling
+
+```bash
+rivumi sessions             # list recent agent runs and saved conversations with token usage
+rivumi sessions -n 50       # show up to 50 entries
+rivumi export-otel <run-id> # write a run as OpenTelemetry GenAI OTLP-JSON to stdout
+rivumi export-otel <run-id> -o run.otel.json
+```
+
+`rivumi sessions` reads run `session.json`/`result.json` and conversation state directly from disk
+and prints an id/status/model/tokens/time table (no network). `rivumi export-otel` renders a run's
+events into OTel GenAI OTLP-JSON aligned with the `gen_ai.usage.*` semantics so it can be sent to a
+span ingest pipeline. See [docs/session-format.md](docs/session-format.md) for the event and session
+schema and the usage metrics.
+
 ## Run bundle
 
 ```text
@@ -380,7 +425,9 @@ runs/<run-id>/
 ```
 
 `result.json` is successful only after the harness reruns every declared verification command.
-Model text alone cannot mark a run successful.
+Model text alone cannot mark a run successful. A run can also stop because the accumulated usage
+exceeded an optional `max_total_tokens` budget (terminal reason `token_budget_exceeded`) before any
+verification gate was reached.
 
 ## Boundaries
 
