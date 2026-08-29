@@ -1,0 +1,57 @@
+# 2026-08-29 agent diff ROI implementation
+
+- [x] Add persistent memory store and /remember command
+- [x] Inject known context into native prompt assembly
+- [x] Add prompt/tool few-shot examples
+- [x] Replace search_text with rg-backed search plus fallback
+- [x] Add cost estimation to usage/context surfaces
+- [x] Update agent-diff report with completion notes
+- [x] Run focused tests
+- [x] Add provider-neutral read-only/concurrency-safe tool metadata
+- [x] Batch consecutive approved read-only tool calls in the native loop
+- [x] Update report after read-only parallel execution landed
+- [x] Fix read-only batch approval/repetition/cancellation findings from subagent review
+- [x] Re-run focused tests and lint after parallel execution changes
+- [x] Add guarded native stdio MCP client and `.mcp.json` allowlist loader
+- [x] Expose allowlisted MCP tools through ToolExecutor as `mcp__server__tool`
+- [x] Classify native MCP tools as EXECUTE for approval safety
+- [x] Update report after native MCP baseline landed
+- [x] Re-run focused tests and lint after MCP changes
+- [x] Refresh quidproquo coding-agent series index through Groundlane
+- [x] Add source-backed follow-up backlog beyond the initial six ROI items
+- [x] Fix fallback model endpoint inheritance bug
+- [x] Add pure model-role routing metadata and tests
+- [x] Re-run focused tests and lint after fallback/routing metadata changes
+- [x] Add pure auto-compaction policy helper
+- [x] Emit compaction lifecycle events from ConversationController.compact_context
+- [x] Auto-compact native Ask mode after completed turns and before queued follow-ups
+- [x] Add auto-compaction ordering and failure debounce tests
+- [x] Update report after auto-compaction baseline landed
+- [x] Add native CLI `--model @role` and `--fallback-model @role` alias resolution
+- [x] Keep role aliases out of gateway/resume/external runtime selectors
+- [x] Add role alias edge-case tests
+- [x] Ensure model catalog default selection ignores `@role` aliases
+- [x] Add native MCP resources/prompts stdio bridge tools
+- [x] Classify MCP resource/prompt bridge tools as read-only while keeping dynamic MCP tools execute-gated
+- [x] Add MCP bridge execution and read-only batch tests
+- [x] Update report after MCP stdio surface reached 4/5
+- [x] Refresh quidproquo series optimization backlog in docs
+- [x] Reorder next ROI queue around OS sandbox, dangerous command interception, Agent as a Service, replay/fork, and hooks/skills/plugins
+- [x] Add opt-in no-tool reviewer lane after verified native edits
+- [x] Persist per-lane model usage for primary/reviewer calls
+- [x] Add fail-closed `CommandSandbox` wrapper for native verification checks
+- [x] Wire `--sandbox-checks` through native CLI/runner/executor
+- [x] Wire default `PermissionGuard` into legacy `rivumi exec/run` and resume paths
+- [x] Update report after reviewer lane, sandbox opt-in, and legacy guard baseline landed
+- [x] Add user/project/subfolder instruction loading and prompt injection
+- [x] Add config-backed additive deny rules for native permission guard
+- [x] Add `rivumi sessions --query/-q` over bounded run/conversation metadata
+- [x] Add `rivumi sessions --show` compact timeline over run events
+- [x] Add named sandbox profile and config-backed sandbox read roots
+- [x] Refresh A18 Agent-as-a-Service implementation plan from current Cloudflare/local surfaces
+- [x] Add Cloudflare `RunSession` Durable Object and authenticated run resource APIs
+- [x] Add best-effort live NDJSON event ingestion from Cloudflare sandbox runs
+- [x] Split Cloudflare internal run-token audiences for model proxy vs event append
+- [x] Add SSE-framed run event attach reads and harden RunSession terminal/event status behavior
+- [x] Upgrade Cloudflare run event SSE mode to live replay-plus-broadcast subscriber streams
+- [x] Add SSE idle heartbeats and Last-Event-ID replay cursors
