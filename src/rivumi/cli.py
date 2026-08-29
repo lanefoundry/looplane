@@ -2635,7 +2635,10 @@ def run(
         bool,
         typer.Option(
             "--unsafe-local-exec",
-            help="Acknowledge that checks execute trusted repository code without a sandbox.",
+            help=(
+                "Acknowledge that checks execute trusted repository code; "
+                "use --sandbox-checks to wrap verification commands."
+            ),
         ),
     ] = False,
 ) -> None:

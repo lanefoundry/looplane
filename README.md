@@ -434,15 +434,16 @@ verification gate was reached.
 
 ## Boundaries
 
-The local runtime does not provide an OS/container sandbox. The disposable clone and Python policy
-layer protect the source worktree and narrow tool behavior, but they are not a substitute for
-process isolation. Codex CLI adds its own `workspace-write` sandbox; the local Claude Code path has
-an exact file-tool allowlist and post-run patch enforcement, but the official child still receives
-the user's `HOME` for its own authentication and is not filesystem-isolated by Rivumi. Do not use
-these local backends on hostile repositories. The separate `cloudflare/` service now packages the
-project-owned Python runtime behind a thin Worker and Cloudflare Sandbox with a run-scoped model
-capability. Runs now start asynchronously and expose durable status, SSE/NDJSON events, approvals,
-cancel, and artifact routes; consumer subscription logins are not relayed there. See
+The local runtime provides disposable clones and Python policy checks by default, with opt-in OS
+sandboxing for verification commands through `--sandbox-checks`. That sandbox does not cover every
+tool/process surface. Codex CLI adds its own `workspace-write` sandbox; the local Claude Code path
+has an exact file-tool allowlist and post-run patch enforcement, but the official child still
+receives the user's `HOME` for its own authentication and is not filesystem-isolated by Rivumi. Do
+not use these local backends on hostile repositories. The separate `cloudflare/` service now
+packages the project-owned Python runtime behind a thin Worker and Cloudflare Sandbox with a
+run-scoped model capability. Runs now start asynchronously and expose durable status, SSE/NDJSON
+events, approvals, cancel, and artifact routes; consumer subscription logins are not relayed there.
+See
 [cloudflare/README.md](cloudflare/README.md) for its exact API and deployment boundary.
 
 See [docs/progress.md](docs/progress.md) for current acceptance criteria and
