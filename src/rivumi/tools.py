@@ -115,6 +115,12 @@ class ToolExecutor:
             if name in self.verification_commands:
                 raise ValueError(f"duplicate verification command name: {name}")
             self.verification_commands[name] = command
+        self.definitions = self._build_definitions()
+
+    def _build_definitions(self) -> tuple[ToolDefinition, ...]:
+        self._mcp_tools.clear()
+        self._mcp_resource_tools.clear()
+        self._mcp_prompt_tools.clear()
         definitions = list(self._tool_definitions())
         definitions.extend(self._mcp_tool_definitions())
         run_check_index = next(
@@ -130,7 +136,23 @@ class ToolExecutor:
         definitions[run_check_index] = run_check_definition.model_copy(
             update={"input_schema": run_check_schema}
         )
-        self.definitions = tuple(definitions)
+        return tuple(definitions)
+
+    def refresh_mcp_tool_definitions(self) -> bool:
+        """Refresh MCP discovery and return whether provider-facing definitions changed."""
+
+        before = tuple(
+            definition.model_dump(mode="json")
+            for definition in self.definitions
+            if definition.name.startswith(("mcp__", "mcp_resource__", "mcp_prompt__"))
+        )
+        self.definitions = self._build_definitions()
+        after = tuple(
+            definition.model_dump(mode="json")
+            for definition in self.definitions
+            if definition.name.startswith(("mcp__", "mcp_resource__", "mcp_prompt__"))
+        )
+        return before != after
 
     def close(self) -> None:
         for client in self._mcp_clients.values():

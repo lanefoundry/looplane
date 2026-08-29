@@ -553,6 +553,7 @@ def test_sandboxed_verification_fails_closed_when_platform_support_is_missing(
 
     marker = tmp_path / "must-not-exist"
     monkeypatch.setattr(runtime.sys, "platform", "linux")
+    monkeypatch.setattr(runtime.shutil, "which", lambda _name: None)
     command = VerificationCommand(
         name="sandboxed",
         argv=(sys.executable, "-c", f"open({str(marker)!r}, 'w').write('ran')"),

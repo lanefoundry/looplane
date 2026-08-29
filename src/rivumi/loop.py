@@ -21,7 +21,7 @@ from rivumi.approvals import (
     ApprovalRequest,
     HeadlessApprovalPolicy,
     ToolEffect,
-    effect_for_tool,
+    effect_for_tool_definition,
 )
 from rivumi.console import CompositeEventSink, EventSink, JsonlEventSink
 from rivumi.contracts import (
@@ -726,7 +726,7 @@ class AgentRunner:
         return (
             definition.read_only
             and definition.concurrency_safe
-            and effect_for_tool(call.name) is ToolEffect.READ
+            and effect_for_tool_definition(call.name, definition) is ToolEffect.READ
         )
 
     def _token_budget_error(self) -> str | None:
@@ -1160,7 +1160,7 @@ class AgentRunner:
     ) -> tuple[ApprovalDecision, ToolEffect, str | None]:
         if self._record_fingerprint(call):
             raise ToolExecutionError("repeated_action")
-        effect = effect_for_tool(call.name)
+        effect = effect_for_tool_definition(call.name, self._tool_definition_by_name(call.name))
         await self._event(
             "tool.requested",
             tool_call_id=call.tool_call_id,
@@ -1436,6 +1436,18 @@ class AgentRunner:
                 await self._maybe_apply_history_summary_fallback()
                 await self._maybe_inject_context_pressure_reminder()
                 await self._maybe_inject_workspace_context_reminder(deadline)
+                mcp_tools_changed = await asyncio.to_thread(
+                    self._executor.refresh_mcp_tool_definitions
+                )
+                if mcp_tools_changed:
+                    await self._event(
+                        "mcp.tools_refreshed",
+                        tools=[
+                            definition.name
+                            for definition in self._executor.definitions
+                            if definition.name.startswith("mcp__")
+                        ],
+                    )
                 self._step += 1
                 await self._event("model.requested", step=self._step)
                 turn = await self._complete_model_with_retry(deadline)

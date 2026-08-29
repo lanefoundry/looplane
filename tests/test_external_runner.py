@@ -71,6 +71,26 @@ class EditingBackend(ExternalAgentBackend):
         )
 
 
+class SecretWritingBackend(EditingBackend):
+    async def run(self, task, *, working_directory=None, event_sink=None):
+        assert working_directory is not None
+        target = working_directory / "src/tiny_python_bug/calculator.py"
+        target.write_text(
+            target.read_text(encoding="utf-8")
+            + '\nAPI_KEY = "sk-test_abcdefghijklmnopqrstuvwxyz123456"\n',
+            encoding="utf-8",
+        )
+        return ExternalAgentResult(
+            backend_name=self.backend_name,
+            task_id=task.task_id,
+            status=ExternalRunStatus.COMPLETED,
+            summary="added config",
+            events=(),
+            terminal_reason="completed",
+            exit_code=0,
+        )
+
+
 class StagingBackend(EditingBackend):
     async def run(self, task, *, working_directory=None, event_sink=None):
         assert working_directory is not None
@@ -209,6 +229,28 @@ async def test_external_runner_rejects_changed_path_outside_policy(
 
     assert result.status is RunStatus.FAILED
     assert result.terminal_reason == "policy_or_artifact_error"
+    assert result.verification == ()
+
+
+@pytest.mark.asyncio
+async def test_external_runner_rejects_patch_that_adds_secret_material(
+    tmp_path: Path, tiny_bug_repo: Path
+) -> None:
+    runner = ExternalCodingRunner(
+        _task(tiny_bug_repo),
+        SecretWritingBackend(),
+        tmp_path / "runs",
+        allow_external_modify=True,
+        allow_unsafe_local_exec=True,
+    )
+
+    result = await runner.run()
+
+    assert result.status is RunStatus.FAILED
+    assert result.terminal_reason == "policy_or_artifact_error"
+    assert "secret material" in result.summary
+    assert "src/tiny_python_bug/calculator.py" in result.summary
+    assert "sk-test" not in result.summary
     assert result.verification == ()
 
 
@@ -447,4 +489,3 @@ async def test_external_runner_surfaces_actionable_failure_hint(
     assert result.error is not None
     assert "executable was not found" in result.error
     assert "fixture-agent" in result.error
-

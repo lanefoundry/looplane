@@ -60,6 +60,11 @@ class ApprovalPolicy(Protocol):
     async def decide(self, request: ApprovalRequest) -> ApprovalDecision: ...
 
 
+class ToolTrustMetadata(Protocol):
+    read_only: bool
+    concurrency_safe: bool
+
+
 ApprovalCallback = Callable[
     [ApprovalRequest], ApprovalDecision | Awaitable[ApprovalDecision]
 ]
@@ -157,3 +162,14 @@ def effect_for_tool(tool_name: str) -> ToolEffect:
         return TOOL_EFFECTS[tool_name]
     except KeyError as exc:
         raise ValueError(f"tool has no approval effect classification: {tool_name!r}") from exc
+
+
+def effect_for_tool_definition(
+    tool_name: str,
+    definition: ToolTrustMetadata | None,
+) -> ToolEffect:
+    """Classify dynamic MCP tools from advertised trust metadata when available."""
+
+    if tool_name.startswith("mcp__") and definition is not None and definition.read_only:
+        return ToolEffect.READ
+    return effect_for_tool(tool_name)

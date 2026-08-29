@@ -48,6 +48,7 @@ def test_bounded_command_fails_closed_when_required_sandbox_is_unavailable(
 
     marker = tmp_path / "must-not-exist"
     monkeypatch.setattr(runtime.sys, "platform", "linux")
+    monkeypatch.setattr(runtime.shutil, "which", lambda _name: None)
 
     result = run_bounded_command(
         (sys.executable, "-c", f"open({str(marker)!r}, 'w').write('ran')"),
@@ -92,6 +93,36 @@ def test_sandboxed_command_rejects_unknown_profile_before_execution(tmp_path: Pa
             cwd=tmp_path,
             sandbox=CommandSandbox(mode="workspace-write", profile="networked"),
         )
+
+
+def test_sandboxed_command_wraps_linux_with_bubblewrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rivumi.runtime as runtime
+
+    workspace = tmp_path / "workspace"
+    task_home = tmp_path / ".task-home"
+    extra = tmp_path / "toolchain"
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    argv = sandboxed_command_argv(
+        ("pytest", "-q"),
+        cwd=workspace,
+        sandbox=CommandSandbox(
+            mode="workspace-write",
+            read_roots=(workspace, task_home, extra),
+            writable_roots=(task_home,),
+        ),
+    )
+
+    assert isinstance(argv, tuple)
+    assert argv[:4] == ("/usr/bin/bwrap", "--die-with-parent", "--unshare-all", "--new-session")
+    assert "--bind" in argv
+    assert str(workspace.resolve(strict=False)) in argv
+    assert "--ro-bind" in argv
+    assert str(extra.resolve(strict=False)) in argv
+    assert argv[-5:] == ("--chdir", str(workspace), "--", "pytest", "-q")
 
 
 def test_bounded_command_bounds_each_callback_line_without_losing_capture(

@@ -128,6 +128,21 @@ def split_native_mcp_tool_name(tool_name: str) -> tuple[str, str] | None:
     return server_name, remote_tool
 
 
+def mcp_tool_trust_metadata(tool: Mapping[str, Any]) -> tuple[bool, bool]:
+    """Translate MCP tool annotations into Rivumi's conservative trust flags."""
+
+    annotations = tool.get("annotations")
+    if not isinstance(annotations, Mapping):
+        return False, False
+    read_only = (
+        annotations.get("readOnlyHint") is True
+        and annotations.get("destructiveHint") is not True
+    )
+    if not read_only:
+        return False, False
+    return True, True
+
+
 def native_mcp_resource_tool_name(server_name: str, operation: str) -> str:
     return f"{MCP_RESOURCE_PREFIX}{server_name}__{operation}"
 
@@ -181,6 +196,7 @@ class StdioMcpClient:
             input_schema = tool.get("inputSchema")
             if not isinstance(input_schema, dict):
                 input_schema = {"type": "object", "properties": {}, "additionalProperties": True}
+            read_only, concurrency_safe = mcp_tool_trust_metadata(tool)
             definitions.append(
                 ToolDefinition(
                     name=native_mcp_tool_name(self.config.name, remote_name),
@@ -189,6 +205,8 @@ class StdioMcpClient:
                         f"{str(tool.get('description') or '').strip()}"
                     ).strip(),
                     input_schema=input_schema,
+                    read_only=read_only,
+                    concurrency_safe=concurrency_safe,
                 )
             )
         return tuple(definitions)

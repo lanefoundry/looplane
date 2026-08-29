@@ -340,6 +340,51 @@ def _macos_sandbox_profile(
 """.strip()
 
 
+def _linux_bwrap_argv(
+    argv: Sequence[str],
+    cwd: Path,
+    *,
+    executable: str,
+    read_roots: Sequence[Path],
+    writable_roots: Sequence[Path],
+) -> tuple[str, ...]:
+    args: list[str] = [
+        executable,
+        "--die-with-parent",
+        "--unshare-all",
+        "--new-session",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+    ]
+    for root in (
+        Path("/usr"),
+        Path("/bin"),
+        Path("/lib"),
+        Path("/lib64"),
+        Path("/etc/ssl"),
+        Path("/etc/ca-certificates"),
+    ):
+        args.extend(("--ro-bind-try", str(root), str(root)))
+    normalized_write_roots = (
+        *_normalize_sandbox_roots((cwd, *writable_roots), label="write"),
+    )
+    for root in normalized_write_roots:
+        args.extend(("--bind", str(root), str(root)))
+    for root in _normalize_sandbox_roots(read_roots, label="read"):
+        if any(
+            root == write_root or root.is_relative_to(write_root)
+            for write_root in normalized_write_roots
+        ):
+            continue
+        args.extend(("--ro-bind", str(root), str(root)))
+    args.extend(("--chdir", str(cwd), "--", *argv))
+    return tuple(args)
+
+
 def sandboxed_command_argv(
     argv: Sequence[str],
     *,
@@ -354,17 +399,28 @@ def sandboxed_command_argv(
         raise ValueError("unsupported command sandbox mode")
     if sandbox.profile != "verification":
         raise ValueError("unsupported command sandbox profile")
-    if sys.platform != "darwin":
-        return "OS command sandbox is unavailable on this platform"
-    executable = shutil.which("sandbox-exec")
-    if executable is None:
-        return "macOS sandbox-exec is unavailable"
-    profile = _macos_sandbox_profile(
-        cwd,
-        read_roots=sandbox.read_roots,
-        writable_roots=sandbox.writable_roots,
-    )
-    return (executable, "-p", profile, *argv)
+    if sys.platform == "darwin":
+        executable = shutil.which("sandbox-exec")
+        if executable is None:
+            return "macOS sandbox-exec is unavailable"
+        profile = _macos_sandbox_profile(
+            cwd,
+            read_roots=sandbox.read_roots,
+            writable_roots=sandbox.writable_roots,
+        )
+        return (executable, "-p", profile, *argv)
+    if sys.platform.startswith("linux"):
+        executable = shutil.which("bwrap")
+        if executable is None:
+            return "Linux bubblewrap sandbox is unavailable"
+        return _linux_bwrap_argv(
+            argv,
+            cwd,
+            executable=executable,
+            read_roots=sandbox.read_roots,
+            writable_roots=sandbox.writable_roots,
+        )
+    return "OS command sandbox is unavailable on this platform"
 
 
 def run_bounded_command(

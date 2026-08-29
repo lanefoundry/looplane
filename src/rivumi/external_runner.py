@@ -40,6 +40,7 @@ from rivumi.runtime import (
     run_bounded_command,
     sanitized_subprocess_env,
 )
+from rivumi.secret_scan import scan_patch_for_secrets
 from rivumi.tools import ToolExecutionError, ToolExecutor
 
 EXTERNAL_FAILURE_HINTS: dict[str, str] = {
@@ -511,6 +512,15 @@ class ExternalCodingRunner:
         if any(line.startswith(forbidden) for line in patch.splitlines()):
             raise ToolExecutionError(
                 "external patch contains a binary, symlink, rename, or copy change"
+            )
+        secret_findings = scan_patch_for_secrets(patch)
+        if secret_findings:
+            labels = ", ".join(finding.label() for finding in secret_findings[:5])
+            omitted = len(secret_findings) - 5
+            if omitted > 0:
+                labels += f", ... {omitted} more"
+            raise ToolExecutionError(
+                "external patch appears to add secret material: " + labels
             )
         for relative in changed_paths:
             target = workspace / relative

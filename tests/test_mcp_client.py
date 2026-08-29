@@ -4,8 +4,8 @@ import json
 import sys
 from pathlib import Path
 
-from rivumi.approvals import ToolEffect, effect_for_tool
-from rivumi.contracts import ToolCall, VerificationCommand
+from rivumi.approvals import ToolEffect, effect_for_tool, effect_for_tool_definition
+from rivumi.contracts import ToolCall, ToolDefinition, VerificationCommand
 from rivumi.mcp_client import load_native_mcp_server_configs
 from rivumi.policy import SafePathPolicy
 from rivumi.runtime_registry import RUNTIME_REGISTRY, RuntimeCapability
@@ -43,6 +43,7 @@ for line in sys.stdin:
                         "required": ["message"],
                         "additionalProperties": False,
                     },
+                    "annotations": {"readOnlyHint": True, "destructiveHint": False},
                 }
             ]
         }
@@ -119,6 +120,51 @@ def _write_mcp_config(tmp_path: Path, server: Path) -> Path:
     return tmp_path
 
 
+def _write_refreshing_mcp_server(path: Path) -> None:
+    path.write_text(
+        """
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+counter_path = Path(sys.argv[1])
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if "id" not in request:
+        continue
+    if method == "initialize":
+        result = {
+            "protocolVersion": request["params"]["protocolVersion"],
+            "capabilities": {"tools": {"listChanged": True}},
+            "serverInfo": {"name": "refreshing", "version": "1"},
+        }
+    elif method == "tools/list":
+        count = int(counter_path.read_text(encoding="utf-8")) if counter_path.exists() else 0
+        counter_path.write_text(str(count + 1), encoding="utf-8")
+        name = "first" if count == 0 else "second"
+        result = {
+            "tools": [
+                {
+                    "name": name,
+                    "inputSchema": {"type": "object", "properties": {}},
+                    "annotations": {"readOnlyHint": True},
+                }
+            ]
+        }
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": request["params"]["name"]}]}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+
 def test_mcp_config_requires_explicit_allowlist(tmp_path: Path) -> None:
     (tmp_path / ".mcp.json").write_text(
         json.dumps(
@@ -159,6 +205,8 @@ def test_tool_executor_exposes_and_calls_allowlisted_mcp_tool(tmp_path: Path) ->
 
         assert "mcp__local__echo" in definitions
         assert definitions["mcp__local__echo"].input_schema["required"] == ["message"]
+        assert definitions["mcp__local__echo"].read_only is True
+        assert definitions["mcp__local__echo"].concurrency_safe is True
 
         observation = executor.execute(
             ToolCall(name="mcp__local__echo", arguments={"message": "hello"})
@@ -262,6 +310,57 @@ def test_native_mcp_tools_are_execute_effect() -> None:
     assert effect_for_tool("mcp__local__echo") is ToolEffect.EXECUTE
     assert effect_for_tool("mcp_resource__local__read") is ToolEffect.READ
     assert effect_for_tool("mcp_prompt__local__get") is ToolEffect.READ
+
+
+def test_native_mcp_tool_definition_metadata_can_lower_effect_to_read() -> None:
+    definition = ToolDefinition(
+        name="mcp__local__echo",
+        read_only=True,
+        concurrency_safe=True,
+    )
+
+    assert effect_for_tool_definition("mcp__local__echo", definition) is ToolEffect.READ
+    assert effect_for_tool_definition("mcp__local__echo", None) is ToolEffect.EXECUTE
+
+
+def test_tool_executor_refreshes_mcp_tool_list_and_call_mapping(tmp_path: Path) -> None:
+    server = tmp_path / "refreshing_mcp_server.py"
+    counter = tmp_path / "tools-list-count.txt"
+    _write_refreshing_mcp_server(server)
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "local": {
+                        "command": sys.executable,
+                        "args": [str(server), str(counter)],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    configs = load_native_mcp_server_configs(tmp_path, allowlist=("local",))
+    executor = ToolExecutor(
+        workspace=tmp_path,
+        policy=SafePathPolicy(tmp_path, allowed_paths=("**",)),
+        verification_commands=(VerificationCommand(name="noop", argv=("true",)),),
+        mcp_servers=configs,
+    )
+    try:
+        assert "mcp__local__first" in {definition.name for definition in executor.definitions}
+
+        assert executor.refresh_mcp_tool_definitions() is True
+        definitions = {definition.name: definition for definition in executor.definitions}
+        assert "mcp__local__first" not in definitions
+        assert definitions["mcp__local__second"].read_only is True
+
+        observation = executor.execute(ToolCall(name="mcp__local__second"))
+
+        assert observation.ok is True
+        assert observation.content == "second"
+    finally:
+        executor.close()
 
 
 def test_rivumi_agent_advertises_native_mcp_capability() -> None:
