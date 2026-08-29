@@ -23,7 +23,7 @@ export { Sandbox } from "@cloudflare/sandbox";
 export { RunCapability } from "./capability-do";
 export { RunSession } from "./run-session-do";
 
-const dependencies: WorkerDependencies = {
+const dependencies: Omit<WorkerDependencies, "queueBackgroundRun"> = {
   getSandbox: (env, id) => getSandbox(env.Sandbox, id),
   fetch: (input, init) => fetch(input, init),
   now: () => Date.now(),
@@ -52,7 +52,10 @@ const dependencies: WorkerDependencies = {
 };
 
 export default {
-  fetch(request: Request, env: Env): Promise<Response> {
-    return handleRequest(request, env, dependencies);
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return handleRequest(request, env, {
+      ...dependencies,
+      queueBackgroundRun: (run) => ctx.waitUntil(run()),
+    });
   },
 } satisfies ExportedHandler<Env>;

@@ -157,8 +157,14 @@ function sandbox(response: unknown = validSandboxResponse()): SandboxHandle & {
   };
 }
 
-function dependencies(handle: SandboxHandle): WorkerDependencies {
+type TestDependencies = WorkerDependencies & {
+  queuedRuns: (() => Promise<void>)[];
+  drainBackground(): Promise<void>;
+};
+
+function dependencies(handle: SandboxHandle): TestDependencies {
   const sessions = new Map<string, Record<string, any>>();
+  const queuedRuns: (() => Promise<void>)[] = [];
   return {
     getSandbox: vi.fn().mockReturnValue(handle),
     fetch: vi.fn(),
@@ -278,7 +284,33 @@ function dependencies(handle: SandboxHandle): WorkerDependencies {
         reader.releaseLock();
       }
     },
+    queueBackgroundRun: vi.fn().mockImplementation((run) => {
+      queuedRuns.push(run);
+    }),
+    queuedRuns,
+    async drainBackground() {
+      while (queuedRuns.length > 0) {
+        await queuedRuns.shift()!();
+      }
+    },
   };
+}
+
+async function startRun(
+  deps: WorkerDependencies,
+  body: Record<string, unknown> = requestBody(),
+): Promise<Response> {
+  return handleRequest(request("/v1/runs", body), env(), deps);
+}
+
+async function completeRun(
+  deps: TestDependencies,
+  body: Record<string, unknown> = requestBody(),
+): Promise<Response> {
+  const response = await startRun(deps, body);
+  expect(response.status).toBe(202);
+  await deps.drainBackground();
+  return response;
 }
 
 describe("POST /v1/runs", () => {
@@ -301,12 +333,25 @@ describe("POST /v1/runs", () => {
     expect(deps.getSandbox).not.toHaveBeenCalled();
   });
 
-  it("stages bounded text, runs only the fixed entrypoint, reads the result, and destroys", async () => {
+  it("queues a run, then stages bounded text, runs the fixed entrypoint, reads the result, and destroys", async () => {
     const handle = sandbox();
     const deps = dependencies(handle);
     const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
+    const accepted = (await response.json()) as Record<string, any>;
 
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(202);
+    expect(accepted).toMatchObject({
+      runId,
+      status: "queued",
+      links: {
+        status: `/v1/runs/${runId}`,
+        events: `/v1/runs/${runId}/events`,
+      },
+    });
+    expect(handle.exec).not.toHaveBeenCalled();
+    const queued = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+    expect(await queued.json()).toMatchObject({ runId, status: "queued" });
+    await deps.drainBackground();
     expect(handle.writeFile).toHaveBeenCalledWith(
       "/workspace/source/hello.py",
       "print('hello')\n",
@@ -407,9 +452,12 @@ describe("POST /v1/runs", () => {
     const deps = dependencies(handle);
     const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
 
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(202);
+    await deps.drainBackground();
     expect(deps.revokeCapability).toHaveBeenCalledWith(expect.anything(), runId);
     expect(handle.destroy).toHaveBeenCalledTimes(1);
+    const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+    expect(await status.json()).toMatchObject({ status: "failed", error: "internal_error" });
   });
 
   it.each(["mkdir", "writeFile", "exec"] as const)(
@@ -426,9 +474,12 @@ describe("POST /v1/runs", () => {
 
       const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
 
-      expect(response.status).toBe(502);
+      expect(response.status).toBe(202);
+      await deps.drainBackground();
       expect(deps.revokeCapability).toHaveBeenCalledWith(expect.anything(), runId);
       expect(handle.destroy).toHaveBeenCalledTimes(1);
+      const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+      expect(await status.json()).toMatchObject({ status: "failed" });
     },
   );
 
@@ -440,43 +491,50 @@ describe("POST /v1/runs", () => {
       stdout: "",
       stderr: "",
     });
+    const deps = dependencies(handle);
 
     const response = await handleRequest(
       request("/v1/runs", requestBody()),
       env(),
-      dependencies(handle),
+      deps,
     );
-    const body = (await response.json()) as Record<string, any>;
 
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(202);
+    await deps.drainBackground();
+    const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+    const body = (await status.json()) as Record<string, any>;
+    expect(body.status).toBe("failed");
     expect(body.execution).toEqual({ success: false, exitCode: 1 });
-    expect(body.output.ok).toBe(false);
-    expect(body.output.result.status).toBe("failed");
+    expect(body.summary).toBe("fixed");
+    expect(body.terminalReason).toBe("verified");
   });
 
   it("rejects exit zero paired with a failed terminal response", async () => {
     const handle = sandbox(validSandboxResponse("failed"));
-    const response = await handleRequest(
-      request("/v1/runs", requestBody()),
-      env(),
-      dependencies(handle),
-    );
+    const deps = dependencies(handle);
+    const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(202);
+    await deps.drainBackground();
+    const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+    expect(await status.json()).toMatchObject({
+      status: "failed",
+      error: "sandbox_response_envelope_invalid",
+    });
   });
 
   it("fails closed when the bounded result stream cannot be opened", async () => {
     const handle = sandbox();
     handle.readFileStream.mockRejectedValue(new Error("missing response"));
 
-    const response = await handleRequest(
-      request("/v1/runs", requestBody()),
-      env(),
-      dependencies(handle),
-    );
+    const deps = dependencies(handle);
+    const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(202);
+    await deps.drainBackground();
     expect(handle.destroy).toHaveBeenCalledTimes(1);
+    const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+    expect(await status.json()).toMatchObject({ status: "failed", error: "sandbox_read_failed" });
   });
 
   it("decodes the Sandbox SDK SSE stream before parsing the response JSON", async () => {
@@ -494,9 +552,10 @@ describe("POST /v1/runs", () => {
       yield new TextEncoder().encode(JSON.stringify(validSandboxResponse()));
     });
 
-    const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
+    const response = await startRun(deps);
 
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(202);
+    await deps.drainBackground();
     expect(deps.decodeFileStream).toHaveBeenCalledTimes(1);
   });
 
@@ -508,10 +567,15 @@ describe("POST /v1/runs", () => {
       yield new Uint8Array(1);
     });
 
-    const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
+    const response = await startRun(deps);
 
-    expect(response.status).toBe(502);
-    expect(await response.json()).toEqual({ error: "sandbox_response_too_large" });
+    expect(response.status).toBe(202);
+    await deps.drainBackground();
+    const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+    expect(await status.json()).toMatchObject({
+      status: "failed",
+      error: "sandbox_response_too_large",
+    });
   });
 
   it.each(["sandbox_entrypoint_failed", "sandbox_agent_failed"])(
@@ -520,14 +584,13 @@ describe("POST /v1/runs", () => {
       const handle = sandbox({ ok: false, error });
       handle.exec.mockResolvedValue({ success: false, exitCode: 1, stdout: "", stderr: "" });
 
-      const response = await handleRequest(
-        request("/v1/runs", requestBody()),
-        env(),
-        dependencies(handle),
-      );
+      const deps = dependencies(handle);
+      const response = await startRun(deps);
 
-      expect(response.status).toBe(502);
-      expect(await response.json()).toEqual({ error });
+      expect(response.status).toBe(202);
+      await deps.drainBackground();
+      const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+      expect(await status.json()).toMatchObject({ status: "failed", error });
     },
   );
 
@@ -541,14 +604,14 @@ describe("POST /v1/runs", () => {
     },
   ])("rejects a forged or malformed Sandbox response: %j", async (forged) => {
     const handle = sandbox(forged);
-    const response = await handleRequest(
-      request("/v1/runs", requestBody()),
-      env(),
-      dependencies(handle),
-    );
+    const deps = dependencies(handle);
+    const response = await startRun(deps);
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(202);
+    await deps.drainBackground();
     expect(handle.destroy).toHaveBeenCalledTimes(1);
+    const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+    expect(await status.json()).toMatchObject({ status: "failed" });
   });
 
   it.each([
@@ -598,13 +661,13 @@ describe("POST /v1/runs", () => {
     const forged = { ...validSandboxResponse(), ...resultOverride };
     const handle = sandbox(forged);
 
-    const response = await handleRequest(
-      request("/v1/runs", requestBody()),
-      env(),
-      dependencies(handle),
-    );
+    const deps = dependencies(handle);
+    const response = await startRun(deps);
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(202);
+    await deps.drainBackground();
+    const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+    expect(await status.json()).toMatchObject({ status: "failed" });
   });
 
   it("does not claim completion when destroy rejects", async () => {
@@ -612,11 +675,16 @@ describe("POST /v1/runs", () => {
     handle.destroy.mockRejectedValue(new Error("destroy failed"));
     const deps = dependencies(handle);
 
-    const response = await handleRequest(request("/v1/runs", requestBody()), env(), deps);
+    const response = await startRun(deps);
 
-    expect(response.status).toBe(500);
-    expect(await response.json()).toEqual({ error: "sandbox_cleanup_failed" });
+    expect(response.status).toBe(202);
+    await deps.drainBackground();
     expect(deps.revokeCapability).toHaveBeenCalledBefore(handle.destroy);
+    const status = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
+    expect(await status.json()).toMatchObject({
+      status: "failed",
+      error: "sandbox_cleanup_failed",
+    });
   });
 
   it("bounds a hanging destroy call", async () => {
@@ -655,7 +723,8 @@ describe("POST /v1/runs", () => {
       active ? "ok" : "inactive",
     );
 
-    expect((await handleRequest(request("/v1/runs", requestBody()), env(), deps)).status).toBe(201);
+    expect((await startRun(deps)).status).toBe(202);
+    await deps.drainBackground();
     const token = handle.writeFile.mock.calls.find(
       ([path]) => path === "/workspace/.rivumi-run-token",
     )?.[1] as string;
@@ -704,7 +773,7 @@ describe("RunSession APIs", () => {
     const handle = sandbox();
     const deps = dependencies(handle);
 
-    expect((await handleRequest(request("/v1/runs", requestBody()), env(), deps)).status).toBe(201);
+    await completeRun(deps);
     const response = await handleRequest(getRequest(`/v1/runs/${runId}`), env(), deps);
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -725,7 +794,7 @@ describe("RunSession APIs", () => {
     const handle = sandbox();
     const deps = dependencies(handle);
 
-    expect((await handleRequest(request("/v1/runs", requestBody()), env(), deps)).status).toBe(201);
+    await completeRun(deps);
 
     expect((await handleRequest(getRequest(`/v1/runs/${runId}`, "wrong"), env(), deps)).status).toBe(
       401,
@@ -740,7 +809,7 @@ describe("RunSession APIs", () => {
     const handle = sandbox();
     const deps = dependencies(handle);
 
-    expect((await handleRequest(request("/v1/runs", requestBody()), env(), deps)).status).toBe(201);
+    await completeRun(deps);
     const response = await handleRequest(getRequest(`/v1/runs/${runId}/events`), env(), deps);
     const explicitDefault = await handleRequest(
       getRequest(`/v1/runs/${runId}/events?stream=0`),
@@ -1021,7 +1090,7 @@ describe("RunSession APIs", () => {
     const handle = sandbox();
     const deps = dependencies(handle);
 
-    expect((await handleRequest(request("/v1/runs", requestBody()), env(), deps)).status).toBe(201);
+    await completeRun(deps);
     const patch = await handleRequest(getRequest(`/v1/runs/${runId}/artifacts/patch`), env(), deps);
     const unknown = await handleRequest(
       getRequest(`/v1/runs/${runId}/artifacts/other`),
@@ -1063,7 +1132,7 @@ describe("RunSession APIs", () => {
     const handle = sandbox();
     const deps = dependencies(handle);
 
-    expect((await handleRequest(request("/v1/runs", requestBody()), env(), deps)).status).toBe(201);
+    await completeRun(deps);
     const response = await handleRequest(request(`/v1/runs/${runId}/cancel`, {}), env(), deps);
 
     expect(response.status).toBe(200);

@@ -1,9 +1,9 @@
 # Cloudflare Sandbox control plane
 
-This subproject is the bounded M6 Worker/Sandbox slice. It accepts one synchronous coding run,
-stages a small text-only source tree in a fresh Sandbox, invokes one fixed Python entrypoint, reads
-the bounded result bundle, persists terminal run metadata/artifacts, and destroys the Sandbox in
-`finally`.
+This subproject is the bounded M6 Worker/Sandbox slice. It accepts one asynchronous coding run,
+stages a small text-only source tree in a fresh Sandbox from a background task, invokes one fixed
+Python entrypoint, reads the bounded result bundle, persists terminal run metadata/artifacts, and
+destroys the Sandbox in `finally`.
 
 It does not accept Git URLs, archives, shell strings, provider credentials, consumer subscription
 tokens, custom model IDs, or caller-selected upstream URLs.
@@ -35,12 +35,15 @@ Requires `Authorization: Bearer <CONTROL_PLANE_TOKEN>` and `Content-Type: applic
 }
 ```
 
-The accepted terminal HTTP status is `201`; `output.ok` carries the agent's terminal success. Exit
-`0` is accepted only with `ok: true` plus a `completed` result. Exit `1` is accepted only with
+Accepted requests return `202` with the new `runId` plus status and event links. The route creates
+a queued `RunSession` Durable Object record, then starts the Sandbox lifecycle through
+`ExecutionContext.waitUntil()`. Clients attach through the status, event, and artifact routes below.
+
+Terminal success is written to the run session after the background Sandbox run finishes. Exit `0`
+is accepted only with `ok: true` plus a `completed` result. Exit `1` is accepted only with
 `ok: false` plus a `failed` or `cancelled` result and the full artifact bundle. Every other
-exit/result/schema combination is a fail-closed `502`. The route is still synchronous for
-compatibility, but it also writes a `RunSession` Durable Object record for later status, event, and
-artifact reads. Capability revocation and Sandbox teardown happen before the response returns.
+exit/result/schema combination fails closed by marking the run `failed` with a bounded error code.
+Capability revocation and Sandbox teardown run after terminal result validation.
 
 ### `GET /v1/runs/:runId`
 
@@ -194,16 +197,17 @@ Two clean builds from the same source and lockfiles must produce the same image 
 retains a sorted `/opt/rivumi/python-packages.txt` inventory for later provenance checks.
 
 The M6 live evidence retains one completed Worker to Sandbox to Groq coding run with a verified
-patch and check. The synchronous endpoint and ephemeral result bundle are still not a production
-durability or hostile-code containment claim.
+patch and check. The current endpoint now starts runs asynchronously and exposes durable status,
+events, and terminal artifacts, but it is still not a full hostile-code containment claim.
 
 ## Durable Object configuration
 
-`wrangler.jsonc` now declares two Durable Objects:
+`wrangler.jsonc` now declares three Durable Objects:
 
 - `Sandbox`, registered by migration `v1`
 - `RUN_CAPABILITIES` / class `RunCapability`, registered as a new SQLite class by migration `v2`
+- `RUN_SESSIONS` / class `RunSession`, registered as a new SQLite class by migration `v3`
 
 The capability object stores only model, expiry, maximum requests, and consumed count. It stores no
-provider key, source, prompt, artifact, or raw run token. Run artifacts and status are still not
-durably persisted by this slice.
+provider key, source, prompt, artifact, or raw run token. Run status and terminal artifacts are
+persisted through `RunSession`.

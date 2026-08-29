@@ -130,6 +130,7 @@ export interface WorkerDependencies {
   ): Promise<Response>;
   getRunSessionArtifact(env: Env, runId: string, name: string): Promise<Response>;
   decodeFileStream(stream: ReadableStream<Uint8Array>): AsyncIterable<string | Uint8Array>;
+  queueBackgroundRun(run: () => Promise<void>): void;
 }
 
 export class RequestProblem extends Error {
@@ -840,62 +841,39 @@ function validateSandboxResponse(
   };
 }
 
-async function handleRun(request: Request, env: Env, dependencies: WorkerDependencies): Promise<Response> {
-  if (!secretsEqual(env.CONTROL_PLANE_TOKEN, bearer(request))) {
-    throw new RequestProblem(401, "unauthorized");
-  }
-  const input = validateRunRequest(await readJsonBounded(request, LIMITS.requestBytes), env.OPENAI_MODEL);
-  const runId = dependencies.randomUUID();
-  const nowSeconds = Math.floor(dependencies.now() / 1000);
-  const requestSummary: RunSessionRequestSummary = {
-    instruction: input.instruction,
-    model: input.model,
-    allowedPaths: input.allowedPaths,
-    checks: input.checks,
-    fileCount: input.files.length,
-  };
-  const runToken = await createRunToken(env.RUN_TOKEN_SECRET, runId, input.model, nowSeconds);
-  const eventToken = await createRunToken(
-    env.RUN_TOKEN_SECRET,
-    runId,
-    input.model,
-    nowSeconds,
-    "/internal/v1/runs/events",
-  );
-  const proxyUrl = `${new URL(request.url).origin}/internal/v1`;
+interface BackgroundRun {
+  runId: string;
+  input: ValidatedRun;
+  runToken: string;
+  eventToken: string;
+  proxyUrl: string;
+  expiresAt: number;
+  runnerRequest: Record<string, unknown>;
+}
+
+async function executeRunInSandbox(
+  env: Env,
+  dependencies: WorkerDependencies,
+  run: BackgroundRun,
+): Promise<void> {
   let sandbox: SandboxHandle | undefined;
   let capabilityActivated = false;
-  const runnerRequest = {
-    task_id: runId,
-    instruction: input.instruction,
-    allowed_paths: input.allowedPaths,
-    verification: input.checks.map((argv, index) => ({ name: `check-${index + 1}`, argv })),
-    limits: {
-      max_steps: input.limits.maxSteps,
-      wall_time_seconds: input.limits.wallTimeSeconds,
-      max_tool_output_bytes: 200_000,
-      max_patch_bytes: 100_000,
-    },
-  };
-  let sessionCreated = false;
   try {
-    await dependencies.createRunSession(env, runId, requestSummary, dependencies.now());
-    sessionCreated = true;
     await dependencies.activateCapability(
       env,
-      runId,
-      input.model,
-      (nowSeconds + LIMITS.runTokenSeconds) * 1_000,
-      input.limits.maxSteps + 2,
+      run.runId,
+      run.input.model,
+      run.expiresAt,
+      run.input.limits.maxSteps + 2,
     );
     capabilityActivated = true;
-    sandbox = dependencies.getSandbox(env, runId);
-    await dependencies.markRunSessionRunning(env, runId);
+    sandbox = dependencies.getSandbox(env, run.runId);
+    await dependencies.markRunSessionRunning(env, run.runId);
     requireSdkSuccess(
       await sandbox.mkdir("/workspace/source", { recursive: true }),
       "mkdir",
     );
-    for (const file of input.files) {
+    for (const file of run.input.files) {
       const slash = file.path.lastIndexOf("/");
       if (slash >= 0) {
         requireSdkSuccess(
@@ -911,23 +889,23 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
       );
     }
     requireSdkSuccess(
-      await sandbox.writeFile("/workspace/request.json", JSON.stringify(runnerRequest)),
+      await sandbox.writeFile("/workspace/request.json", JSON.stringify(run.runnerRequest)),
       "write",
     );
     requireSdkSuccess(
-      await sandbox.writeFile("/workspace/.rivumi-run-token", runToken),
+      await sandbox.writeFile("/workspace/.rivumi-run-token", run.runToken),
       "write",
     );
     requireSdkSuccess(
-      await sandbox.writeFile("/workspace/.rivumi-event-token", eventToken),
+      await sandbox.writeFile("/workspace/.rivumi-event-token", run.eventToken),
       "write",
     );
     const execution = await sandbox.exec(FIXED_COMMAND, {
       cwd: "/workspace",
       timeout: LIMITS.sandboxTimeoutMs,
       env: {
-        RIVUMI_MODEL_ID: input.model,
-        RIVUMI_MODEL_GATEWAY_URL: proxyUrl,
+        RIVUMI_MODEL_ID: run.input.model,
+        RIVUMI_MODEL_GATEWAY_URL: run.proxyUrl,
         RIVUMI_MAX_BUNDLE_BYTES: "1000000",
       },
     });
@@ -957,28 +935,17 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
     } catch {
       throw new RequestProblem(502, "sandbox_response_json_invalid");
     }
-    const output = validateSandboxResponse(result, runId, terminalSuccess, input);
+    const output = validateSandboxResponse(result, run.runId, terminalSuccess, run.input);
     const executionSummary = { success: execution.success, exitCode: execution.exitCode };
-    await dependencies.completeRunSession(env, runId, executionSummary, output);
-    return json(
-      {
-        runId,
-        execution: executionSummary,
-        output,
-      },
-      201,
-    );
+    await dependencies.completeRunSession(env, run.runId, executionSummary, output);
   } catch (error) {
-    if (sessionCreated) {
-      const code = error instanceof RequestProblem ? error.code : "internal_error";
-      await dependencies.failRunSession(env, runId, code).catch(() => undefined);
-    }
-    throw error;
+    const code = error instanceof RequestProblem ? error.code : "internal_error";
+    await dependencies.failRunSession(env, run.runId, code).catch(() => undefined);
   } finally {
     let cleanupFailed = false;
     if (capabilityActivated) {
       try {
-        await revokeCapabilityBounded(dependencies, env, runId);
+        await revokeCapabilityBounded(dependencies, env, run.runId);
       } catch {
         cleanupFailed = true;
       }
@@ -991,14 +958,70 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
       }
     }
     if (cleanupFailed) {
-      if (sessionCreated) {
-        await dependencies
-          .failRunSession(env, runId, "sandbox_cleanup_failed")
-          .catch(() => undefined);
-      }
-      throw new RequestProblem(500, "sandbox_cleanup_failed");
+      await dependencies
+        .failRunSession(env, run.runId, "sandbox_cleanup_failed")
+        .catch(() => undefined);
     }
   }
+}
+
+async function handleRun(request: Request, env: Env, dependencies: WorkerDependencies): Promise<Response> {
+  if (!secretsEqual(env.CONTROL_PLANE_TOKEN, bearer(request))) {
+    throw new RequestProblem(401, "unauthorized");
+  }
+  const input = validateRunRequest(await readJsonBounded(request, LIMITS.requestBytes), env.OPENAI_MODEL);
+  const runId = dependencies.randomUUID();
+  const nowSeconds = Math.floor(dependencies.now() / 1000);
+  const requestSummary: RunSessionRequestSummary = {
+    instruction: input.instruction,
+    model: input.model,
+    allowedPaths: input.allowedPaths,
+    checks: input.checks,
+    fileCount: input.files.length,
+  };
+  const runToken = await createRunToken(env.RUN_TOKEN_SECRET, runId, input.model, nowSeconds);
+  const eventToken = await createRunToken(
+    env.RUN_TOKEN_SECRET,
+    runId,
+    input.model,
+    nowSeconds,
+    "/internal/v1/runs/events",
+  );
+  const runnerRequest = {
+    task_id: runId,
+    instruction: input.instruction,
+    allowed_paths: input.allowedPaths,
+    verification: input.checks.map((argv, index) => ({ name: `check-${index + 1}`, argv })),
+    limits: {
+      max_steps: input.limits.maxSteps,
+      wall_time_seconds: input.limits.wallTimeSeconds,
+      max_tool_output_bytes: 200_000,
+      max_patch_bytes: 100_000,
+    },
+  };
+  await dependencies.createRunSession(env, runId, requestSummary, dependencies.now());
+  dependencies.queueBackgroundRun(() =>
+    executeRunInSandbox(env, dependencies, {
+      runId,
+      input,
+      runToken,
+      eventToken,
+      proxyUrl: `${new URL(request.url).origin}/internal/v1`,
+      expiresAt: (nowSeconds + LIMITS.runTokenSeconds) * 1_000,
+      runnerRequest,
+    }),
+  );
+  return json(
+    {
+      runId,
+      status: "queued",
+      links: {
+        status: `/v1/runs/${runId}`,
+        events: `/v1/runs/${runId}/events`,
+      },
+    },
+    202,
+  );
 }
 
 async function handleRunResource(
