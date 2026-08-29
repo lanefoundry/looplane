@@ -1,3 +1,4 @@
+import json
 import sys
 import time
 from pathlib import Path
@@ -123,6 +124,65 @@ def test_sandboxed_command_wraps_linux_with_bubblewrap(
     assert "--ro-bind" in argv
     assert str(extra.resolve(strict=False)) in argv
     assert argv[-5:] == ("--chdir", str(workspace), "--", "pytest", "-q")
+
+
+def test_sandboxed_command_wraps_linux_with_landlock_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rivumi.runtime as runtime
+
+    workspace = tmp_path / "workspace"
+    task_home = tmp_path / ".task-home"
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+
+    argv = sandboxed_command_argv(
+        ("pytest", "-q"),
+        cwd=workspace,
+        sandbox=CommandSandbox(
+            mode="workspace-write",
+            backend="landlock",
+            read_roots=(workspace, task_home),
+            writable_roots=(task_home,),
+        ),
+    )
+
+    assert isinstance(argv, tuple)
+    assert argv[0] == sys.executable
+    assert argv[1].endswith("landlock_run.py")
+    assert argv[2] == "--policy-json"
+    policy = json.loads(argv[3])
+    assert policy == {
+        "cwd": str(workspace),
+        "read_roots": [str(workspace), str(task_home)],
+        "writable_roots": [str(task_home)],
+    }
+    assert argv[-3:] == ("--", "pytest", "-q")
+
+
+def test_sandboxed_command_can_require_bubblewrap_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rivumi.runtime as runtime
+
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+    monkeypatch.setattr(runtime.shutil, "which", lambda _name: None)
+
+    error = sandboxed_command_argv(
+        ("pytest", "-q"),
+        cwd=tmp_path,
+        sandbox=CommandSandbox(mode="workspace-write", backend="bubblewrap"),
+    )
+
+    assert error == "Linux bubblewrap sandbox is unavailable"
+
+
+def test_sandboxed_command_rejects_unknown_backend(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsupported command sandbox backend"):
+        sandboxed_command_argv(
+            ("pytest", "-q"),
+            cwd=tmp_path,
+            sandbox=CommandSandbox(mode="workspace-write", backend="ptrace"),
+        )
 
 
 def test_bounded_command_bounds_each_callback_line_without_losing_capture(

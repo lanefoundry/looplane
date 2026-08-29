@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -39,6 +40,7 @@ class CommandSandbox:
 
     mode: str
     profile: str = "verification"
+    backend: str = "auto"
     read_roots: tuple[Path, ...] = ()
     writable_roots: tuple[Path, ...] = ()
 
@@ -385,6 +387,25 @@ def _linux_bwrap_argv(
     return tuple(args)
 
 
+def _linux_landlock_argv(
+    argv: Sequence[str],
+    cwd: Path,
+    *,
+    read_roots: Sequence[Path],
+    writable_roots: Sequence[Path],
+) -> tuple[str, ...]:
+    policy = json.dumps(
+        {
+            "cwd": str(cwd),
+            "read_roots": [str(root) for root in read_roots],
+            "writable_roots": [str(root) for root in writable_roots],
+        },
+        separators=(",", ":"),
+    )
+    wrapper = Path(__file__).with_name("landlock_run.py")
+    return (sys.executable, str(wrapper), "--policy-json", policy, "--", *argv)
+
+
 def sandboxed_command_argv(
     argv: Sequence[str],
     *,
@@ -399,7 +420,11 @@ def sandboxed_command_argv(
         raise ValueError("unsupported command sandbox mode")
     if sandbox.profile != "verification":
         raise ValueError("unsupported command sandbox profile")
+    if sandbox.backend not in {"auto", "bubblewrap", "landlock"}:
+        raise ValueError("unsupported command sandbox backend")
     if sys.platform == "darwin":
+        if sandbox.backend not in {"auto"}:
+            raise ValueError("unsupported command sandbox backend on macOS")
         executable = shutil.which("sandbox-exec")
         if executable is None:
             return "macOS sandbox-exec is unavailable"
@@ -410,13 +435,21 @@ def sandboxed_command_argv(
         )
         return (executable, "-p", profile, *argv)
     if sys.platform.startswith("linux"):
-        executable = shutil.which("bwrap")
-        if executable is None:
-            return "Linux bubblewrap sandbox is unavailable"
-        return _linux_bwrap_argv(
+        if sandbox.backend in {"auto", "bubblewrap"}:
+            executable = shutil.which("bwrap")
+            if executable is not None:
+                return _linux_bwrap_argv(
+                    argv,
+                    cwd,
+                    executable=executable,
+                    read_roots=sandbox.read_roots,
+                    writable_roots=sandbox.writable_roots,
+                )
+            if sandbox.backend == "bubblewrap":
+                return "Linux bubblewrap sandbox is unavailable"
+        return _linux_landlock_argv(
             argv,
             cwd,
-            executable=executable,
             read_roots=sandbox.read_roots,
             writable_roots=sandbox.writable_roots,
         )
