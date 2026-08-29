@@ -76,6 +76,20 @@ async for event in client.attach_events(accepted["runId"], last_event_id=0):
     print(event.event, event.data)
 ```
 
+### `GET /v1/runs/:runId/approvals`
+
+Requires control-plane auth. Returns `{pending, decisions}` from the durable run session. Pending
+approval rows are derived from live `approval.requested` run events and contain only bounded
+request/action IDs, effect, reason, policy reason, preview, and timestamp metadata.
+
+### `POST /v1/runs/:runId/approvals/:approvalId`
+
+Requires control-plane auth and a JSON body such as `{"decision":"allow_once"}`. Supported
+decisions are `allow_once`, `allow_session`, `deny`, and `cancel`. Submitting a decision records it
+durably and removes the approval from the pending list. The current Sandbox entrypoint still uses
+the local runner approval policy; wiring submitted decisions back into a waiting Sandbox run remains
+the next approval-bridge step.
+
 ### `GET /v1/runs/:runId/artifacts/:name`
 
 Requires control-plane auth. `:name` must be one of `request`, `events`, `checkpoint`, `patch`,

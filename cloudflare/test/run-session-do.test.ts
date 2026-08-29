@@ -85,6 +85,23 @@ function eventLine(sequence: number): string {
   }) + "\n";
 }
 
+function approvalLine(sequence: number, type = "approval.requested"): string {
+  return JSON.stringify({
+    event_type: type,
+    run_id: "agent-run-id",
+    task_id: "run-1",
+    sequence,
+    data: {
+      request_id: "approval-1",
+      action_id: "action-1",
+      effect: "execute",
+      reason: "model_tool",
+      policy_reason: "suspicious command",
+      preview: "Run pytest",
+    },
+  }) + "\n";
+}
+
 async function readChunk(
   reader: ReadableStreamDefaultReader<Uint8Array>,
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
@@ -172,6 +189,53 @@ describe("RunSession Durable Object", () => {
     expect(streamText).toContain("id: 1\nevent: run.completed\ndata: ");
     expect(streamText).toContain(eventLine(0).trim());
     await reader.cancel();
+  });
+
+  it("stores pending approvals from events and records submitted decisions", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(now + 1);
+    const session = durableObject();
+
+    expect((await session.fetch(post("/create", createBody()))).status).toBe(201);
+    expect((await session.fetch(post("/running"))).status).toBe(200);
+    expect((await session.fetch(post("/append-events", { lines: [approvalLine(0)] }))).status).toBe(
+      200,
+    );
+
+    const listed = await session.fetch(get("/approvals"));
+    expect(await listed.json()).toEqual({
+      pending: [
+        {
+          requestId: "approval-1",
+          actionId: "action-1",
+          effect: "execute",
+          reason: "model_tool",
+          policyReason: "suspicious command",
+          preview: "Run pytest",
+          requestedAt: now + 1,
+        },
+      ],
+      decisions: [],
+    });
+
+    const submitted = await session.fetch(
+      post("/approvals/approval-1", { decision: "allow_once" }),
+    );
+    expect(submitted.status).toBe(200);
+    expect(await submitted.json()).toEqual({
+      ok: true,
+      requestId: "approval-1",
+      decision: "allow_once",
+    });
+    expect(await (await session.fetch(get("/approvals"))).json()).toEqual({
+      pending: [],
+      decisions: [
+        {
+          requestId: "approval-1",
+          decision: "allow_once",
+          decidedAt: now + 1,
+        },
+      ],
+    });
   });
 
   it("streams appended events to active subscribers and closes on terminal completion", async () => {

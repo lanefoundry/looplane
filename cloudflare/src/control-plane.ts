@@ -129,6 +129,13 @@ export interface WorkerDependencies {
     lastEventId?: string,
   ): Promise<Response>;
   getRunSessionArtifact(env: Env, runId: string, name: string): Promise<Response>;
+  getRunSessionApprovals(env: Env, runId: string): Promise<Response>;
+  submitRunSessionApproval(
+    env: Env,
+    runId: string,
+    approvalId: string,
+    decision: string,
+  ): Promise<Response>;
   decodeFileStream(stream: ReadableStream<Uint8Array>): AsyncIterable<string | Uint8Array>;
   queueBackgroundRun(run: () => Promise<void>): void;
 }
@@ -1033,7 +1040,7 @@ async function handleRunResource(
     throw new RequestProblem(401, "unauthorized");
   }
   const url = new URL(request.url);
-  const match = /^\/v1\/runs\/([^/]+)(?:\/(events|artifacts\/[^/]+|cancel))?$/u.exec(url.pathname);
+  const match = /^\/v1\/runs\/([^/]+)(?:\/(events|artifacts\/[^/]+|approvals(?:\/[^/]+)?|cancel))?$/u.exec(url.pathname);
   if (match === null) throw new RequestProblem(404, "not_found");
   const runId = validateRunIdPathSegment(match[1]!);
   const resource = match[2];
@@ -1066,6 +1073,24 @@ async function handleRunResource(
     return json(
       { ok: true, status: cancellation.status },
       cancellation.terminal ? 200 : 202,
+    );
+  }
+  if (resource === "approvals") {
+    if (request.method !== "GET") throw new RequestProblem(405, "method_not_allowed");
+    return await dependencies.getRunSessionApprovals(env, runId);
+  }
+  const approval = /^approvals\/([^/]+)$/u.exec(resource);
+  if (approval !== null) {
+    if (request.method !== "POST") throw new RequestProblem(405, "method_not_allowed");
+    const body = await readJsonBounded(request, 8_192);
+    if (!isObject(body) || typeof body.decision !== "string") {
+      throw new RequestProblem(400, "invalid_approval_decision");
+    }
+    return await dependencies.submitRunSessionApproval(
+      env,
+      runId,
+      validateRunIdPathSegment(approval[1]!),
+      body.decision,
     );
   }
   const artifact = /^artifacts\/([^/]+)$/u.exec(resource);

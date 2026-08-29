@@ -14,9 +14,11 @@ import {
   createRunSession,
   failRunSession,
   getRunSession,
+  getRunSessionApprovals,
   getRunSessionArtifact,
   getRunSessionEvents,
   markRunSessionRunning,
+  submitRunSessionApproval,
 } from "./run-session-do";
 
 export { Sandbox } from "@cloudflare/sandbox";
@@ -48,6 +50,9 @@ const dependencies: Omit<WorkerDependencies, "queueBackgroundRun"> = {
     getRunSessionEvents(env.RUN_SESSIONS, runId, stream, lastEventId),
   getRunSessionArtifact: (env, runId, name) =>
     getRunSessionArtifact(env.RUN_SESSIONS, runId, name),
+  getRunSessionApprovals: (env, runId) => getRunSessionApprovals(env.RUN_SESSIONS, runId),
+  submitRunSessionApproval: (env, runId, approvalId, decision) =>
+    submitRunSessionApproval(env.RUN_SESSIONS, runId, approvalId, decision),
   decodeFileStream: (stream) => streamFile(stream),
 };
 

@@ -69,6 +69,21 @@ class CloudflareRunClient:
         )
         return self._json_response(response)
 
+    async def approvals(self, run_id: str) -> dict[str, Any]:
+        response = await self._client.get(
+            self._url(f"/v1/runs/{run_id}/approvals"),
+            headers=self._headers(),
+        )
+        return self._json_response(response)
+
+    async def submit_approval(self, run_id: str, approval_id: str, decision: str) -> dict[str, Any]:
+        response = await self._client.post(
+            self._url(f"/v1/runs/{run_id}/approvals/{approval_id}"),
+            headers=self._headers(content_type="application/json"),
+            json={"decision": decision},
+        )
+        return self._json_response(response)
+
     async def artifact(self, run_id: str, name: str) -> str:
         response = await self._client.get(
             self._url(f"/v1/runs/{run_id}/artifacts/{name}"),

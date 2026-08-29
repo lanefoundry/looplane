@@ -15,6 +15,22 @@ export interface RunSessionExecution {
   exitCode: number;
 }
 
+export interface RunSessionPendingApproval {
+  requestId: string;
+  actionId: string;
+  effect: string;
+  reason: string;
+  policyReason: string;
+  preview: string;
+  requestedAt: number;
+}
+
+export interface RunSessionApprovalDecision {
+  requestId: string;
+  decision: string;
+  decidedAt: number;
+}
+
 export interface RunSessionSnapshot {
   runId: string;
   status: RunSessionStatus;
@@ -28,6 +44,8 @@ export interface RunSessionSnapshot {
   terminalReason?: string;
   error?: string;
   artifactKeys?: string[];
+  pendingApprovals?: RunSessionPendingApproval[];
+  approvalDecisions?: RunSessionApprovalDecision[];
 }
 
 interface RunSessionRecord extends RunSessionSnapshot {
@@ -45,6 +63,9 @@ interface RunSessionSubscriber {
 const MAX_LIVE_EVENT_LINES = 10_000;
 const MAX_LIVE_EVENT_BYTES = 1_000_000;
 const MAX_LIVE_EVENT_LINE_BYTES = 64_000;
+const MAX_PENDING_APPROVALS = 32;
+const MAX_APPROVAL_DECISIONS = 256;
+const APPROVAL_DECISIONS = new Set(["allow_once", "allow_session", "deny", "cancel"]);
 const SSE_HEARTBEAT_MS = 15_000;
 const encoder = new TextEncoder();
 
@@ -202,6 +223,74 @@ function eventSequence(value: unknown): number | undefined {
   return isObject(value) && typeof value.sequence === "number" && Number.isInteger(value.sequence)
     ? value.sequence
     : undefined;
+}
+
+function approvalRequestFromEvent(
+  parsed: Record<string, unknown>,
+  requestedAt: number,
+): RunSessionPendingApproval | null {
+  const data = isObject(parsed.data) ? parsed.data : {};
+  if (
+    typeof data.request_id !== "string" ||
+    typeof data.action_id !== "string" ||
+    typeof data.effect !== "string" ||
+    typeof data.reason !== "string"
+  ) {
+    return null;
+  }
+  return {
+    requestId: data.request_id,
+    actionId: data.action_id,
+    effect: data.effect,
+    reason: data.reason,
+    policyReason: typeof data.policy_reason === "string" ? data.policy_reason.slice(0, 2_000) : "",
+    preview: typeof data.preview === "string" ? data.preview.slice(0, 16_000) : "",
+    requestedAt,
+  };
+}
+
+function approvalRequestIdFromEvent(parsed: Record<string, unknown>): string | null {
+  const data = isObject(parsed.data) ? parsed.data : {};
+  return typeof data.request_id === "string" && data.request_id ? data.request_id : null;
+}
+
+function applyApprovalEvents(record: RunSessionRecord, lines: string[], now: number): boolean {
+  let changed = false;
+  let pending = record.pendingApprovals ?? [];
+  for (const line of lines) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isObject(parsed)) continue;
+    if (parsed.event_type === "approval.requested") {
+      const approval = approvalRequestFromEvent(parsed, now);
+      if (approval === null) continue;
+      pending = pending.filter((item) => item.requestId !== approval.requestId);
+      pending.push(approval);
+      if (pending.length > MAX_PENDING_APPROVALS) pending = pending.slice(-MAX_PENDING_APPROVALS);
+      changed = true;
+    } else if (
+      parsed.event_type === "approval.resolved" ||
+      parsed.event_type === "approval.abandoned"
+    ) {
+      const requestId = approvalRequestIdFromEvent(parsed);
+      if (requestId === null) continue;
+      pending = pending.filter((item) => item.requestId !== requestId);
+      changed = true;
+    }
+  }
+  if (changed) {
+    record.pendingApprovals = pending;
+  }
+  return changed;
+}
+
+function validateApprovalDecisionBody(body: Record<string, unknown> | null): string | null {
+  const decision = body?.decision;
+  return typeof decision === "string" && APPROVAL_DECISIONS.has(decision) ? decision : null;
 }
 
 function formatServerSentEvents(ndjson: string, afterSequence?: number): string {
@@ -399,6 +488,7 @@ export class RunSession extends DurableObject<unknown> {
           ...artifacts,
           events: (record.eventLines?.join("") || artifacts.events) ?? "",
         };
+        record.pendingApprovals = [];
         record.artifactKeys = Object.keys(record.artifacts).sort();
         await transaction.put("session", record);
         completed = true;
@@ -451,6 +541,7 @@ export class RunSession extends DurableObject<unknown> {
         record.eventBytes = existingBytes + newBytes;
         storedLines = record.eventLines.length;
         acceptedLines = lines;
+        applyApprovalEvents(record, lines, now);
         record.updatedAt = now;
         await transaction.put("session", record);
       });
@@ -479,6 +570,7 @@ export class RunSession extends DurableObject<unknown> {
           record.status = "failed";
           failed = true;
         }
+        record.pendingApprovals = [];
         record.error = error;
         record.updatedAt = now;
         await transaction.put("session", record);
@@ -506,6 +598,7 @@ export class RunSession extends DurableObject<unknown> {
           record.status = "cancelled";
           cancelled = true;
         }
+        record.pendingApprovals = [];
         status = record.status;
         record.updatedAt = now;
         await transaction.put("session", record);
@@ -529,6 +622,53 @@ export class RunSession extends DurableObject<unknown> {
         return this.streamEvents(record, request);
       }
       return text(events, 200, "application/x-ndjson; charset=utf-8");
+    }
+
+    if (request.method === "GET" && path === "/approvals") {
+      const record = await this.ctx.storage.get<RunSessionRecord>("session");
+      if (record === undefined) return json({ error: "run_not_found" }, 404);
+      return json({
+        pending: record.pendingApprovals ?? [],
+        decisions: record.approvalDecisions ?? [],
+      });
+    }
+
+    const approvalMatch = /^\/approvals\/([A-Za-z0-9_-]+)$/u.exec(path);
+    if (request.method === "POST" && approvalMatch !== null) {
+      const body = await parseBody(request);
+      const decision = validateApprovalDecisionBody(body);
+      if (decision === null) return json({ error: "invalid_approval_decision" }, 400);
+      const requestId = approvalMatch[1]!;
+      let missing = false;
+      let absent = false;
+      let terminal = false;
+      await this.ctx.storage.transaction(async (transaction) => {
+        const record = await transaction.get<RunSessionRecord>("session");
+        if (record === undefined) {
+          missing = true;
+          return;
+        }
+        if (terminalStatus(record)) {
+          terminal = true;
+          return;
+        }
+        const pending = record.pendingApprovals ?? [];
+        if (!pending.some((approval) => approval.requestId === requestId)) {
+          absent = true;
+          return;
+        }
+        record.pendingApprovals = pending.filter((approval) => approval.requestId !== requestId);
+        record.approvalDecisions = [
+          ...(record.approvalDecisions ?? []),
+          { requestId, decision, decidedAt: now },
+        ].slice(-MAX_APPROVAL_DECISIONS);
+        record.updatedAt = now;
+        await transaction.put("session", record);
+      });
+      if (missing) return json({ error: "run_not_found" }, 404);
+      if (terminal) return json({ error: "run_is_terminal" }, 409);
+      if (absent) return json({ error: "approval_not_found" }, 404);
+      return json({ ok: true, requestId, decision });
     }
 
     const artifactMatch = /^\/artifacts\/([A-Za-z0-9_]+)$/u.exec(path);
@@ -659,4 +799,27 @@ export async function getRunSessionArtifact(
   name: string,
 ): Promise<Response> {
   return await stub(namespace, runId).fetch(`https://run-session.internal/artifacts/${name}`);
+}
+
+export async function getRunSessionApprovals(
+  namespace: DurableObjectNamespace<RunSession>,
+  runId: string,
+): Promise<Response> {
+  return await stub(namespace, runId).fetch("https://run-session.internal/approvals");
+}
+
+export async function submitRunSessionApproval(
+  namespace: DurableObjectNamespace<RunSession>,
+  runId: string,
+  approvalId: string,
+  decision: string,
+): Promise<Response> {
+  return await stub(namespace, runId).fetch(
+    `https://run-session.internal/approvals/${approvalId}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
+    },
+  );
 }

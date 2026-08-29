@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -79,6 +81,42 @@ async def test_cloudflare_run_client_attaches_to_sse_with_resume_cursor() -> Non
     assert events[0].id == "2"
     assert events[0].event == "run.completed"
     assert events[0].data == {"event_type": "run.completed", "sequence": 2}
+
+
+@pytest.mark.asyncio
+async def test_cloudflare_run_client_lists_and_submits_approvals() -> None:
+    seen_submit_body: dict[str, object] | None = None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_submit_body
+        if request.url.path == "/v1/runs/run-1/approvals" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"pending": [{"requestId": "approval-1"}], "decisions": []},
+                request=request,
+            )
+        if request.url.path == "/v1/runs/run-1/approvals/approval-1":
+            seen_submit_body = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={"ok": True, "requestId": "approval-1", "decision": "allow_once"},
+                request=request,
+            )
+        return httpx.Response(404, json={"error": "not_found"}, request=request)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = CloudflareRunClient(
+        base_url="https://control.example",
+        token="control-token",
+        client=http,
+    )
+
+    approvals = await client.approvals("run-1")
+    submitted = await client.submit_approval("run-1", "approval-1", "allow_once")
+
+    assert approvals == {"pending": [{"requestId": "approval-1"}], "decisions": []}
+    assert submitted == {"ok": True, "requestId": "approval-1", "decision": "allow_once"}
+    assert seen_submit_body == {"decision": "allow_once"}
 
 
 @pytest.mark.asyncio

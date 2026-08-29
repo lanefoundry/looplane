@@ -272,6 +272,28 @@ function dependencies(handle: SandboxHandle): TestDependencies {
         },
       });
     }),
+    getRunSessionApprovals: vi.fn().mockImplementation(async (_env, id) => {
+      const record = sessions.get(id);
+      if (record === undefined) return Response.json({ error: "run_not_found" }, { status: 404 });
+      return Response.json({
+        pending: record.pendingApprovals ?? [],
+        decisions: record.approvalDecisions ?? [],
+      });
+    }),
+    submitRunSessionApproval: vi.fn().mockImplementation(async (_env, id, approvalId, decision) => {
+      const record = sessions.get(id);
+      if (record === undefined) return Response.json({ error: "run_not_found" }, { status: 404 });
+      const pending = record.pendingApprovals ?? [];
+      if (!pending.some((approval: any) => approval.requestId === approvalId)) {
+        return Response.json({ error: "approval_not_found" }, { status: 404 });
+      }
+      record.pendingApprovals = pending.filter((approval: any) => approval.requestId !== approvalId);
+      record.approvalDecisions = [
+        ...(record.approvalDecisions ?? []),
+        { requestId: approvalId, decision, decidedAt: now + 1 },
+      ];
+      return Response.json({ ok: true, requestId: approvalId, decision });
+    }),
     decodeFileStream: async function* (stream) {
       const reader = stream.getReader();
       try {
@@ -1102,6 +1124,46 @@ describe("RunSession APIs", () => {
     expect(await patch.text()).toBe("diff --git a/hello.py b/hello.py\n");
     expect(unknown.status).toBe(404);
     expect(await unknown.json()).toEqual({ error: "artifact_not_found" });
+  });
+
+  it("proxies approval listing and submission through authenticated run routes", async () => {
+    const handle = sandbox();
+    const deps = dependencies(handle);
+    deps.getRunSessionApprovals = vi.fn().mockResolvedValue(
+      Response.json({
+        pending: [{ requestId: "approval-1", actionId: "action-1" }],
+        decisions: [],
+      }),
+    );
+    deps.submitRunSessionApproval = vi.fn().mockResolvedValue(
+      Response.json({ ok: true, requestId: "approval-1", decision: "allow_once" }),
+    );
+
+    const listed = await handleRequest(getRequest(`/v1/runs/${runId}/approvals`), env(), deps);
+    const submitted = await handleRequest(
+      request(`/v1/runs/${runId}/approvals/approval-1`, { decision: "allow_once" }),
+      env(),
+      deps,
+    );
+
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({
+      pending: [{ requestId: "approval-1", actionId: "action-1" }],
+      decisions: [],
+    });
+    expect(submitted.status).toBe(200);
+    expect(await submitted.json()).toEqual({
+      ok: true,
+      requestId: "approval-1",
+      decision: "allow_once",
+    });
+    expect(deps.getRunSessionApprovals).toHaveBeenCalledWith(expect.anything(), runId);
+    expect(deps.submitRunSessionApproval).toHaveBeenCalledWith(
+      expect.anything(),
+      runId,
+      "approval-1",
+      "allow_once",
+    );
   });
 
   it("best-effort cancel revokes capability and destroys the sandbox for non-terminal runs", async () => {
