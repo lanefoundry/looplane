@@ -236,6 +236,28 @@ describe("RunSession Durable Object", () => {
         },
       ],
     });
+    expect(await (await session.fetch(get("/approvals/approval-1"))).json()).toEqual({
+      status: "decided",
+      requestId: "approval-1",
+      decision: "allow_once",
+      decidedAt: now + 1,
+    });
+  });
+
+  it("returns pending while an approval decision has not been submitted", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(now + 1);
+    const session = durableObject();
+
+    expect((await session.fetch(post("/create", createBody()))).status).toBe(201);
+    expect((await session.fetch(post("/running"))).status).toBe(200);
+    expect((await session.fetch(post("/append-events", { lines: [approvalLine(0)] }))).status).toBe(
+      200,
+    );
+
+    const response = await session.fetch(get("/approvals/approval-1"));
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ status: "pending", requestId: "approval-1" });
   });
 
   it("streams appended events to active subscribers and closes on terminal completion", async () => {

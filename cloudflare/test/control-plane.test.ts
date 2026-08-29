@@ -280,6 +280,22 @@ function dependencies(handle: SandboxHandle): TestDependencies {
         decisions: record.approvalDecisions ?? [],
       });
     }),
+    getRunSessionApproval: vi.fn().mockImplementation(async (_env, id, approvalId) => {
+      const record = sessions.get(id);
+      if (record === undefined) return Response.json({ error: "run_not_found" }, { status: 404 });
+      const decision = (record.approvalDecisions ?? [])
+        .filter((item: any) => item.requestId === approvalId)
+        .at(-1);
+      if (decision !== undefined) {
+        return Response.json({
+          status: "decided",
+          requestId: approvalId,
+          decision: decision.decision,
+          decidedAt: decision.decidedAt,
+        });
+      }
+      return Response.json({ status: "pending", requestId: approvalId }, { status: 202 });
+    }),
     submitRunSessionApproval: vi.fn().mockImplementation(async (_env, id, approvalId, decision) => {
       const record = sessions.get(id);
       if (record === undefined) return Response.json({ error: "run_not_found" }, { status: 404 });
@@ -368,6 +384,7 @@ describe("POST /v1/runs", () => {
       links: {
         status: `/v1/runs/${runId}`,
         events: `/v1/runs/${runId}/events`,
+        approvals: `/v1/runs/${runId}/approvals`,
       },
     });
     expect(handle.exec).not.toHaveBeenCalled();
@@ -394,16 +411,24 @@ describe("POST /v1/runs", () => {
     const eventTokenWrite = handle.writeFile.mock.calls.find(
       ([path]) => path === "/workspace/.rivumi-event-token",
     );
+    const approvalTokenWrite = handle.writeFile.mock.calls.find(
+      ([path]) => path === "/workspace/.rivumi-approval-token",
+    );
     expect(tokenWrite?.[1]).toEqual(expect.any(String));
     expect(eventTokenWrite?.[1]).toEqual(expect.any(String));
+    expect(approvalTokenWrite?.[1]).toEqual(expect.any(String));
     const modelCapability = JSON.parse(
       Buffer.from((tokenWrite?.[1] as string).split(".")[0]!, "base64url").toString("utf8"),
     ) as Record<string, unknown>;
     const eventCapability = JSON.parse(
       Buffer.from((eventTokenWrite?.[1] as string).split(".")[0]!, "base64url").toString("utf8"),
     ) as Record<string, unknown>;
+    const approvalCapability = JSON.parse(
+      Buffer.from((approvalTokenWrite?.[1] as string).split(".")[0]!, "base64url").toString("utf8"),
+    ) as Record<string, unknown>;
     expect(modelCapability.aud).toBe("/internal/v1/chat/completions");
     expect(eventCapability.aud).toBe("/internal/v1/runs/events");
+    expect(approvalCapability.aud).toBe("/internal/v1/runs/approvals");
     expect(handle.readFileStream).toHaveBeenCalledWith("/workspace/response.json");
     expect(deps.activateCapability).toHaveBeenCalledWith(
       expect.anything(),
@@ -1037,6 +1062,60 @@ describe("RunSession APIs", () => {
     expect(response.status).toBe(405);
   });
 
+  it("accepts internal approval decision polling with a dedicated audience", async () => {
+    const handle = sandbox();
+    const deps = dependencies(handle);
+    await deps.createRunSession(env(), runId, {
+      instruction: "running",
+      model,
+      allowedPaths: ["hello.py"],
+      checks: [["git", "diff", "--check"]],
+      fileCount: 1,
+    }, now);
+    await deps.markRunSessionRunning(env(), runId);
+    const token = await createRunToken(
+      runSecret,
+      runId,
+      model,
+      Math.floor(now / 1000),
+      "/internal/v1/runs/approvals",
+    );
+
+    const response = await handleRequest(
+      getRequest(`/internal/v1/runs/${runId}/approvals/approval-1`, token),
+      env(),
+      deps,
+    );
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ status: "pending", requestId: "approval-1" });
+    expect(deps.getRunSessionApproval).toHaveBeenCalledWith(
+      expect.anything(),
+      runId,
+      "approval-1",
+    );
+    expect(deps.consumeCapability).not.toHaveBeenCalled();
+    expect(deps.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-approval tokens on internal approval decision polling", async () => {
+    const token = await createRunToken(
+      runSecret,
+      runId,
+      model,
+      Math.floor(now / 1000),
+      "/internal/v1/runs/events",
+    );
+
+    const response = await handleRequest(
+      getRequest(`/internal/v1/runs/${runId}/approvals/approval-1`, token),
+      env(),
+      dependencies(sandbox()),
+    );
+
+    expect(response.status).toBe(401);
+  });
+
   it("rejects the model-proxy token on internal live event appends", async () => {
     const token = await createRunToken(runSecret, runId, model, Math.floor(now / 1000));
     const response = await handleRequest(
@@ -1223,6 +1302,13 @@ describe("internal model proxy", () => {
       issuedAt,
       "/internal/v1/runs/events",
     );
+    const approvalToken = await createRunToken(
+      runSecret,
+      "run-1",
+      model,
+      issuedAt,
+      "/internal/v1/runs/approvals",
+    );
 
     await expect(verifyRunToken(runSecret, chatToken, issuedAt)).resolves.toMatchObject({
       aud: "/internal/v1/chat/completions",
@@ -1231,12 +1317,18 @@ describe("internal model proxy", () => {
     await expect(
       verifyRunToken(runSecret, eventToken, issuedAt, "/internal/v1/runs/events"),
     ).resolves.toMatchObject({ aud: "/internal/v1/runs/events", runId: "run-1" });
+    await expect(
+      verifyRunToken(runSecret, approvalToken, issuedAt, "/internal/v1/runs/approvals"),
+    ).resolves.toMatchObject({ aud: "/internal/v1/runs/approvals", runId: "run-1" });
     await expect(verifyRunToken(runSecret, eventToken, issuedAt)).rejects.toMatchObject({
       status: 401,
       code: "invalid_run_token",
     });
     await expect(
       verifyRunToken(runSecret, chatToken, issuedAt, "/internal/v1/runs/events"),
+    ).rejects.toMatchObject({ status: 401, code: "invalid_run_token" });
+    await expect(
+      verifyRunToken(runSecret, approvalToken, issuedAt, "/internal/v1/runs/events"),
     ).rejects.toMatchObject({ status: 401, code: "invalid_run_token" });
   });
 

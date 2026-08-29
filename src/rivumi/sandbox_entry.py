@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 from pydantic import Field
 
+from rivumi.approvals import ApprovalDecision, ApprovalPolicy, ApprovalRequest
 from rivumi.console import EventSink
 from rivumi.contracts import ContractModel, Limits, TaskContract, VerificationCommand
 from rivumi.events import RunEvent, atomic_write_json
@@ -42,6 +43,8 @@ class SandboxEntrypointError(RuntimeError):
 _PR_SET_DUMPABLE = 4
 _MAX_RUN_TOKEN_BYTES = 8_192
 _MAX_EVENT_BATCH_BYTES = 128_000
+_APPROVAL_POLL_INTERVAL_SECONDS = 0.5
+_DEFAULT_APPROVAL_TIMEOUT_SECONDS = 210.0
 
 
 class SandboxControlPlaneEventSink:
@@ -76,6 +79,60 @@ class SandboxControlPlaneEventSink:
             self._errors += 1
         if self._errors >= 3:
             self._disabled = True
+
+
+class SandboxControlPlaneApprovalPolicy:
+    """Poll the control plane until a submitted approval decision is available."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        run_id: str,
+        token: str,
+        timeout_seconds: float = _DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+        poll_interval_seconds: float = _APPROVAL_POLL_INTERVAL_SECONDS,
+    ) -> None:
+        if timeout_seconds <= 0:
+            raise SandboxEntrypointError("approval timeout must be positive")
+        if poll_interval_seconds <= 0:
+            raise SandboxEntrypointError("approval poll interval must be positive")
+        self._base_url = base_url.rstrip("/")
+        self._run_id = run_id
+        self._token = token
+        self._timeout_seconds = timeout_seconds
+        self._poll_interval_seconds = poll_interval_seconds
+
+    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
+        url = f"{self._base_url}/runs/{self._run_id}/approvals/{request.request_id}"
+        deadline = asyncio.get_running_loop().time() + self._timeout_seconds
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            while True:
+                response = await client.get(
+                    url,
+                    headers={"authorization": f"Bearer {self._token}"},
+                )
+                if response.status_code == 200:
+                    return self._validated_decision(response)
+                if response.status_code != 202:
+                    raise SandboxEntrypointError("approval bridge rejected the request")
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return ApprovalDecision.CANCEL
+                await asyncio.sleep(min(self._poll_interval_seconds, remaining))
+
+    @staticmethod
+    def _validated_decision(response: httpx.Response) -> ApprovalDecision:
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise SandboxEntrypointError("approval bridge returned invalid JSON") from exc
+        if not isinstance(payload, dict) or payload.get("status") != "decided":
+            raise SandboxEntrypointError("approval bridge returned an invalid decision")
+        try:
+            return ApprovalDecision(payload.get("decision"))
+        except ValueError as exc:
+            raise SandboxEntrypointError("approval bridge returned an invalid decision") from exc
 
 
 def _harden_linux_process() -> None:
@@ -145,6 +202,10 @@ def _read_and_remove_run_token(root: Path) -> str:
 
 def _read_and_remove_event_token(root: Path) -> str:
     return _read_and_remove_token(root, ".rivumi-event-token")
+
+
+def _read_and_remove_approval_token(root: Path) -> str:
+    return _read_and_remove_token(root, ".rivumi-approval-token")
 
 
 def _required_env(name: str) -> str:
@@ -250,6 +311,7 @@ async def run_sandbox_request(
         _harden_linux_process()
         run_token = _read_and_remove_run_token(root)
         event_token = _read_and_remove_event_token(root)
+        approval_token = _read_and_remove_approval_token(root)
         model_gateway_url = _required_env("RIVUMI_MODEL_GATEWAY_URL")
         selected_model = OpenAICompatibleModel(
             model=_required_env("RIVUMI_MODEL_ID"),
@@ -263,15 +325,28 @@ async def run_sandbox_request(
             run_id=request.task_id,
             token=event_token,
         )
+        approval_policy: ApprovalPolicy | None = SandboxControlPlaneApprovalPolicy(
+            base_url=model_gateway_url,
+            run_id=request.task_id,
+            token=approval_token,
+            timeout_seconds=float(
+                os.environ.get(
+                    "RIVUMI_APPROVAL_TIMEOUT_SECONDS",
+                    str(_DEFAULT_APPROVAL_TIMEOUT_SECONDS),
+                )
+            ),
+        )
     else:
         selected_model = model
         event_sink = None
+        approval_policy = None
     try:
         result = await AgentRunner(
             task,
             selected_model,
             runs,
             allow_unsafe_local_exec=True,
+            approval_policy=approval_policy,
             event_sink=event_sink,
         ).run()
     finally:

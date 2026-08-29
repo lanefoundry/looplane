@@ -634,6 +634,27 @@ export class RunSession extends DurableObject<unknown> {
     }
 
     const approvalMatch = /^\/approvals\/([A-Za-z0-9_-]+)$/u.exec(path);
+    if (request.method === "GET" && approvalMatch !== null) {
+      const record = await this.ctx.storage.get<RunSessionRecord>("session");
+      if (record === undefined) return json({ error: "run_not_found" }, 404);
+      const requestId = approvalMatch[1]!;
+      const decision = (record.approvalDecisions ?? [])
+        .filter((item) => item.requestId === requestId)
+        .at(-1);
+      if (decision !== undefined) {
+        return json({
+          status: "decided",
+          requestId,
+          decision: decision.decision,
+          decidedAt: decision.decidedAt,
+        });
+      }
+      if ((record.pendingApprovals ?? []).some((approval) => approval.requestId === requestId)) {
+        return json({ status: "pending", requestId }, 202);
+      }
+      if (terminalStatus(record)) return json({ error: "approval_not_found" }, 404);
+      return json({ status: "pending", requestId }, 202);
+    }
     if (request.method === "POST" && approvalMatch !== null) {
       const body = await parseBody(request);
       const decision = validateApprovalDecisionBody(body);
@@ -806,6 +827,16 @@ export async function getRunSessionApprovals(
   runId: string,
 ): Promise<Response> {
   return await stub(namespace, runId).fetch("https://run-session.internal/approvals");
+}
+
+export async function getRunSessionApproval(
+  namespace: DurableObjectNamespace<RunSession>,
+  runId: string,
+  approvalId: string,
+): Promise<Response> {
+  return await stub(namespace, runId).fetch(
+    `https://run-session.internal/approvals/${approvalId}`,
+  );
 }
 
 export async function submitRunSessionApproval(

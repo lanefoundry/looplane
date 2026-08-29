@@ -14,6 +14,7 @@ import {
   createRunSession,
   failRunSession,
   getRunSession,
+  getRunSessionApproval,
   getRunSessionApprovals,
   getRunSessionArtifact,
   getRunSessionEvents,
@@ -51,6 +52,8 @@ const dependencies: Omit<WorkerDependencies, "queueBackgroundRun"> = {
   getRunSessionArtifact: (env, runId, name) =>
     getRunSessionArtifact(env.RUN_SESSIONS, runId, name),
   getRunSessionApprovals: (env, runId) => getRunSessionApprovals(env.RUN_SESSIONS, runId),
+  getRunSessionApproval: (env, runId, approvalId) =>
+    getRunSessionApproval(env.RUN_SESSIONS, runId, approvalId),
   submitRunSessionApproval: (env, runId, approvalId, decision) =>
     submitRunSessionApproval(env.RUN_SESSIONS, runId, approvalId, decision),
   decodeFileStream: (stream) => streamFile(stream),

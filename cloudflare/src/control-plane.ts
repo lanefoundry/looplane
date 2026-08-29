@@ -130,6 +130,7 @@ export interface WorkerDependencies {
   ): Promise<Response>;
   getRunSessionArtifact(env: Env, runId: string, name: string): Promise<Response>;
   getRunSessionApprovals(env: Env, runId: string): Promise<Response>;
+  getRunSessionApproval(env: Env, runId: string, approvalId: string): Promise<Response>;
   submitRunSessionApproval(
     env: Env,
     runId: string,
@@ -403,7 +404,10 @@ function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
   return difference === 0;
 }
 
-type RunTokenAudience = "/internal/v1/chat/completions" | "/internal/v1/runs/events";
+type RunTokenAudience =
+  | "/internal/v1/chat/completions"
+  | "/internal/v1/runs/events"
+  | "/internal/v1/runs/approvals";
 
 interface RunCapability {
   v: 1;
@@ -853,6 +857,7 @@ interface BackgroundRun {
   input: ValidatedRun;
   runToken: string;
   eventToken: string;
+  approvalToken: string;
   proxyUrl: string;
   expiresAt: number;
   runnerRequest: Record<string, unknown>;
@@ -905,6 +910,10 @@ async function executeRunInSandbox(
     );
     requireSdkSuccess(
       await sandbox.writeFile("/workspace/.rivumi-event-token", run.eventToken),
+      "write",
+    );
+    requireSdkSuccess(
+      await sandbox.writeFile("/workspace/.rivumi-approval-token", run.approvalToken),
       "write",
     );
     const execution = await sandbox.exec(FIXED_COMMAND, {
@@ -994,6 +1003,13 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
     nowSeconds,
     "/internal/v1/runs/events",
   );
+  const approvalToken = await createRunToken(
+    env.RUN_TOKEN_SECRET,
+    runId,
+    input.model,
+    nowSeconds,
+    "/internal/v1/runs/approvals",
+  );
   const runnerRequest = {
     task_id: runId,
     instruction: input.instruction,
@@ -1013,6 +1029,7 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
       input,
       runToken,
       eventToken,
+      approvalToken,
       proxyUrl: `${new URL(request.url).origin}/internal/v1`,
       expiresAt: (nowSeconds + LIMITS.runTokenSeconds) * 1_000,
       runnerRequest,
@@ -1025,6 +1042,7 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
       links: {
         status: `/v1/runs/${runId}`,
         events: `/v1/runs/${runId}/events`,
+        approvals: `/v1/runs/${runId}/approvals`,
       },
     },
     202,
@@ -1229,6 +1247,44 @@ async function handleInternalRunEvents(
   return json({ ok: true });
 }
 
+async function handleInternalRunApproval(
+  request: Request,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> {
+  if (request.method !== "GET") throw new RequestProblem(405, "method_not_allowed");
+  const token = bearer(request);
+  if (!token) throw new RequestProblem(401, "invalid_run_token");
+  const capability = await verifyRunToken(
+    env.RUN_TOKEN_SECRET,
+    token,
+    Math.floor(dependencies.now() / 1000),
+    "/internal/v1/runs/approvals",
+  );
+  const match = /^\/internal\/v1\/runs\/([^/]+)\/approvals\/([^/]+)$/u.exec(
+    new URL(request.url).pathname,
+  );
+  if (match === null || match[1] !== capability.runId) {
+    throw new RequestProblem(401, "invalid_run_token");
+  }
+  if (capability.model !== env.OPENAI_MODEL) {
+    throw new RequestProblem(400, "model_not_allowed");
+  }
+  const approvalId = validateRunIdPathSegment(match[2]!);
+  const capabilityStatus = await dependencies.checkCapability(
+    env,
+    capability.runId,
+    capability.model,
+  );
+  if (capabilityStatus === "inactive" || capabilityStatus === "expired") {
+    throw new RequestProblem(401, "inactive_run_token");
+  }
+  if (capabilityStatus === "exhausted") {
+    throw new RequestProblem(429, "model_request_budget_exhausted");
+  }
+  return await dependencies.getRunSessionApproval(env, capability.runId, approvalId);
+}
+
 export async function handleRequest(
   request: Request,
   env: Env,
@@ -1254,6 +1310,9 @@ export async function handleRequest(
     if (/^\/internal\/v1\/runs\/[^/]+\/events$/u.test(path)) {
       if (request.method !== "POST") throw new RequestProblem(405, "method_not_allowed");
       return await handleInternalRunEvents(request, env, dependencies);
+    }
+    if (/^\/internal\/v1\/runs\/[^/]+\/approvals\/[^/]+$/u.test(path)) {
+      return await handleInternalRunApproval(request, env, dependencies);
     }
     throw new RequestProblem(404, "not_found");
   } catch (error) {

@@ -35,9 +35,10 @@ Requires `Authorization: Bearer <CONTROL_PLANE_TOKEN>` and `Content-Type: applic
 }
 ```
 
-Accepted requests return `202` with the new `runId` plus status and event links. The route creates
-a queued `RunSession` Durable Object record, then starts the Sandbox lifecycle through
-`ExecutionContext.waitUntil()`. Clients attach through the status, event, and artifact routes below.
+Accepted requests return `202` with the new `runId` plus status, event, and approval links. The
+route creates a queued `RunSession` Durable Object record, then starts the Sandbox lifecycle through
+`ExecutionContext.waitUntil()`. Clients attach through the status, event, approval, and artifact
+routes below.
 
 Terminal success is written to the run session after the background Sandbox run finishes. Exit `0`
 is accepted only with `ok: true` plus a `completed` result. Exit `1` is accepted only with
@@ -86,9 +87,9 @@ request/action IDs, effect, reason, policy reason, preview, and timestamp metada
 
 Requires control-plane auth and a JSON body such as `{"decision":"allow_once"}`. Supported
 decisions are `allow_once`, `allow_session`, `deny`, and `cancel`. Submitting a decision records it
-durably and removes the approval from the pending list. The current Sandbox entrypoint still uses
-the local runner approval policy; wiring submitted decisions back into a waiting Sandbox run remains
-the next approval-bridge step.
+durably and removes the approval from the pending list. The Sandbox entrypoint polls a dedicated
+internal approval endpoint with a short-lived approval token, so a waiting remote run can consume the
+submitted decision and continue through the normal runner approval path.
 
 ### `GET /v1/runs/:runId/artifacts/:name`
 
