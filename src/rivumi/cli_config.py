@@ -40,6 +40,7 @@ MAX_ALLOW_RULES = 128
 MAX_ALLOW_RULE_CHARS = 1024
 MAX_SANDBOX_READ_ROOTS = 64
 SUPPORTED_SANDBOX_PROFILES = frozenset({"verification"})
+SUPPORTED_SANDBOX_BACKENDS = frozenset({"auto", "bubblewrap", "landlock"})
 
 
 class CliConfig(BaseModel):
@@ -56,6 +57,7 @@ class CliConfig(BaseModel):
     deny_rules: tuple[str, ...] = ()
     allow_rules: tuple[str, ...] = ()
     sandbox_profile: str | None = None
+    sandbox_backend: str | None = None
     sandbox_read_roots: tuple[str, ...] = ()
 
     @field_validator("runtime")
@@ -138,6 +140,15 @@ class CliConfig(BaseModel):
         if value is not None and value not in SUPPORTED_SANDBOX_PROFILES:
             choices = ", ".join(sorted(SUPPORTED_SANDBOX_PROFILES))
             raise ValueError(f"sandbox_profile must be one of: {choices}")
+        return value
+
+    @field_validator("sandbox_backend")
+    @classmethod
+    def validate_sandbox_backend(cls, value: str | None) -> str | None:
+        value = _normalized(value)
+        if value is not None and value not in SUPPORTED_SANDBOX_BACKENDS:
+            choices = ", ".join(sorted(SUPPORTED_SANDBOX_BACKENDS))
+            raise ValueError(f"sandbox_backend must be one of: {choices}")
         return value
 
     @field_validator("sandbox_read_roots")

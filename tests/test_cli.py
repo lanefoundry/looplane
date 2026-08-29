@@ -622,6 +622,7 @@ def test_sandbox_config_reaches_native_runner(
                 "provider": "openai-compatible",
                 "model": "primary",
                 "sandbox_profile": "verification",
+                "sandbox_backend": "landlock",
                 "sandbox_read_roots": [str(tmp_path / "toolchain")],
             }
         ),
@@ -669,6 +670,7 @@ def test_sandbox_config_reaches_native_runner(
     assert result.exit_code == 0, result.output
     assert captured_runner_kwargs["sandbox_checks"] is True
     assert captured_runner_kwargs["sandbox_profile"] == "verification"
+    assert captured_runner_kwargs["sandbox_backend"] == "landlock"
     assert captured_runner_kwargs["sandbox_read_roots"] == (tmp_path / "toolchain",)
 
 

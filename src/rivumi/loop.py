@@ -124,6 +124,7 @@ class AgentRunner:
         review_model: ModelProvider | None = None,
         sandbox_checks: bool = False,
         sandbox_profile: str | None = None,
+        sandbox_backend: str | None = None,
         sandbox_read_roots: Sequence[Path] = (),
         event_sink: EventSink | None = None,
     ) -> None:
@@ -133,6 +134,7 @@ class AgentRunner:
         self._review_model = review_model
         self._sandbox_checks = sandbox_checks
         self._sandbox_profile = sandbox_profile or "verification"
+        self._sandbox_backend = sandbox_backend or "auto"
         self._sandbox_read_roots = tuple(Path(root) for root in sandbox_read_roots)
         self._active_model_index = 0
         self.run_root = Path(run_root).resolve(strict=False)
@@ -292,6 +294,7 @@ class AgentRunner:
                 mcp_servers=load_native_mcp_server_configs(task.repository),
                 sandbox_checks=runner._sandbox_checks,
                 sandbox_profile=runner._sandbox_profile,
+                sandbox_backend=runner._sandbox_backend,
                 sandbox_read_roots=runner._sandbox_read_roots,
             )
             runner._resume_ready = True
@@ -1409,6 +1412,7 @@ class AgentRunner:
                     mcp_servers=load_native_mcp_server_configs(self.task.repository),
                     sandbox_checks=self._sandbox_checks,
                     sandbox_profile=self._sandbox_profile,
+                    sandbox_backend=self._sandbox_backend,
                     sandbox_read_roots=self._sandbox_read_roots,
                 )
                 await self._event("workspace.prepared", workspace="workspace", base_sha=base_sha)

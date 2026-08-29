@@ -61,6 +61,7 @@ class ToolExecutor:
         mcp_servers: Sequence[NativeMcpServerConfig] = (),
         sandbox_checks: bool = False,
         sandbox_profile: str | None = None,
+        sandbox_backend: str | None = None,
         sandbox_read_roots: Sequence[Path] = (),
     ) -> None:
         self.workspace = (
@@ -88,6 +89,7 @@ class ToolExecutor:
         self._task_home = self.workspace.parent / ".check-task-env"
         self._sandbox_checks = sandbox_checks
         self._sandbox_profile = sandbox_profile or "verification"
+        self._sandbox_backend = sandbox_backend or "auto"
         self._sandbox_read_roots = tuple(Path(root) for root in sandbox_read_roots)
         self._read_versions: dict[str, str] = {}
         self._mcp_clients: dict[str, StdioMcpClient] = {
@@ -845,6 +847,7 @@ class ToolExecutor:
                 sandbox=(
                     resolve_command_sandbox(
                         profile=self._sandbox_profile,
+                        backend=self._sandbox_backend,
                         cwd=self.workspace,
                         task_home=self._task_home,
                         extra_read_roots=self._sandbox_read_roots,

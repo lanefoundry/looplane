@@ -25,6 +25,7 @@ async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: 
         deny_rules=("read_file(.env*)",),
         allow_rules=("run_check(pytest:*)",),
         sandbox_profile="verification",
+        sandbox_backend="landlock",
         sandbox_read_roots=(" ~/cache ", "~/cache", "/opt/toolchain"),
     )
 
@@ -37,6 +38,7 @@ async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: 
         deny_rules=("read_file(.env*)",),
         allow_rules=("run_check(pytest:*)",),
         sandbox_profile="verification",
+        sandbox_backend="landlock",
         sandbox_read_roots=("~/cache", "/opt/toolchain"),
     )
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -50,6 +52,7 @@ async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: 
         "deny_rules",
         "allow_rules",
         "sandbox_profile",
+        "sandbox_backend",
         "sandbox_read_roots",
     }
 
@@ -65,6 +68,8 @@ def test_cli_config_rejects_credentials_unknown_fields_and_symlinks(tmp_path: Pa
         CliConfig(allow_rules=("not valid",))
     with pytest.raises(ValidationError, match="sandbox_profile"):
         CliConfig(sandbox_profile="networked")
+    with pytest.raises(ValidationError, match="sandbox_backend"):
+        CliConfig(sandbox_backend="ptrace")
     with pytest.raises(ValidationError, match="NUL"):
         CliConfig(sandbox_read_roots=("bad\x00root",))
 

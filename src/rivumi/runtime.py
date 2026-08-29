@@ -274,6 +274,7 @@ def _normalize_sandbox_roots(roots: Sequence[Path], *, label: str) -> tuple[Path
 def resolve_command_sandbox(
     *,
     profile: str | None = "verification",
+    backend: str | None = "auto",
     cwd: Path,
     task_home: Path,
     extra_read_roots: Sequence[Path] = (),
@@ -283,6 +284,9 @@ def resolve_command_sandbox(
     profile_name = profile or "verification"
     if profile_name != "verification":
         raise ValueError(f"unsupported command sandbox profile: {profile_name}")
+    backend_name = backend or "auto"
+    if backend_name not in {"auto", "bubblewrap", "landlock"}:
+        raise ValueError(f"unsupported command sandbox backend: {backend_name}")
     task_home = task_home.expanduser().resolve(strict=False)
     read_roots = _normalize_sandbox_roots(
         (cwd, task_home, *extra_read_roots),
@@ -291,6 +295,7 @@ def resolve_command_sandbox(
     return CommandSandbox(
         mode="workspace-write",
         profile=profile_name,
+        backend=backend_name,
         read_roots=read_roots,
         writable_roots=(task_home,),
     )

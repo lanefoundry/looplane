@@ -527,6 +527,7 @@ def _interactive_setup(
             deny_rules=current.deny_rules,
             allow_rules=current.allow_rules,
             sandbox_profile=current.sandbox_profile,
+            sandbox_backend=current.sandbox_backend,
             sandbox_read_roots=current.sandbox_read_roots,
         )
     try:
@@ -849,6 +850,7 @@ def chat(
                 deny_rules=current.deny_rules,
                 allow_rules=current.allow_rules,
                 sandbox_profile=current.sandbox_profile,
+                sandbox_backend=current.sandbox_backend,
                 sandbox_read_roots=current.sandbox_read_roots,
             )
         else:
@@ -960,6 +962,7 @@ def chat(
                     review_model=build_review_model(request.provider),
                     sandbox_checks=sandbox_checks,
                     sandbox_profile=initial_config.sandbox_profile,
+                    sandbox_backend=initial_config.sandbox_backend,
                     sandbox_read_roots=tuple(
                         Path(root).expanduser()
                         for root in initial_config.sandbox_read_roots
@@ -1038,6 +1041,7 @@ def chat(
             deny_rules=current.deny_rules,
             allow_rules=current.allow_rules,
             sandbox_profile=current.sandbox_profile,
+            sandbox_backend=current.sandbox_backend,
             sandbox_read_roots=current.sandbox_read_roots,
         )
         configured = _interactive_setup(
@@ -1091,6 +1095,7 @@ def chat(
                     review_model=build_review_model(provider),
                     sandbox_checks=sandbox_checks,
                     sandbox_profile=current_config.sandbox_profile,
+                    sandbox_backend=current_config.sandbox_backend,
                     sandbox_read_roots=tuple(
                         Path(root).expanduser()
                         for root in current_config.sandbox_read_roots
@@ -2493,6 +2498,7 @@ def configure(
             typer.echo(f"deny_rules: {len(current.deny_rules)}")
             typer.echo(f"allow_rules: {len(current.allow_rules)}")
             typer.echo(f"sandbox_profile: {current.sandbox_profile or '(default)'}")
+            typer.echo(f"sandbox_backend: {current.sandbox_backend or '(auto)'}")
             typer.echo(f"sandbox_read_roots: {len(current.sandbox_read_roots)}")
             return
         provider_changed = provider is not None and provider != current.provider
@@ -2509,6 +2515,7 @@ def configure(
             deny_rules=current.deny_rules,
             allow_rules=current.allow_rules,
             sandbox_profile=current.sandbox_profile,
+            sandbox_backend=current.sandbox_backend,
             sandbox_read_roots=current.sandbox_read_roots,
         )
         asyncio.run(save_cli_config(updated, path))
@@ -2684,6 +2691,7 @@ def run(
                     allow_unsafe_local_exec=unsafe_local_exec,
                     permission_guard=permission_guard,
                     sandbox_profile=current_config.sandbox_profile,
+                    sandbox_backend=current_config.sandbox_backend,
                     sandbox_read_roots=tuple(
                         Path(root).expanduser()
                         for root in current_config.sandbox_read_roots

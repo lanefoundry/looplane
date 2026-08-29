@@ -20,6 +20,7 @@ def make_executor(
     verification_commands: tuple[VerificationCommand, ...] | None = None,
     sandbox_checks: bool = False,
     sandbox_profile: str | None = None,
+    sandbox_backend: str | None = None,
     sandbox_read_roots: tuple[Path, ...] = (),
 ) -> ToolExecutor:
     return ToolExecutor(
@@ -30,6 +31,7 @@ def make_executor(
         limits=limits,
         sandbox_checks=sandbox_checks,
         sandbox_profile=sandbox_profile,
+        sandbox_backend=sandbox_backend,
         sandbox_read_roots=sandbox_read_roots,
     )
 
@@ -596,6 +598,7 @@ def test_sandboxed_verification_passes_profile_and_read_roots(
         verification_commands=(command,),
         sandbox_checks=True,
         sandbox_profile="verification",
+        sandbox_backend="landlock",
         sandbox_read_roots=(extra_root,),
     )
 
@@ -603,6 +606,7 @@ def test_sandboxed_verification_passes_profile_and_read_roots(
 
     assert outcome.ok is True
     assert captured["profile"] == "verification"
+    assert captured["backend"] == "landlock"
     assert captured["cwd"] == tiny_bug_repo.resolve(strict=True)
     assert captured["extra_read_roots"] == (extra_root,)
 

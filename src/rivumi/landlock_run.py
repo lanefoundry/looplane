@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import errno
 import json
 import os
+import platform
 import stat
 import sys
 from pathlib import Path
@@ -17,6 +19,18 @@ _SYS_LANDLOCK_RESTRICT_SELF = 446
 _LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
 _LANDLOCK_RULE_PATH_BENEATH = 1
 _PR_SET_NO_NEW_PRIVS = 38
+_PR_SET_SECCOMP = 22
+_SECCOMP_MODE_FILTER = 2
+_SECCOMP_RET_ALLOW = 0x7FFF0000
+_SECCOMP_RET_ERRNO = 0x00050000
+_BPF_LD_W_ABS = 0x20
+_BPF_JMP_JEQ_K = 0x15
+_BPF_JMP_JA = 0x05
+_BPF_RET_K = 0x06
+_SECCOMP_NR_OFFSET = 0
+_SECCOMP_ARCH_OFFSET = 4
+_AUDIT_ARCH_X86_64 = 0xC000003E
+_AUDIT_ARCH_AARCH64 = 0xC00000B7
 
 _ACCESS_EXECUTE = 1 << 0
 _ACCESS_WRITE_FILE = 1 << 1
@@ -64,6 +78,22 @@ class LandlockPathBeneathAttr(ctypes.Structure):
     ]
 
 
+class SockFilter(ctypes.Structure):
+    _fields_ = [
+        ("code", ctypes.c_ushort),
+        ("jt", ctypes.c_ubyte),
+        ("jf", ctypes.c_ubyte),
+        ("k", ctypes.c_uint32),
+    ]
+
+
+class SockFprog(ctypes.Structure):
+    _fields_ = [
+        ("len", ctypes.c_ushort),
+        ("filter", ctypes.POINTER(SockFilter)),
+    ]
+
+
 def _die(message: str) -> int:
     print(message, file=sys.stderr)
     return 126
@@ -92,6 +122,110 @@ def _prctl_no_new_privs() -> None:
     if prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
         errno = ctypes.get_errno()
         raise OSError(errno, os.strerror(errno))
+
+
+def _prctl_seccomp(program: SockFprog) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    prctl.argtypes = [
+        ctypes.c_int,
+        ctypes.c_ulong,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+    ]
+    prctl.restype = ctypes.c_int
+    if prctl(_PR_SET_SECCOMP, _SECCOMP_MODE_FILTER, ctypes.byref(program), 0, 0) != 0:
+        current_errno = ctypes.get_errno()
+        raise OSError(current_errno, os.strerror(current_errno))
+
+
+def _seccomp_profile_for_machine(machine: str | None = None) -> tuple[int, tuple[int, ...]]:
+    value = (machine or platform.machine()).lower()
+    if value in {"x86_64", "amd64"}:
+        return _AUDIT_ARCH_X86_64, (
+            101,  # ptrace
+            165,  # mount
+            166,  # umount2
+            167,  # swapon
+            168,  # swapoff
+            169,  # reboot
+            175,  # init_module
+            176,  # delete_module
+            246,  # kexec_load
+            248,  # add_key
+            249,  # request_key
+            250,  # keyctl
+            272,  # unshare
+            298,  # perf_event_open
+            300,  # fanotify_init
+            304,  # open_by_handle_at
+            308,  # setns
+            313,  # finit_module
+            321,  # bpf
+            323,  # userfaultfd
+            435,  # clone3
+        )
+    if value in {"aarch64", "arm64"}:
+        return _AUDIT_ARCH_AARCH64, (
+            39,  # umount2
+            40,  # mount
+            97,  # unshare
+            104,  # kexec_load
+            105,  # init_module
+            106,  # delete_module
+            117,  # ptrace
+            142,  # reboot
+            217,  # add_key
+            218,  # request_key
+            219,  # keyctl
+            224,  # swapon
+            225,  # swapoff
+            241,  # perf_event_open
+            262,  # fanotify_init
+            265,  # open_by_handle_at
+            268,  # setns
+            273,  # finit_module
+            280,  # bpf
+            282,  # userfaultfd
+            435,  # clone3
+        )
+    raise ValueError(f"unsupported seccomp architecture: {value}")
+
+
+def _bpf_stmt(code: int, k: int) -> SockFilter:
+    return SockFilter(code, 0, 0, k)
+
+
+def _bpf_jump(code: int, k: int, jt: int, jf: int) -> SockFilter:
+    return SockFilter(code, jt, jf, k)
+
+
+def _seccomp_filter(arch: int, denied_syscalls: tuple[int, ...]) -> tuple[SockFilter, ...]:
+    instructions: list[SockFilter] = [
+        _bpf_stmt(_BPF_LD_W_ABS, _SECCOMP_ARCH_OFFSET),
+        _bpf_jump(_BPF_JMP_JEQ_K, arch, 1, 0),
+        _bpf_stmt(_BPF_RET_K, _SECCOMP_RET_ERRNO | errno.EPERM),
+        _bpf_stmt(_BPF_LD_W_ABS, _SECCOMP_NR_OFFSET),
+    ]
+    for syscall_number in denied_syscalls:
+        instructions.extend(
+            (
+                _bpf_jump(_BPF_JMP_JEQ_K, syscall_number, 0, 1),
+                _bpf_stmt(_BPF_RET_K, _SECCOMP_RET_ERRNO | errno.EPERM),
+            )
+        )
+    instructions.append(_bpf_stmt(_BPF_RET_K, _SECCOMP_RET_ALLOW))
+    return tuple(instructions)
+
+
+def _install_seccomp_filter() -> None:
+    arch, denied_syscalls = _seccomp_profile_for_machine()
+    filters = _seccomp_filter(arch, denied_syscalls)
+    array_type = SockFilter * len(filters)
+    filters_array = array_type(*filters)
+    program = SockFprog(len=len(filters), filter=filters_array)
+    _prctl_seccomp(program)
 
 
 def _landlock_abi() -> int:
@@ -170,6 +304,7 @@ def _apply_policy(policy: dict[str, Any]) -> None:
             _add_path_rule(ruleset_fd, root, _READ_ACCESS)
         _prctl_no_new_privs()
         _syscall(_SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd, 0)
+        _install_seccomp_filter()
     finally:
         os.close(ruleset_fd)
     os.chdir(cwd)
