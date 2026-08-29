@@ -372,8 +372,11 @@ checks. Python checks also run with bytecode writes disabled so an immediate equ
 patch cannot accidentally reuse a stale timestamp-based `.pyc` from an earlier verification.
 
 `--unsafe-local-exec` is intentionally noisy: exact argv prevents shell interpolation, but pytest,
-build scripts, and other checks still execute repository code on the host. Use it only for a
-trusted repository. Untrusted work requires the later Docker/Cloudflare Sandbox backend.
+build scripts, and other checks still execute repository code on the host unless `--sandbox-checks`
+is enabled. On macOS, sandboxed checks use the platform sandbox wrapper; on Linux, set
+`sandbox_backend` in the CLI config to `auto`, `bubblewrap`, or `landlock` to select bubblewrap or
+the Landlock/seccomp backend. Treat this as verification-command containment, not a full hostile
+repository guarantee.
 
 | Provider | CLI value | Credential environment |
 |---|---|---|
@@ -438,8 +441,9 @@ an exact file-tool allowlist and post-run patch enforcement, but the official ch
 the user's `HOME` for its own authentication and is not filesystem-isolated by Rivumi. Do not use
 these local backends on hostile repositories. The separate `cloudflare/` service now packages the
 project-owned Python runtime behind a thin Worker and Cloudflare Sandbox with a run-scoped model
-capability. It remains synchronous and ephemeral; consumer subscription logins are not relayed
-there. See [cloudflare/README.md](cloudflare/README.md) for its exact API and deployment boundary.
+capability. Runs now start asynchronously and expose durable status, SSE/NDJSON events, approvals,
+cancel, and artifact routes; consumer subscription logins are not relayed there. See
+[cloudflare/README.md](cloudflare/README.md) for its exact API and deployment boundary.
 
 See [docs/progress.md](docs/progress.md) for current acceptance criteria and
 [docs/stages](docs/stages/README.md) for milestone evidence.

@@ -219,13 +219,12 @@ Still open and high ROI, but not completed in this pass:
    candidates, opt-in CLI aliases, and a verified-patch reviewer lane exist, but
    summary/parser/scout work is not routed automatically and role inheritance/override semantics
    are not defined.
-2. **A13 MCP production parity (4/5)** — Native stdio tools/resources/prompts are available
-   behind an explicit allowlist, but auth flows, streamable HTTP/SSE transports, tool-change
-   refresh, and per-tool trust metadata are still missing.
-3. **A18 Agent as a Service (4/5 foundation)** — Cloudflare runs are now addressable resources with
-   durable status, attachable live NDJSON/SSE event reads, terminal artifacts, and best-effort
-   cancel, but still need async execution semantics, attach clients, WebSocket parity, durable
-   subscriber recovery semantics, and a stable SDK facade.
+2. **A18 Agent as a Service (4/5 foundation)** — Cloudflare runs now start asynchronously with
+   durable status, attachable NDJSON/SSE event reads, approvals, cancellation, artifacts, and a
+   Python attach client; WebSocket parity and a versioned third-party SDK package remain open.
+3. **A22 sandbox defaulting and live proof (4/5)** — Native verification can opt into macOS
+   Seatbelt-style wrapping and Linux bubblewrap/Landlock+seccomp backends, but sandboxed
+   verification is not yet the default and Linux live containment has not been proven in CI here.
 4. **B4 Session replay/search/fork (4/5 foundation)** — JSONL, resume, metadata plus
    event-content search, compact timeline show, deterministic replay reduction, and CLI replay are
    strong, but there is no replay API or fork-from-event operation.
@@ -490,20 +489,32 @@ selectors.
 
 **Effort:** Medium
 
-#### A13. MCP Integration — **4/5** (Advanced stdio surface)
+#### A13. MCP Integration — **4/5** (Advanced multi-transport surface)
 
 **Evidence:**
 - src/rivumi/runtime_registry.py:33-36,124-126,175-177 — `RuntimeCapability.MCP` declared per runtime; capability gating is first-class.
 - src/rivumi/codex_app_server.py:302-312 — `_mcp_configuration_args()` enables/disables each configured MCP server via `-c mcp_servers.<name>.enabled=…`; allowlist default `("groundlane",)` (:145); bearer-token env forwarded only for allowlisted servers ([codex_app_server.py:251-258]).
-- src/rivumi/mcp_client.py — native stdio JSON-RPC client loads allowlisted `.mcp.json` servers, initializes MCP, lists `tools/list`, calls `tools/call`, supports `resources/list`, `resources/read`, `prompts/list`, and `prompts/get`, renders bounded text/structured content, times out unresponsive servers, and closes subprocesses.
-- src/rivumi/tools.py — `ToolExecutor` exposes allowlisted MCP tools as `mcp__server__tool`; it also exposes read-only `mcp_resource__server__list/read` and `mcp_prompt__server__list/get` bridge tools through the same bounded observation path as native tools.
-- src/rivumi/approvals.py:146-155 — dynamic MCP tools fail closed into `ToolEffect.EXECUTE`, while fixed resource/prompt bridge tools are `ToolEffect.READ` and can join read-only batches.
+- src/rivumi/mcp_client.py — native MCP client loads allowlisted `.mcp.json` servers, initializes
+  MCP, lists `tools/list`, calls `tools/call`, supports `resources/list`, `resources/read`,
+  `prompts/list`, and `prompts/get`, renders bounded text/structured content, times out
+  unresponsive servers, and closes subprocesses. It now supports stdio plus Streamable HTTP JSON
+  and SSE responses with `Mcp-Session-Id`, `MCP-Protocol-Version`, and bearer-token env auth.
+- src/rivumi/tools.py — `ToolExecutor` exposes allowlisted MCP tools as `mcp__server__tool`; it
+  also exposes read-only `mcp_resource__server__list/read` and `mcp_prompt__server__list/get`
+  bridge tools through the same bounded observation path as native tools. It can refresh tool,
+  resource, and prompt lists after server change notifications.
+- src/rivumi/approvals.py:146-155 — dynamic MCP tools fail closed into `ToolEffect.EXECUTE`
+  unless MCP trust metadata marks them read-only/safe; fixed resource/prompt bridge tools are
+  `ToolEffect.READ` and can join read-only batches.
 
 **Cross-ref:** codex-rs embeds an official MCP client (`codex-rs/rmcp-client/`) and exposes MCP server mode (`mcp-server/`, `codex-mcp/`); Claude Code normalizes tools as `mcp__server__tool` with OAuth auth flow.
 
-**Gaps:** Only stdio transport is supported. There is no OAuth or dynamic auth flow, streamable HTTP/SSE transport, tool-change notification handling, per-tool trust metadata for dynamic MCP tools, or sensitive-operation confirmation beyond the coarse EXECUTE approval gate.
+**Gaps:** OAuth-style interactive auth is still not implemented. Dynamic trust metadata is config
+driven rather than discovered from every server, and sensitive dynamic operations still rely on
+the approval gate rather than richer MCP-specific confirmation UX.
 
-**Action plan:** Extend the native client toward MCP production parity: tool-list refresh, streamable HTTP/SSE, auth integration, and explicit trust metadata for read-only/safe dynamic tools.
+**Action plan:** Add an explicit OAuth/authorization-code integration path where server metadata
+requires it, then expand MCP-specific confirmation copy for sensitive operations.
 
 **Effort:** High
 
@@ -513,15 +524,22 @@ selectors.
 - src/rivumi/policy.py:13-14,115-120 — `SafePathPolicy` resolves model-supplied paths and blocks workspace escapes with glob allowlisting; enforced in the executor (tools.py:45-47) and on every run/resume (loop.py:207).
 - src/rivumi/codex_app_server.py:250-275 — child env stripped via `_SAFE_ENV_KEYS` + `_SECRET_ENV_MARKERS`; credential stores enforce 0600 perms, symlink rejection, atomic writes (native_credentials.py:79-104, codex_oauth.py:132-158).
 - src/rivumi/loop.py:62-63,788-791 — local repo-code execution requires explicit `allow_unsafe_local_exec`; sandbox_entry.py:44-60 hardens the Cloudflare Sandbox process (`PR_SET_DUMPABLE=0`); auditable approvals persisted (session.py:94-95).
-- src/rivumi/runtime.py and src/rivumi/tools.py — opt-in `CommandSandbox` wrapping for native
-  verification checks fails closed when OS sandbox support is unavailable, rather than executing
-  unsandboxed by surprise.
+- src/rivumi/runtime.py, src/rivumi/tools.py, and src/rivumi/landlock_run.py — opt-in
+  `CommandSandbox` wrapping for native verification checks fails closed when OS sandbox support is
+  unavailable, rather than executing unsandboxed by surprise. Linux can use bubblewrap or a
+  Landlock filesystem policy with a seccomp denylist.
+- src/rivumi/secret_scan.py and src/rivumi/external_runner.py — reviewable external-runtime
+  patches are scanned for high-confidence API keys, bearer tokens, PEM keys, and credential URLs
+  before patch acceptance.
 
 **Cross-ref:** codex-rs has dedicated OS-level crates: `sandboxing/` (Seatbelt/Landlock), `linux-sandbox/`, `secrets/`, `execpolicy/` — enforcement in the OS, not just policy objects; Claude Code layers MDM managed-settings on top.
 
-**Gaps:** No automated secret scanning of patches/output before commit or export; no network egress allowlisting of rivumi's own; no org-policy config source; prompt-injection handling is advisory text, not detection.
+**Gaps:** No network egress allowlisting of rivumi's own; no org-policy config source;
+prompt-injection handling is advisory text, not detection. Secret scanning covers reviewable patch
+content, not arbitrary terminal output or every artifact export path.
 
-**Action plan:** Add a secret-pattern scan (keys/tokens/bearer headers) over `ReviewablePatch` content before patch acceptance in external_runner.py:759-774 — cheap, high-value next control.
+**Action plan:** Extend secret scanning to selected artifacts/output summaries and add an
+org-policy config source for stricter deployments.
 
 **Effort:** Low
 
@@ -598,12 +616,11 @@ and export turn-level usage/cost events through OTel.
 
 **Cross-ref:** pi-mono publishes its core as importable npm libraries (`pi-ai`, `pi-agent`) with the CLI as a thin shell; opencode ships `opencode serve` (HTTP server) plus a generated TypeScript SDK for embedding.
 
-**Gaps:** No stable versioned SDK package/docs for third parties; no WebSocket parity; Cloudflare
-execution is still synchronous and subscribers are in-memory only, so clients must reconnect and
-replay after Durable Object eviction.
+**Gaps:** No stable versioned SDK package/docs for third parties; no WebSocket parity. SSE
+subscribers are in-memory only, so clients must reconnect and replay after Durable Object eviction.
 
-**Action plan:** Move `POST /v1/runs` to async start/status semantics, add attach-client SDK helpers
-over SSE reconnect/replay, and decide whether WebSocket parity is needed.
+**Action plan:** Package and document the Python attach client as a stable SDK facade, and decide
+whether WebSocket parity is needed beyond SSE reconnect/replay.
 
 **Effort:** Medium
 
@@ -662,18 +679,20 @@ concurrency-safe metadata.
 **Evidence:**
 - [src/rivumi/sandbox_entry.py:1-33,44-60] Fixed Cloudflare Sandbox entrypoint: Linux-only hardening via `prctl(PR_SET_DUMPABLE, 0)`, validated `SandboxRunRequest`, receives no provider credential — only a short-lived capability.
 - [cloudflare/README.md:56-65] Root-owned mode-0555 wrapper, non-root `rivumi` user, `setpriv --no-new-privs`; [cloudflare/README.md:67-82] Five-minute HMAC capability written then unlinked after open, `RunCapability` Durable Object with `maxSteps+2` budget atomically consumed, egress pinned to `/internal/v1/chat/completions`.
-- src/rivumi/runtime.py, src/rivumi/cli_config.py, src/rivumi/tools.py, and src/rivumi/cli.py —
-  native local checks can opt into `--sandbox-checks`; unsupported platforms or missing sandbox
-  runtimes return exit 126 before process launch. Sandbox requests carry a named `verification`
-  profile plus config-backed extra read roots.
+- src/rivumi/runtime.py, src/rivumi/cli_config.py, src/rivumi/tools.py, src/rivumi/cli.py, and
+  src/rivumi/landlock_run.py — native local checks can opt into `--sandbox-checks`; unsupported
+  platforms or missing sandbox runtimes return exit 126 before process launch. Sandbox requests
+  carry a named `verification` profile, config-backed extra read roots, and a config-backed
+  `sandbox_backend` choice of `auto`, `bubblewrap`, or `landlock`. Linux `landlock` applies a
+  filesystem policy and seccomp denylist before executing the check.
 
 **Cross-ref:** Claude Code delegates to `@anthropic-ai/sandbox-runtime` (filesystem + network restriction adapter separate from permissions); codex-rs implements OS-native sandboxes per platform — Landlock+seccomp on Linux, Seatbelt on macOS — behind `--sandbox read-only|workspace-write`.
 
-**Gaps:** Local sandboxing is still a narrow first slice: macOS-only wrapper path, no Linux
-Landlock/seccomp implementation, no broad containment for every tool/process surface, and no
-CPU/memory cgroup quotas.
+**Gaps:** Local sandboxing is still opt-in and focused on verification commands, not every
+tool/process surface. Linux live containment is covered by unit-level argv/filter tests here but
+not by a current Linux CI/live run, and CPU/memory cgroup quotas are not implemented.
 
-**Action plan:** Add a Linux Landlock/seccomp backend behind the existing named profile resolver;
+**Action plan:** Add Linux CI or a container smoke test that proves Landlock/seccomp enforcement,
 then make sandboxed verification the default when the platform can prove containment.
 
 **Effort:** High
