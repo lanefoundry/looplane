@@ -4,9 +4,12 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
+import pytest
+
 from rivumi.approvals import ToolEffect, effect_for_tool, effect_for_tool_definition
 from rivumi.contracts import ToolCall, ToolDefinition, VerificationCommand
-from rivumi.mcp_client import load_native_mcp_server_configs
+from rivumi.mcp_client import McpError, load_native_mcp_server_configs
 from rivumi.policy import SafePathPolicy
 from rivumi.runtime_registry import RUNTIME_REGISTRY, RuntimeCapability
 from rivumi.tools import ToolExecutor
@@ -187,6 +190,40 @@ def test_mcp_config_requires_explicit_allowlist(tmp_path: Path) -> None:
     assert configs[0].command == sys.executable
 
 
+def test_mcp_config_loads_allowlisted_http_server(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "remote": {
+                        "url": "https://mcp.example.test/mcp",
+                        "headers": {"x-client": "rivumi"},
+                        "bearerTokenEnvVar": "REMOTE_MCP_TOKEN",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    configs = load_native_mcp_server_configs(tmp_path, allowlist=("remote",))
+
+    assert len(configs) == 1
+    assert configs[0].url == "https://mcp.example.test/mcp"
+    assert configs[0].headers == {"x-client": "rivumi"}
+    assert configs[0].bearer_token_env_var == "REMOTE_MCP_TOKEN"
+
+
+def test_mcp_config_rejects_remote_plain_http(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"remote": {"url": "http://mcp.example.test/mcp"}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="HTTP url is only allowed"):
+        load_native_mcp_server_configs(tmp_path, allowlist=("remote",))
+
+
 def test_tool_executor_exposes_and_calls_allowlisted_mcp_tool(tmp_path: Path) -> None:
     server = tmp_path / "fake_mcp_server.py"
     _write_fake_mcp_server(server)
@@ -216,6 +253,160 @@ def test_tool_executor_exposes_and_calls_allowlisted_mcp_tool(tmp_path: Path) ->
         assert observation.content == "echo:hello"
     finally:
         executor.close()
+
+
+def test_tool_executor_exposes_and_calls_allowlisted_http_mcp_tool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(
+            {
+                "method": body.get("method"),
+                "id": body.get("id"),
+                "authorization": request.headers.get("authorization"),
+                "session": request.headers.get("mcp-session-id"),
+                "protocol": request.headers.get("mcp-protocol-version"),
+                "client": request.headers.get("x-client"),
+            }
+        )
+        request_id = body.get("id")
+        method = body.get("method")
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "application/json",
+                    "mcp-session-id": "session-1",
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "protocolVersion": "2026-07-28",
+                        "capabilities": {"tools": {}},
+                    },
+                },
+            )
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        if method == "tools/list":
+            payload = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "lookup",
+                                "description": "Lookup a value.",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {"key": {"type": "string"}},
+                                    "required": ["key"],
+                                    "additionalProperties": False,
+                                },
+                                "annotations": {"readOnlyHint": True},
+                            }
+                        ]
+                    },
+                }
+            )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=f"event: message\ndata: {payload}\n\n",
+            )
+        if method == "tools/call":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"content": [{"type": "text", "text": "value:42"}]},
+                },
+            )
+        raise AssertionError(f"unexpected MCP method: {method}")
+
+    real_client = httpx.Client
+
+    def client_factory(**kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr("rivumi.mcp_client.httpx.Client", client_factory)
+    monkeypatch.setenv("REMOTE_MCP_TOKEN", "secret-token")
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "remote": {
+                        "url": "https://mcp.example.test/mcp",
+                        "headers": {"x-client": "rivumi"},
+                        "bearerTokenEnvVar": "REMOTE_MCP_TOKEN",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    configs = load_native_mcp_server_configs(tmp_path, allowlist=("remote",))
+    executor = ToolExecutor(
+        workspace=tmp_path,
+        policy=SafePathPolicy(tmp_path, allowed_paths=("**",)),
+        verification_commands=(VerificationCommand(name="noop", argv=("true",)),),
+        mcp_servers=configs,
+    )
+    try:
+        definitions = {definition.name: definition for definition in executor.definitions}
+        observation = executor.execute(
+            ToolCall(name="mcp__remote__lookup", arguments={"key": "answer"})
+        )
+
+        assert definitions["mcp__remote__lookup"].read_only is True
+        assert observation.ok is True
+        assert observation.content == "value:42"
+        assert [request["method"] for request in requests] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "tools/call",
+        ]
+        assert all(request["authorization"] == "Bearer secret-token" for request in requests)
+        assert requests[0]["session"] is None
+        assert requests[1]["session"] == "session-1"
+        assert requests[2]["session"] == "session-1"
+        assert requests[2]["protocol"] == "2026-07-28"
+        assert requests[2]["client"] == "rivumi"
+    finally:
+        executor.close()
+
+
+def test_http_mcp_requires_configured_bearer_token(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "remote": {
+                        "url": "https://mcp.example.test/mcp",
+                        "bearerTokenEnvVar": "MISSING_MCP_TOKEN",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(McpError, match="bearer token env var"):
+        ToolExecutor(
+            workspace=tmp_path,
+            policy=SafePathPolicy(tmp_path, allowed_paths=("**",)),
+            verification_commands=(VerificationCommand(name="noop", argv=("true",)),),
+            mcp_servers=load_native_mcp_server_configs(tmp_path, allowlist=("remote",)),
+        )
 
 
 def test_tool_executor_exposes_mcp_resource_and_prompt_read_only_bridges(tmp_path: Path) -> None:

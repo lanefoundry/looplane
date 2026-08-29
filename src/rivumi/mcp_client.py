@@ -1,4 +1,4 @@
-"""Minimal native MCP stdio client for tool discovery and calls."""
+"""Native MCP clients for allowlisted stdio and Streamable HTTP servers."""
 
 from __future__ import annotations
 
@@ -12,8 +12,10 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+import httpx
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .contracts import ToolDefinition
 from .runtime import bounded_text, sanitized_subprocess_env
@@ -31,12 +33,15 @@ class McpError(RuntimeError):
 
 
 class NativeMcpServerConfig(BaseModel):
-    """One allowlisted stdio MCP server from project config."""
+    """One allowlisted MCP server from project config."""
 
     name: str = Field(min_length=1)
-    command: str = Field(min_length=1)
+    command: str | None = Field(default=None, min_length=1)
+    url: str | None = Field(default=None, min_length=1)
     args: tuple[str, ...] = ()
     env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    bearer_token_env_var: str | None = Field(default=None, alias="bearerTokenEnvVar")
     enabled: bool = True
 
     @field_validator("name")
@@ -49,10 +54,27 @@ class NativeMcpServerConfig(BaseModel):
 
     @field_validator("command")
     @classmethod
-    def validate_command(cls, value: str) -> str:
+    def validate_command(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = value.strip()
         if not value or "\x00" in value:
             raise ValueError("MCP command must be non-empty and NUL-free")
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+            raise ValueError("MCP url must be an absolute HTTP(S) URL")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("MCP url must not contain credentials, query, or fragment")
+        if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("MCP HTTP url is only allowed for loopback hosts")
         return value
 
     @field_validator("args")
@@ -70,6 +92,41 @@ class NativeMcpServerConfig(BaseModel):
                 raise ValueError("MCP env keys and values must be NUL-free")
         return value
 
+    @field_validator("headers")
+    @classmethod
+    def validate_headers(cls, value: dict[str, str]) -> dict[str, str]:
+        for key, item in value.items():
+            if (
+                not key
+                or "\x00" in key
+                or "\x00" in item
+                or "\r" in key
+                or "\n" in key
+                or "\r" in item
+                or "\n" in item
+            ):
+                raise ValueError("MCP HTTP headers must be non-empty and line-safe")
+        return value
+
+    @field_validator("bearer_token_env_var")
+    @classmethod
+    def validate_bearer_token_env_var(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError("MCP bearerTokenEnvVar must be a valid environment variable name")
+        return value
+
+    @model_validator(mode="after")
+    def require_one_transport(self) -> NativeMcpServerConfig:
+        if (self.command is None) == (self.url is None):
+            raise ValueError("MCP server config requires exactly one of command or url")
+        if self.command is None and self.args:
+            raise ValueError("MCP HTTP server config cannot set args")
+        if self.url is not None and self.env:
+            raise ValueError("MCP HTTP server config cannot set process env")
+        return self
+
 
 def allowlist_from_env(value: str | None = None) -> frozenset[str]:
     """Parse the native MCP server allowlist from ``RIVUMI_MCP_ALLOWLIST``."""
@@ -83,7 +140,7 @@ def load_native_mcp_server_configs(
     *,
     allowlist: Iterable[str] | None = None,
 ) -> tuple[NativeMcpServerConfig, ...]:
-    """Load allowlisted stdio MCP server configs from ``.mcp.json``.
+    """Load allowlisted MCP server configs from ``.mcp.json``.
 
     The default allowlist is empty, so project config never spawns a process
     unless the operator explicitly opts into named servers.
@@ -316,6 +373,8 @@ class StdioMcpClient:
     def _start(self) -> None:
         if self._process is not None:
             return
+        if self.config.command is None:
+            raise McpError(f"MCP server {self.config.name!r} has no stdio command")
         env = sanitized_subprocess_env(task_home=self.task_home)
         env.update(self.config.env)
         try:
@@ -435,6 +494,206 @@ class StdioMcpClient:
         if structured is not None:
             rendered.append(json.dumps(structured, ensure_ascii=False, sort_keys=True))
         return bounded_text("\n".join(rendered), self.max_output_chars)
+
+    def _render_resource_result(self, payload: Mapping[str, Any]) -> str:
+        rendered: list[str] = []
+        contents = payload.get("contents", ())
+        if not isinstance(contents, Sequence) or isinstance(contents, (str, bytes)):
+            raise McpError("MCP resources/read result must contain a contents array")
+        for block in contents:
+            if not isinstance(block, Mapping):
+                continue
+            uri = str(block.get("uri") or "")
+            mime_type = str(block.get("mimeType") or "application/octet-stream")
+            header = f"# {uri}" if uri else "# resource"
+            if isinstance(block.get("text"), str):
+                rendered.append(f"{header} ({mime_type})\n{block['text']}")
+            elif isinstance(block.get("blob"), str):
+                rendered.append(f"{header} ({mime_type})\n[blob bytes={len(block['blob'])}]")
+            else:
+                rendered.append(json.dumps(block, ensure_ascii=False, sort_keys=True))
+        return bounded_text("\n\n".join(rendered), self.max_output_chars)
+
+    def _render_prompt_result(self, payload: Mapping[str, Any]) -> str:
+        rendered: list[str] = []
+        description = payload.get("description")
+        if isinstance(description, str) and description:
+            rendered.append(description)
+        messages = payload.get("messages", ())
+        if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+            raise McpError("MCP prompts/get result must contain a messages array")
+        for message in messages:
+            if not isinstance(message, Mapping):
+                continue
+            rendered.append(json.dumps(message, ensure_ascii=False, sort_keys=True))
+        return bounded_text("\n".join(rendered), self.max_output_chars)
+
+
+class HttpMcpClient(StdioMcpClient):
+    """Synchronous Streamable HTTP MCP client for allowlisted remote servers."""
+
+    def __init__(
+        self,
+        config: NativeMcpServerConfig,
+        *,
+        max_output_chars: int = 200_000,
+    ) -> None:
+        self.config = config
+        self.cwd = Path.cwd()
+        self.task_home = Path.cwd()
+        self.max_output_chars = max_output_chars
+        self._process = None
+        self._next_id = 1
+        self._lock = threading.RLock()
+        self._initialized = False
+        self._client: httpx.Client | None = None
+        self._session_id: str | None = None
+
+    def close(self) -> None:
+        client = self._client
+        self._client = None
+        self._initialized = False
+        if client is not None:
+            client.close()
+
+    def _start(self) -> None:
+        if self._client is None:
+            self._client = httpx.Client(timeout=30.0, follow_redirects=False)
+
+    def _notify(self, method: str) -> None:
+        self._start()
+        self._send_http_message({"jsonrpc": "2.0", "method": method}, timeout_seconds=10.0)
+
+    def _request(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None,
+        *,
+        timeout_seconds: float,
+        require_initialized: bool = True,
+    ) -> Any:
+        with self._lock:
+            if require_initialized:
+                self._initialize(timeout_seconds=timeout_seconds)
+            request_id = self._next_id
+            self._next_id += 1
+            request: dict[str, Any] = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+            }
+            if params is not None:
+                request["params"] = dict(params)
+            response = self._send_http_message(request, timeout_seconds=timeout_seconds)
+            if response is None:
+                raise McpError(f"MCP {method} returned no response")
+            if response.get("id") != request_id:
+                raise McpError(f"MCP {method} returned a mismatched response id")
+            if "error" in response:
+                raise McpError(f"MCP {method} failed: {response['error']}")
+            return response.get("result")
+
+    def _send_http_message(
+        self,
+        message: Mapping[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> Mapping[str, Any] | None:
+        self._start()
+        if self._client is None or self.config.url is None:
+            raise McpError(f"MCP HTTP server {self.config.name!r} is not configured")
+        headers = self._headers()
+        try:
+            with self._client.stream(
+                "POST",
+                self.config.url,
+                headers=headers,
+                json=dict(message),
+                timeout=timeout_seconds,
+            ) as response:
+                self._capture_session_id(response)
+                if response.status_code == 202:
+                    response.close()
+                    return None
+                if response.status_code >= 400:
+                    payload = self._read_response_text(response, limit=4_000)
+                    raise McpError(
+                        f"MCP HTTP server {self.config.name!r} returned HTTP "
+                        f"{response.status_code}: {payload}"
+                    )
+                content_type = response.headers.get("content-type", "").lower()
+                if content_type.startswith("text/event-stream"):
+                    return self._read_sse_response(response)
+                if "application/json" in content_type:
+                    payload = self._read_response_text(response, limit=self.max_output_chars)
+                    parsed = json.loads(payload)
+                    if not isinstance(parsed, Mapping):
+                        raise McpError("MCP HTTP response must be a JSON object")
+                    return parsed
+                raise McpError("MCP HTTP response has an unsupported content type")
+        except (httpx.HTTPError, json.JSONDecodeError) as exc:
+            raise McpError(f"MCP HTTP request failed: {exc}") from exc
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "accept": "application/json, text/event-stream",
+            "content-type": "application/json",
+            "mcp-protocol-version": MCP_PROTOCOL_VERSION,
+            **self.config.headers,
+        }
+        if self._session_id is not None:
+            headers["mcp-session-id"] = self._session_id
+        if self.config.bearer_token_env_var is not None:
+            token = os.environ.get(self.config.bearer_token_env_var)
+            if not token:
+                raise McpError(
+                    f"MCP bearer token env var {self.config.bearer_token_env_var!r} is unset"
+                )
+            headers["authorization"] = f"Bearer {token}"
+        return headers
+
+    def _capture_session_id(self, response: httpx.Response) -> None:
+        session_id = response.headers.get("mcp-session-id")
+        if session_id is not None and session_id:
+            self._session_id = session_id
+
+    @staticmethod
+    def _read_response_text(response: httpx.Response, *, limit: int) -> str:
+        parts: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if total > limit:
+                raise McpError("MCP HTTP response exceeded the output limit")
+            parts.append(chunk)
+        return b"".join(parts).decode("utf-8", errors="strict")
+
+    def _read_sse_response(self, response: httpx.Response) -> Mapping[str, Any]:
+        data_lines: list[str] = []
+        text = self._read_response_text(response, limit=self.max_output_chars)
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip("\r")
+            if line == "":
+                parsed = self._parse_sse_data(data_lines)
+                if parsed is not None:
+                    return parsed
+                data_lines = []
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip(" "))
+        parsed = self._parse_sse_data(data_lines)
+        if parsed is not None:
+            return parsed
+        raise McpError("MCP HTTP SSE response did not contain a JSON-RPC message")
+
+    @staticmethod
+    def _parse_sse_data(data_lines: list[str]) -> Mapping[str, Any] | None:
+        if not data_lines:
+            return None
+        parsed = json.loads("\n".join(data_lines))
+        if not isinstance(parsed, Mapping):
+            raise McpError("MCP HTTP SSE data must be a JSON object")
+        return parsed
 
     def _render_resource_result(self, payload: Mapping[str, Any]) -> str:
         rendered: list[str] = []

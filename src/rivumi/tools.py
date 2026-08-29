@@ -21,6 +21,7 @@ from .contracts import (
     VerificationOutcome,
 )
 from .mcp_client import (
+    HttpMcpClient,
     McpError,
     NativeMcpServerConfig,
     StdioMcpClient,
@@ -90,12 +91,7 @@ class ToolExecutor:
         self._sandbox_read_roots = tuple(Path(root) for root in sandbox_read_roots)
         self._read_versions: dict[str, str] = {}
         self._mcp_clients: dict[str, StdioMcpClient] = {
-            config.name: StdioMcpClient(
-                config,
-                cwd=self.workspace,
-                task_home=self._task_home,
-                max_output_chars=self.max_output_chars,
-            )
+            config.name: self._mcp_client(config)
             for config in mcp_servers
         }
         self._mcp_tools: dict[str, tuple[StdioMcpClient, str]] = {}
@@ -116,6 +112,16 @@ class ToolExecutor:
                 raise ValueError(f"duplicate verification command name: {name}")
             self.verification_commands[name] = command
         self.definitions = self._build_definitions()
+
+    def _mcp_client(self, config: NativeMcpServerConfig) -> StdioMcpClient:
+        if config.url is not None:
+            return HttpMcpClient(config, max_output_chars=self.max_output_chars)
+        return StdioMcpClient(
+            config,
+            cwd=self.workspace,
+            task_home=self._task_home,
+            max_output_chars=self.max_output_chars,
+        )
 
     def _build_definitions(self) -> tuple[ToolDefinition, ...]:
         self._mcp_tools.clear()
