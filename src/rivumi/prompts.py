@@ -9,6 +9,7 @@ from rivumi.contracts import ConversationItem, Message, ToolObservation
 CODING_AGENT_PROMPT_VERSION = "m3-exact-edit-v4"
 CONTEXT_PRESSURE_REMINDER_VERSION = "b9-b1-context-pressure-v1"
 CONTEXT_SUMMARY_FALLBACK_VERSION = "b9-summary-fallback-v1"
+WORKSPACE_CONTEXT_REMINDER_VERSION = "b9-post-compact-workspace-context-v1"
 
 CODING_AGENT_SYSTEM_PROMPT = """You are a coding agent operating in a disposable Git workspace.
 
@@ -128,5 +129,98 @@ def build_history_summary_fallback_message(
     text = "\n".join(lines)
     if len(text) > max_chars:
         marker = "\n[summary truncated]"
+        text = text[: max_chars - len(marker)].rstrip() + marker
+    return Message(role="user", content=text)
+
+
+def _bounded_bullets(
+    heading: str,
+    values: Sequence[str],
+    *,
+    empty: str,
+    max_items: int,
+    max_field_chars: int,
+) -> list[str]:
+    lines = [heading]
+    if not values:
+        lines.append(f"- {empty}")
+        return lines
+    for value in values[:max_items]:
+        normalized = " ".join(value.strip().split())
+        if len(normalized) > max_field_chars:
+            normalized = normalized[: max_field_chars - 3].rstrip() + "..."
+        lines.append(f"- {normalized}")
+    omitted = len(values) - max_items
+    if omitted > 0:
+        lines.append(f"- ... {omitted} more omitted")
+    return lines
+
+
+def build_workspace_context_reminder(
+    *,
+    changed_files: Sequence[str],
+    check_status: Sequence[str],
+    recent_paths: Sequence[str],
+    constraints: Sequence[str],
+    max_chars: int = 4_000,
+    max_items: int = 12,
+    max_field_chars: int = 220,
+) -> Message:
+    """Compose a bounded one-shot workspace reminder after compaction."""
+
+    if max_chars < 512:
+        raise ValueError("max_chars must be at least 512")
+    if max_items < 1:
+        raise ValueError("max_items must be positive")
+    if max_field_chars < 40:
+        raise ValueError("max_field_chars must be at least 40")
+
+    lines = [
+        f"[{WORKSPACE_CONTEXT_REMINDER_VERSION}]",
+        (
+            "Post-compaction workspace/context reminder: use this bounded snapshot to "
+            "re-anchor the next action. Repository state and tool output remain authoritative."
+        ),
+    ]
+    lines.extend(
+        _bounded_bullets(
+            "Changed files:",
+            changed_files,
+            empty="none detected",
+            max_items=max_items,
+            max_field_chars=max_field_chars,
+        )
+    )
+    lines.extend(
+        _bounded_bullets(
+            "Check status:",
+            check_status,
+            empty="no checks have run yet",
+            max_items=max_items,
+            max_field_chars=max_field_chars,
+        )
+    )
+    lines.extend(
+        _bounded_bullets(
+            "Recent important paths:",
+            recent_paths,
+            empty="none captured yet",
+            max_items=max_items,
+            max_field_chars=max_field_chars,
+        )
+    )
+    lines.extend(
+        _bounded_bullets(
+            "Active constraints:",
+            constraints,
+            empty="none",
+            max_items=max_items,
+            max_field_chars=max_field_chars,
+        )
+    )
+
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        marker = "\n[workspace reminder truncated]"
         text = text[: max_chars - len(marker)].rstrip() + marker
     return Message(role="user", content=text)

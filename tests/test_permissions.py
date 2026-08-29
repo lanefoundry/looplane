@@ -27,6 +27,7 @@ from rivumi.permissions import (
     merge_permission_rule_sources,
     plan_dangerous_mode_entry,
 )
+from rivumi.policy_config import discover_policy_rules
 
 
 def tool_request(
@@ -166,13 +167,67 @@ def test_allow_rule_rejects_malformed_specs_with_allow_message() -> None:
 def test_policy_rule_sources_merge_user_then_project_without_precedence_side_effects() -> None:
     rules = merge_permission_rule_sources(
         user_deny_rules=(DenyRule.parse("read_file(.env*)"),),
+        org_deny_rules=(DenyRule.parse("run_check(npm publish:*)"),),
         project_deny_rules=(DenyRule.parse("run_check(git push:*)"),),
         user_allow_rules=(AllowRule.parse("run_check(pytest:*)"),),
+        org_allow_rules=(AllowRule.parse("read_file(packages/**)"),),
         project_allow_rules=(AllowRule.parse("read_file(docs/**)"),),
     )
 
-    assert [rule.tool_name for rule in rules.deny_rules] == ["read_file", "run_check"]
-    assert [rule.tool_name for rule in rules.allow_rules] == ["run_check", "read_file"]
+    assert [rule.tool_name for rule in rules.deny_rules] == [
+        "read_file",
+        "run_check",
+        "run_check",
+    ]
+    assert [rule.tool_name for rule in rules.allow_rules] == [
+        "run_check",
+        "read_file",
+        "read_file",
+    ]
+
+
+def test_discovered_policy_sources_preserve_explicit_precedence(tmp_path) -> None:
+    policy_dir = tmp_path / ".rivumi"
+    policy_dir.mkdir()
+    (policy_dir / "policy.json").write_text(
+        '{"deny_rules":["run_check(git push:*)"],"allow_rules":["read_file(docs/**)"]}',
+        encoding="utf-8",
+    )
+    org_policy_path = tmp_path / "org-policy.json"
+    org_policy_path.write_text(
+        '{"deny_rules":["run_check(npm publish:*)"],"allow_rules":["read_file(packages/**)"]}',
+        encoding="utf-8",
+    )
+
+    discovery = discover_policy_rules(
+        repository=tmp_path,
+        user_config_path=tmp_path / "user-config.json",
+        user_deny_rules=("read_file(.env*)",),
+        user_allow_rules=("run_check(pytest:*)",),
+        org_policy_path=org_policy_path,
+    )
+
+    assert discovery.source_precedence == (
+        "critical command floor",
+        "user deny_rules",
+        "org deny_rules",
+        "project deny_rules",
+        "user allow_rules",
+        "org allow_rules",
+        "project allow_rules",
+    )
+    assert discovery.org_policy_path == org_policy_path
+    assert discovery.project_policy_path == tmp_path / ".rivumi" / "policy.json"
+    assert [rule.tool_name for rule in discovery.rules.deny_rules] == [
+        "read_file",
+        "run_check",
+        "run_check",
+    ]
+    assert [rule.tool_name for rule in discovery.rules.allow_rules] == [
+        "run_check",
+        "read_file",
+        "read_file",
+    ]
 
 
 @pytest.mark.asyncio

@@ -586,36 +586,32 @@ def _enter_dangerous_mode(dangerous: bool):
 def _permission_guard_from_config(
     *,
     config: CliConfig,
+    repository: Path,
     deny_tool: list[str] | None = None,
     dangerous: bool = False,
 ):
-    from rivumi.permissions import (
-        AllowRule,
-        ApprovalMode,
-        DenyRule,
-        PermissionGuard,
-        merge_permission_rule_sources,
-    )
+    from rivumi.permissions import ApprovalMode, PermissionGuard
+    from rivumi.policy_config import discover_policy_rules
 
     try:
-        deny_rules = tuple(
-            DenyRule.parse(spec) for spec in (*config.deny_rules, *(deny_tool or ()))
+        discovery = discover_policy_rules(
+            repository=repository,
+            user_deny_rules=config.deny_rules,
+            user_allow_rules=config.allow_rules,
+            extra_user_deny_rules=deny_tool or (),
         )
-        allow_rules = tuple(AllowRule.parse(spec) for spec in config.allow_rules)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    rules = merge_permission_rule_sources(
-        user_deny_rules=deny_rules,
-        user_allow_rules=allow_rules,
-    )
     mode = _enter_dangerous_mode(dangerous)
     return (
         PermissionGuard(
             mode=mode,
-            deny_rules=rules.deny_rules,
-            allow_rules=rules.allow_rules,
+            deny_rules=discovery.rules.deny_rules,
+            allow_rules=discovery.rules.allow_rules,
         ),
-        mode is ApprovalMode.DANGEROUS or bool(rules.deny_rules) or bool(rules.allow_rules),
+        mode is ApprovalMode.DANGEROUS
+        or bool(discovery.rules.deny_rules)
+        or bool(discovery.rules.allow_rules),
     )
 
 
@@ -734,6 +730,7 @@ def chat(
     requested_provider = provider
     requested_model = model
     requested_api_url = api_url
+    repository = repository or Path.cwd()
     try:
         with _STARTUP.span("config.load"):
             current_config = load_cli_config()
@@ -741,6 +738,7 @@ def chat(
         raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
     permission_guard, guard_needed = _permission_guard_from_config(
         config=current_config,
+        repository=repository,
         deny_tool=deny_tool,
         dangerous=dangerous,
     )
@@ -830,7 +828,6 @@ def chat(
         api_url=api_url,
         allow_model_role_alias=True,
     )
-    repository = repository or Path.cwd()
     if not print_mode and not plain and _terminal_supports_tui():
         current = current_config
         explicit_rivumi_runtime = any(
@@ -1974,6 +1971,27 @@ def sessions(
             help="Replay deterministic state and timeline for one run id or id prefix.",
         ),
     ] = None,
+    replay_json: Annotated[
+        str | None,
+        typer.Option(
+            "--replay-json",
+            help="Print deterministic replay JSON for one run id or id prefix.",
+        ),
+    ] = None,
+    fork_from_event: Annotated[
+        str | None,
+        typer.Option(
+            "--fork-from-event",
+            help="Print a safe fork seed artifact for one run id or id prefix.",
+        ),
+    ] = None,
+    sequence: Annotated[
+        int | None,
+        typer.Option(
+            "--sequence",
+            help="Target event sequence for --fork-from-event.",
+        ),
+    ] = None,
     query: Annotated[
         str | None,
         typer.Option(
@@ -1990,8 +2008,20 @@ def sessions(
     max_event_search_part_chars = 4096
     normalized_query = query.casefold().strip() if query else None
 
-    if show is not None and replay is not None:
-        raise typer.BadParameter("--show and --replay cannot be used together")
+    detail_modes = tuple(
+        name
+        for name, value in (
+            ("--show", show),
+            ("--replay", replay),
+            ("--replay-json", replay_json),
+            ("--fork-from-event", fork_from_event),
+        )
+        if value is not None
+    )
+    if len(detail_modes) > 1:
+        raise typer.BadParameter(f"{' and '.join(detail_modes)} cannot be used together")
+    if sequence is not None and fork_from_event is None:
+        raise typer.BadParameter("--sequence requires --fork-from-event")
 
     def _read_json(path: Path) -> dict[str, object] | None:
         try:
@@ -2187,6 +2217,41 @@ def sessions(
             if item.detail is not None:
                 parts.append(f"detail={json.dumps(item.detail, ensure_ascii=False)}")
             typer.echo("  " + "  ".join(parts))
+        return
+
+    if replay_json is not None:
+        from rivumi.session_replay import ReplayValidationError, reduce_jsonl
+
+        run_dir = _resolve_run_dir(replay_json)
+        if run_dir is None:
+            typer.echo(f"error: no unique run matching {replay_json!r} under {run_root}", err=True)
+            raise typer.Exit(code=2)
+        try:
+            replay_state = reduce_jsonl(run_dir / "events.jsonl")
+        except ReplayValidationError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        typer.echo(replay_state.canonical_json())
+        return
+
+    if fork_from_event is not None:
+        from rivumi.session_replay import ReplayValidationError, fork_seed_jsonl
+
+        if sequence is None:
+            raise typer.BadParameter("--fork-from-event requires --sequence")
+        run_dir = _resolve_run_dir(fork_from_event)
+        if run_dir is None:
+            typer.echo(
+                f"error: no unique run matching {fork_from_event!r} under {run_root}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        try:
+            fork_seed = fork_seed_jsonl(run_dir / "events.jsonl", sequence)
+        except ReplayValidationError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        typer.echo(fork_seed.canonical_json())
         return
 
     rows: list[tuple[float, str, str, str, str, str]] = []
@@ -2475,12 +2540,16 @@ def run(
     instruction = _prompt_or_task(prompt, instruction)
     if instruction is None:
         raise typer.BadParameter("PROMPT or --task is required")
+    repository = repository or Path.cwd()
     try:
         with _STARTUP.span("config.load"):
             current_config = load_cli_config()
     except (OSError, ValueError) as exc:
         raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
-    permission_guard, _guard_needed = _permission_guard_from_config(config=current_config)
+    permission_guard, _guard_needed = _permission_guard_from_config(
+        config=current_config,
+        repository=repository,
+    )
     provider, model, base_url = _resolve_cli_settings(
         provider=provider,
         model=model,
@@ -2491,7 +2560,7 @@ def run(
         raise typer.BadParameter("--model is required when no config default exists")
     commands = _commands(check)
     task = TaskContract(
-        repository=repository or Path.cwd(),
+        repository=repository,
         instruction=instruction,
         allowed_paths=tuple(allowed_path or ("**",)),
         verification=commands,

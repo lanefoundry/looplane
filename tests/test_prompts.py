@@ -4,9 +4,11 @@ from rivumi.prompts import (
     CODING_AGENT_SYSTEM_PROMPT,
     CONTEXT_PRESSURE_REMINDER_VERSION,
     CONTEXT_SUMMARY_FALLBACK_VERSION,
+    WORKSPACE_CONTEXT_REMINDER_VERSION,
     build_coding_agent_system_prompt,
     build_context_pressure_reminder,
     build_history_summary_fallback_message,
+    build_workspace_context_reminder,
 )
 
 
@@ -77,3 +79,24 @@ def test_history_summary_fallback_message_is_versioned_and_bounded() -> None:
     assert "assistant" in message.content
     assert "tool read_file" in message.content
     assert len(message.content) <= 700
+
+
+def test_workspace_context_reminder_is_versioned_deterministic_and_bounded() -> None:
+    message = build_workspace_context_reminder(
+        changed_files=[f"src/file_{index}.py" for index in range(20)],
+        check_status=["tests: failed (exit 1)"],
+        recent_paths=["src/file_0.py", "tests/test_file.py"],
+        constraints=["allowed_paths=src/**, tests/**", "verification=tests"],
+        max_chars=900,
+        max_items=3,
+    )
+
+    assert message.role == "user"
+    assert message.content is not None
+    assert message.content.startswith(f"[{WORKSPACE_CONTEXT_REMINDER_VERSION}]")
+    assert "Changed files:" in message.content
+    assert "src/file_0.py" in message.content
+    assert "... 17 more omitted" in message.content
+    assert "tests: failed" in message.content
+    assert "Active constraints:" in message.content
+    assert len(message.content) <= 900

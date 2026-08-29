@@ -227,13 +227,21 @@ class DenyRule:
     a backslash.
     """
 
-    __slots__ = ("kind", "tool_name", "value")
+    __slots__ = ("kind", "raw_spec", "tool_name", "value")
     invalid_label = "deny"
 
-    def __init__(self, tool_name: str, kind: str, value: str | re.Pattern[str]) -> None:
+    def __init__(
+        self,
+        tool_name: str,
+        kind: str,
+        value: str | re.Pattern[str],
+        *,
+        raw_spec: str | None = None,
+    ) -> None:
         self.tool_name = tool_name
         self.kind = kind
         self.value = value
+        self.raw_spec = raw_spec or tool_name
 
     @classmethod
     def parse(cls, spec: str) -> Self:
@@ -245,13 +253,13 @@ class DenyRule:
         tool_name = match.group(1)
         raw = match.group(2)
         if raw is None:
-            return cls(tool_name, "tool", "")
+            return cls(tool_name, "tool", "", raw_spec=spec)
         literal = _unescape(raw)
         if raw.endswith(":*") and not raw.endswith("\\:*"):
-            return cls(tool_name, "prefix", literal[:-2])
+            return cls(tool_name, "prefix", literal[:-2], raw_spec=spec)
         if _has_unescaped_wildcard(raw):
-            return cls(tool_name, "wildcard", _compile_wildcard(literal))
-        return cls(tool_name, "exact", literal)
+            return cls(tool_name, "wildcard", _compile_wildcard(literal), raw_spec=spec)
+        return cls(tool_name, "exact", literal, raw_spec=spec)
 
     def matches(self, tool_name: str, subjects: Sequence[str]) -> bool:
         if self.tool_name != tool_name:
@@ -287,15 +295,17 @@ class PermissionRuleSet:
 def merge_permission_rule_sources(
     *,
     user_deny_rules: Sequence[DenyRule] = (),
+    org_deny_rules: Sequence[DenyRule] = (),
     project_deny_rules: Sequence[DenyRule] = (),
     user_allow_rules: Sequence[AllowRule] = (),
+    org_allow_rules: Sequence[AllowRule] = (),
     project_allow_rules: Sequence[AllowRule] = (),
 ) -> PermissionRuleSet:
     """Merge user and project policy sources without changing evaluation policy."""
 
     return PermissionRuleSet(
-        deny_rules=(*user_deny_rules, *project_deny_rules),
-        allow_rules=(*user_allow_rules, *project_allow_rules),
+        deny_rules=(*user_deny_rules, *org_deny_rules, *project_deny_rules),
+        allow_rules=(*user_allow_rules, *org_allow_rules, *project_allow_rules),
     )
 
 

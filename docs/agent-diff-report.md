@@ -128,6 +128,17 @@ Highest-ROI work completed in this pass:
     message builder plus pure trigger/span policy for native loop history pressure. The native
     loop now applies it once before a model request by replacing older messages with the summary
     while retaining the system/task seed and recent tail.
+32. **Replay JSON and fork seed baseline** — `rivumi sessions --replay-json` now exposes canonical
+    replay state, and `rivumi sessions --fork-from-event <run> --sequence <n>` emits a
+    side-effect-free fork seed artifact from the event-log prefix without constructing a model or
+    starting a run.
+33. **Project/org policy discovery baseline** — Added strict repository-local
+    `.rivumi/policy.json` discovery plus optional `RIVUMI_ORG_POLICY` loading. Permission guards now
+    merge user, org, and project deny/allow sources with explicit precedence while preserving the
+    critical command floor and user-deny authority.
+34. **Post-compact workspace/context reinjection** — After native-loop history fallback, Rivumi now
+    injects a one-shot bounded workspace reminder before the next model request, including changed
+    files, verification status, recent important paths, and active constraints.
 
 Still open and high ROI, but not completed in this pass:
 
@@ -141,9 +152,10 @@ Still open and high ROI, but not completed in this pass:
    config, and fail-closed guard, but Linux Landlock/seccomp and broader tool/process containment
    remain open.
 4. **Compaction fallback/replay** — Auto compaction now exists for native-capable conversations,
-   session event-content search and CLI replay exist, and a deterministic local summary fallback
-   now mutates native loop history under pressure, but sessions still lack replay API/fork-from-event
-   and post-compact workspace/context reinjection.
+   session event-content search, CLI replay JSON, and side-effect-free fork seeds exist, and native
+   loop history fallback now gets post-compact workspace/context reinjection. Remaining work is
+   replay API/serverization, starting safe forked runs, and extending equivalent fallback behavior
+   beyond the native loop.
 
 ## Score Matrix
 
@@ -291,15 +303,19 @@ confirms that the next optimization work should not stop at the six initial ROI 
 - [src/rivumi/permissions.py] also classifies command-shaped execution as allow / ask / deny, with
   timeout-deny for suspicious long-running shell shapes. `ApprovalRequest.policy_reason` surfaces
   ASK-classification reasons through approval UI/events/audit.
+- [src/rivumi/policy_config.py] discovers strict project `.rivumi/policy.json` and optional
+  `RIVUMI_ORG_POLICY` files, then merges user/org/project deny and allow rules into the native
+  permission guard without letting lower-precedence allow rules override earlier denies.
 
 **Cross-ref:** opencode's permission service resolves rule actions (ask/deny) against patterns before asking — `opencode/packages/opencode/src/permission/index.ts:67-96`.
 
-**Gaps:** Critical command patterns, CLI/config deny rules, deterministic command classification,
-and timeout-deny exist, but there is no allow-rule model, no multi-source org/project/user
-precedence beyond additive denies, and no AI-assisted classification.
+**Gaps:** Critical command patterns, config/project/org deny/allow rules, deterministic command
+classification, and timeout-deny exist. Remaining gaps are managed/remote org policy distribution,
+reload/reporting UX for per-source policy errors, and AI-assisted classification.
 
-**Action plan:** Add project/org policy sources and an allow-rule model while keeping all deny rules
-authoritative over dangerous mode and session grants.
+**Action plan:** Add managed policy distribution, per-source diagnostics, and optional
+AI-assisted command classification while keeping all deny rules authoritative over dangerous mode
+and session grants.
 
 **Effort:** Medium
 
@@ -749,16 +765,19 @@ filtering before injecting larger memory sets.
   extraction.
 - `rivumi sessions --replay <run-id-or-prefix>` exposes that reducer in the CLI and prints replay
   state plus a sequence-sorted timeline; invalid event logs fail closed.
+- `rivumi sessions --replay-json` prints canonical replay JSON, and
+  `rivumi sessions --fork-from-event <run> --sequence <n>` prints a deterministic
+  side-effect-free fork seed from the event-log prefix without replaying tools or starting a run.
 - Compaction boundaries modeled explicitly: `ContextCheckpoint` invariant "compaction cannot increase total context occupancy" (runtime_semantics.py:130-133); `/compact` wired through conversation_controller.compact_context with timeout + turn-correlation (conversation_controller.py:116-140).
 
 **Cross-ref:** pi-mono is the strongest comparison — versioned JSONL session files at `~/.pi/agent/sessions/…jsonl` with typed entries, tree lanes, `/fork` branching (`pi-mono/packages/agent/src/harness/session/jsonl/storage.ts#A8B3`, `docs/session-format.md#5704`); codex-rs adds auto-compaction windows on top of persisted rollout history.
 
-**Gaps:** Metadata/event-content search, compact timeline display, reducer, and CLI replay exist,
-but there is no replay API, no deduplication, resume requires same provider/model (strict but
-inflexible), and there is no fork-from-entry capability.
+**Gaps:** Metadata/event-content search, compact timeline display, reducer, CLI replay JSON, and
+fork seed artifacts exist, but there is no replay API, no deduplication, resume requires same
+provider/model (strict but inflexible), and fork seeds do not yet create a new safe run/workspace.
 
-**Action plan:** Add a replay API and fork/rewind-to-event operation using the already-append-only
-event log.
+**Action plan:** Add a replay API and a safe fork/rewind-to-event operation that creates a new run
+from the seed without reusing unsafe side effects.
 
 **Effort:** Medium
 
@@ -844,16 +863,20 @@ bundling `rg` for environments that do not have it installed.
 - src/rivumi/prompts.py, src/rivumi/runtime_semantics.py, and src/rivumi/loop.py — the native loop
   also applies a one-shot deterministic history-summary fallback under pressure, preserving the
   system/task seed and recent tail while replacing older messages with a versioned bounded summary.
+- src/rivumi/prompts.py, src/rivumi/runtime_semantics.py, and src/rivumi/loop.py — after that
+  fallback, a one-shot workspace/context reminder re-injects changed files, prior check status,
+  recent important paths, and active constraints before the next model request.
 
 **Cross-ref:** codex-rs performs compaction server-side via `/responses/compact` while preserving request identity — same `prompt_cache_key` as normal turns (codex-rs/core/tests/suite/compact_remote.rs:1267-1278) and retains messages within a token budget (compact_remote_v2.rs RETAINED_MESSAGE_TOKEN_BUDGET, :928-931).
 
 **Gaps:** Auto compaction only works for native-capable long-lived conversations, and the native
 loop fallback is deterministic and lossy rather than model-quality summarization. Other runtime
-paths still need equivalent fallback behavior. No post-compact restoration of key files/skills,
-no pre/post-compact hooks, no boundary marker in persisted transcript.
+paths still need equivalent fallback behavior, provider-native compaction still lacks a matching
+workspace reinjection signal, and there are no pre/post-compact hooks or boundary marker in the
+persisted transcript.
 
-**Action plan:** Extend fallback behavior to other runtimes and re-inject important workspace/file
-context after compaction.
+**Action plan:** Extend fallback behavior to other runtimes, connect reinjection to provider-native
+compaction events, and add pre/post-compact hooks plus persisted boundary markers.
 
 **Effort:** Medium
 

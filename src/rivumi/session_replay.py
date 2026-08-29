@@ -81,6 +81,42 @@ class ReplayState:
         )
 
 
+@dataclass(frozen=True)
+class ReplayForkSeed:
+    schema_version: int
+    fork_point_sequence: int
+    fork_point_event_type: str
+    source_run_id: str | None
+    source_conversation_id: str | None
+    events_included: int
+    side_effects_replayed: bool
+    run_started: bool
+    replay_state: ReplayState
+
+    def as_dict(self) -> dict[str, object]:
+        return _drop_none(
+            {
+                "schema_version": self.schema_version,
+                "fork_point_sequence": self.fork_point_sequence,
+                "fork_point_event_type": self.fork_point_event_type,
+                "source_run_id": self.source_run_id,
+                "source_conversation_id": self.source_conversation_id,
+                "events_included": self.events_included,
+                "side_effects_replayed": self.side_effects_replayed,
+                "run_started": self.run_started,
+                "replay_state": self.replay_state.as_dict(),
+            }
+        )
+
+    def canonical_json(self) -> str:
+        return json.dumps(
+            self.as_dict(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+
 def reduce_events(
     events: Iterable[Mapping[str, Any]],
     *,
@@ -104,6 +140,84 @@ def reduce_jsonl(
 ) -> ReplayState:
     """Load event JSONL from disk and reduce it into a deterministic replay state."""
 
+    return reduce_events(
+        _load_jsonl_events(path, max_event_bytes=max_event_bytes),
+        max_events=max_events,
+    )
+
+
+def fork_seed_at_sequence(
+    events: Iterable[Mapping[str, Any]],
+    sequence: int,
+    *,
+    max_events: int = MAX_REPLAY_EVENTS,
+) -> ReplayForkSeed:
+    """Build a reviewable fork seed from event-log state through ``sequence``.
+
+    The seed is a deterministic artifact only: it reduces prior events into state and
+    deliberately does not replay tools, checks, subprocesses, or model calls.
+    """
+
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0:
+        raise ReplayValidationError("fork sequence must be a non-negative integer")
+    if max_events < 0:
+        raise ReplayValidationError("max_events must be non-negative")
+    normalized = [_normalize_event(event, index) for index, event in enumerate(events)]
+    if len(normalized) > max_events:
+        raise ReplayValidationError(f"event log exceeds {max_events} events")
+    ordered = sorted(normalized, key=lambda event: event["sequence"])
+    _reduce_normalized(ordered)
+    target_event = next((event for event in ordered if event["sequence"] == sequence), None)
+    if target_event is None:
+        raise ReplayValidationError(f"fork sequence {sequence} was not found")
+    prefix = tuple(event for event in ordered if event["sequence"] <= sequence)
+    replay_state = _reduce_normalized(prefix)
+    return ReplayForkSeed(
+        schema_version=1,
+        fork_point_sequence=sequence,
+        fork_point_event_type=target_event["event_type"],
+        source_run_id=replay_state.run_id,
+        source_conversation_id=replay_state.conversation_id,
+        events_included=len(prefix),
+        side_effects_replayed=False,
+        run_started=False,
+        replay_state=replay_state,
+    )
+
+
+def fork_seed_jsonl(
+    path: str | Path,
+    sequence: int,
+    *,
+    max_events: int = MAX_REPLAY_EVENTS,
+    max_event_bytes: int = MAX_REPLAY_EVENT_BYTES,
+) -> ReplayForkSeed:
+    """Load event JSONL and build a deterministic fork seed artifact."""
+
+    return fork_seed_at_sequence(
+        _load_jsonl_events(path, max_event_bytes=max_event_bytes),
+        sequence,
+        max_events=max_events,
+    )
+
+
+def canonical_fork_seed_json(events: Iterable[Mapping[str, Any]], sequence: int) -> str:
+    """Convenience wrapper for deterministic fork-seed output."""
+
+    return fork_seed_at_sequence(events, sequence).canonical_json()
+
+
+def canonical_replay_json(events: Iterable[Mapping[str, Any]]) -> str:
+    """Convenience wrapper for deterministic reducer output."""
+
+    return reduce_events(events).canonical_json()
+
+
+def _load_jsonl_events(
+    path: str | Path,
+    *,
+    max_event_bytes: int = MAX_REPLAY_EVENT_BYTES,
+) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     try:
         with Path(path).open("rb") as file:
@@ -130,13 +244,7 @@ def reduce_jsonl(
                 events.append(value)
     except OSError as exc:
         raise ReplayValidationError(f"could not read event JSONL: {exc}") from exc
-    return reduce_events(events, max_events=max_events)
-
-
-def canonical_replay_json(events: Iterable[Mapping[str, Any]]) -> str:
-    """Convenience wrapper for deterministic reducer output."""
-
-    return reduce_events(events).canonical_json()
+    return events
 
 
 def _reduce_normalized(events: Sequence[dict[str, Any]]) -> ReplayState:

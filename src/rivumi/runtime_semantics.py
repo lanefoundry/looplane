@@ -129,6 +129,16 @@ def should_apply_history_summary_fallback(
     return message_count - protected_head_items - retained_tail_items >= min_summarized_items
 
 
+def should_inject_workspace_context_reminder(
+    *,
+    compacted_context: bool,
+    already_injected: bool,
+) -> bool:
+    """Return whether the next model request needs the post-compaction workspace reminder."""
+
+    return compacted_context and not already_injected
+
+
 def history_summary_fallback_span(
     *,
     message_count: int,

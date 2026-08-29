@@ -781,6 +781,101 @@ def test_exec_alias_wires_configured_permission_guard(
     assert [rule.tool_name for rule in guard.allow_rules] == ["run_check"]
 
 
+def test_exec_alias_wires_cwd_project_policy_after_user_config(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+    from rivumi.permissions import PermissionGuard
+
+    captured_runner_kwargs: dict[str, object] = {}
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider": "openai-compatible",
+                "model": "primary",
+                "deny_rules": ["read_file(.env*)"],
+                "allow_rules": ["run_check(pytest:*)"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    policy_dir = tiny_bug_repo / ".rivumi"
+    policy_dir.mkdir()
+    (policy_dir / "policy.json").write_text(
+        json.dumps(
+            {
+                "deny_rules": ["run_check(git push:*)"],
+                "allow_rules": ["read_file(docs/**)"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **kwargs) -> None:
+            captured_runner_kwargs.update(kwargs)
+
+        async def run(self):
+            return RunResult(
+                run_id="exec-run",
+                task_id="exec-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(
+        cli,
+        "_model_from_env",
+        lambda **kwargs: ScriptedModel(
+            [ModelTurn(content="unused")],
+            model_id=str(kwargs["model"]),
+        ),
+    )
+    monkeypatch.chdir(tiny_bug_repo)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(cli.app, ["exec", "Fix it"])
+
+    assert result.exit_code == 0, result.output
+    guard = captured_runner_kwargs["permission_guard"]
+    assert isinstance(guard, PermissionGuard)
+    assert [rule.tool_name for rule in guard.deny_rules] == ["read_file", "run_check"]
+    assert [rule.tool_name for rule in guard.allow_rules] == ["run_check", "read_file"]
+
+
+def test_cli_fails_closed_with_clear_invalid_project_policy_error(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    policy_dir = tiny_bug_repo / ".rivumi"
+    policy_dir.mkdir()
+    (policy_dir / "policy.json").write_text('{"deny_rules":["not valid"]}', encoding="utf-8")
+    monkeypatch.chdir(tiny_bug_repo)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "-p",
+            "--task",
+            "Fix it",
+            "--provider",
+            "openai-compatible",
+            "--model",
+            "primary",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert ".rivumi/policy.json" in result.output
+    assert "invalid deny rule" in result.output
+
+
 def test_sessions_query_matches_request_and_skips_unsafe_dirs(tmp_path: Path) -> None:
     run_root = tmp_path / "runs"
     run_root.mkdir()
@@ -1034,6 +1129,149 @@ def test_sessions_replay_renders_deterministic_state_and_timeline(tmp_path: Path
     assert result.output.index("   1  user.message") < result.output.index(
         '   2  turn.completed  turn=turn-1  detail="done"'
     )
+
+
+def test_sessions_replay_json_prints_deterministic_json(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    run_dir = run_root / "abcdef1234567890"
+    run_dir.mkdir(parents=True)
+    events = [
+        {
+            "event_type": "turn.completed",
+            "run_id": run_dir.name,
+            "sequence": 2,
+            "turn_id": "turn-1",
+            "data": {"summary": "done"},
+        },
+        {
+            "event_type": "run.created",
+            "run_id": run_dir.name,
+            "sequence": 0,
+            "data": {"provider": "openai-compatible", "model": "gpt-5"},
+        },
+        {
+            "event_type": "user.message",
+            "run_id": run_dir.name,
+            "sequence": 1,
+            "turn_id": "turn-1",
+            "text": "Fix calculator overflow",
+        },
+    ]
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    first = CliRunner().invoke(
+        cli.app,
+        ["sessions", "--run-root", str(run_root), "--replay-json", "abcdef"],
+    )
+    second = CliRunner().invoke(
+        cli.app,
+        ["sessions", "--run-root", str(run_root), "--replay-json", "abcdef"],
+    )
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert first.output == second.output
+    payload = json.loads(first.output)
+    assert payload["schema_version"] == 1
+    assert payload["run_id"] == run_dir.name
+    assert payload["event_count"] == 3
+    assert [item["sequence"] for item in payload["timeline"]] == [0, 1, 2]
+
+
+def test_sessions_fork_from_event_prints_side_effect_free_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "runs"
+    run_dir = run_root / "abcdef1234567890"
+    run_dir.mkdir(parents=True)
+    events = [
+        {
+            "event_type": "run.created",
+            "run_id": run_dir.name,
+            "sequence": 0,
+            "data": {"provider": "scripted", "model": "scripted"},
+        },
+        {
+            "event_type": "tool.completed",
+            "run_id": run_dir.name,
+            "sequence": 1,
+            "data": {"name": "apply_patch", "summary": "patched"},
+        },
+        {
+            "event_type": "run.completed",
+            "run_id": run_dir.name,
+            "sequence": 2,
+            "data": {"summary": "done"},
+        },
+    ]
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli,
+        "_model_from_env",
+        lambda **_: pytest.fail("fork seed generation must not construct a model"),
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "sessions",
+            "--run-root",
+            str(run_root),
+            "--fork-from-event",
+            "abcdef",
+            "--sequence",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["fork_point_sequence"] == 1
+    assert payload["fork_point_event_type"] == "tool.completed"
+    assert payload["source_run_id"] == run_dir.name
+    assert payload["events_included"] == 2
+    assert payload["side_effects_replayed"] is False
+    assert payload["run_started"] is False
+    assert payload["replay_state"]["last_sequence"] == 1
+    assert [item["sequence"] for item in payload["replay_state"]["timeline"]] == [0, 1]
+
+
+def test_sessions_fork_from_event_rejects_invalid_sequence(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    run_dir = run_root / "abcdef1234567890"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(
+        '{"event_type":"run.created","run_id":"abcdef1234567890","sequence":0}\n',
+        encoding="utf-8",
+    )
+
+    missing = CliRunner().invoke(
+        cli.app,
+        [
+            "sessions",
+            "--run-root",
+            str(run_root),
+            "--fork-from-event",
+            "abcdef",
+            "--sequence",
+            "99",
+        ],
+    )
+    omitted = CliRunner().invoke(
+        cli.app,
+        ["sessions", "--run-root", str(run_root), "--fork-from-event", "abcdef"],
+    )
+
+    assert missing.exit_code == 2
+    assert "fork sequence 99 was not found" in missing.output
+    assert omitted.exit_code == 2
+    assert "--fork-from-event requires --sequence" in omitted.output
 
 
 def test_sessions_replay_rejects_invalid_events_jsonl(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -8,7 +9,13 @@ from pathlib import Path
 import pytest
 from conftest import run_git
 
-from rivumi.approvals import ApprovalDecision, ApprovalReason, ApprovalRequest, ToolEffect
+from rivumi.approvals import (
+    ApprovalDecision,
+    ApprovalReason,
+    ApprovalRequest,
+    HeadlessApprovalPolicy,
+    ToolEffect,
+)
 from rivumi.contracts import (
     Limits,
     Message,
@@ -25,6 +32,8 @@ from rivumi.contracts import (
 from rivumi.loop import AgentRunner
 from rivumi.models import ProviderError, ProviderErrorKind, ScriptedModel
 from rivumi.permissions import PermissionGuard
+from rivumi.prompts import WORKSPACE_CONTEXT_REMINDER_VERSION, build_workspace_context_reminder
+from rivumi.session import SessionManifest, SessionPhase, SessionStore
 
 BROKEN_PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
@@ -988,6 +997,165 @@ async def test_history_summary_fallback_compacts_old_native_messages_once(
             if event["event_type"] == "context_pressure.summary_fallback_applied"
         ]
     ) == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_context_reminder_is_injected_after_summary_fallback(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(
+            max_steps=4,
+            wall_time_seconds=60,
+            max_total_tokens=100,
+        ),
+        verification=(
+            VerificationCommand(
+                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
+            ),
+        ),
+    )
+    patch_call = ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH})
+    read_calculator = ToolCall(
+        name="read_file",
+        arguments={"path": "src/tiny_python_bug/calculator.py"},
+    )
+    read_package = ToolCall(
+        name="read_file",
+        arguments={"path": "src/tiny_python_bug/__init__.py"},
+    )
+    model = ScriptedModel(
+        [
+            ModelTurn(tool_calls=(patch_call,), usage=Usage(input_tokens=30)),
+            ModelTurn(tool_calls=(read_calculator,), usage=Usage(input_tokens=30)),
+            ModelTurn(tool_calls=(read_package,), usage=Usage(input_tokens=25)),
+            ModelTurn(content="Fixed calculator."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    fourth_call_messages, _tools = model.calls[3]
+    reminders = [
+        message
+        for message in fourth_call_messages
+        if isinstance(message, Message)
+        and message.content
+        and WORKSPACE_CONTEXT_REMINDER_VERSION in message.content
+    ]
+    assert len(reminders) == 1
+    reminder = reminders[0].content or ""
+    assert "Changed files:" in reminder
+    assert "src/tiny_python_bug/calculator.py" in reminder
+    assert "Check status:" in reminder
+    assert "no checks have run yet" in reminder
+    assert "Recent important paths:" in reminder
+    assert "Active constraints:" in reminder
+    assert "allowed_paths=src/**" in reminder
+    events = read_events(result)
+    assert len(
+        [
+            event
+            for event in events
+            if event["event_type"] == "context_pressure.workspace_reminder_injected"
+        ]
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_detects_existing_workspace_context_reminder_marker(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    run_root = tmp_path / "runs"
+    run_id = "resume-marker"
+    run_dir = run_root / run_id
+    run_dir.mkdir(parents=True)
+    shutil.copytree(tiny_bug_repo, run_dir / "workspace")
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(
+            max_steps=3,
+            wall_time_seconds=60,
+            max_total_tokens=100,
+        ),
+        verification=(
+            VerificationCommand(
+                name="always-pass",
+                argv=(sys.executable, "-c", "raise SystemExit(0)"),
+                timeout_seconds=5,
+            ),
+        ),
+    )
+    (run_dir / "request.json").write_text(
+        json.dumps(task.model_dump(mode="json"), indent=2),
+        encoding="utf-8",
+    )
+    existing_reminder = build_workspace_context_reminder(
+        changed_files=("src/tiny_python_bug/calculator.py",),
+        check_status=("tests: failed (exit 1)",),
+        recent_paths=("src/tiny_python_bug/calculator.py",),
+        constraints=("allowed_paths=src/**",),
+    )
+    manifest = SessionManifest.new(
+        run_id=run_id,
+        task_id=task.task_id,
+        provider_name="scripted",
+        model_id="scripted",
+        protocol=str(ModelProtocol.SCRIPTED),
+        base_sha=task.base_sha or "",
+    ).model_copy(
+        update={
+            "phase": SessionPhase.RUNNING,
+            "step": 2,
+            "messages": (
+                Message(role="system", content="system"),
+                Message(role="user", content="task"),
+                Message(role="user", content="[b9-summary-fallback-v1]\nsummary"),
+                existing_reminder,
+            ),
+            "usage": Usage(input_tokens=85),
+        }
+    )
+    store = SessionStore(run_dir)
+    lease = store.acquire_writer()
+    try:
+        await store.initialize(manifest, lease)
+    finally:
+        lease.release()
+    model = ScriptedModel([ModelTurn(content="Ready to verify.")])
+
+    result = await (
+        await AgentRunner.resume(
+            run_dir,
+            model,
+            approval_policy=HeadlessApprovalPolicy(allow_modify=True, allow_execute=True),
+        )
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert len(model.calls) == 1
+    call_messages, _tools = model.calls[0]
+    reminders = [
+        message
+        for message in call_messages
+        if isinstance(message, Message)
+        and message.content
+        and WORKSPACE_CONTEXT_REMINDER_VERSION in message.content
+    ]
+    assert len(reminders) == 1
+    events = read_events(result)
+    assert not [
+        event
+        for event in events
+        if event["event_type"] == "context_pressure.workspace_reminder_injected"
+    ]
 
 
 @pytest.mark.asyncio

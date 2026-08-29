@@ -26,6 +26,7 @@ from rivumi.runtime_semantics import (
     history_summary_fallback_span,
     should_apply_history_summary_fallback,
     should_auto_compact_context,
+    should_inject_workspace_context_reminder,
     should_remind_context_pressure,
 )
 
@@ -192,6 +193,30 @@ def test_history_summary_fallback_span_keeps_seed_and_recent_tail() -> None:
 
     with pytest.raises(ValueError, match="retained_tail_items"):
         history_summary_fallback_span(message_count=8, retained_tail_items=-1)
+
+
+def test_workspace_context_reminder_policy_is_one_shot_after_compaction() -> None:
+    assert (
+        should_inject_workspace_context_reminder(
+            compacted_context=True,
+            already_injected=False,
+        )
+        is True
+    )
+    assert (
+        should_inject_workspace_context_reminder(
+            compacted_context=False,
+            already_injected=False,
+        )
+        is False
+    )
+    assert (
+        should_inject_workspace_context_reminder(
+            compacted_context=True,
+            already_injected=True,
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize(

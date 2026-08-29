@@ -13,6 +13,7 @@ from rivumi.cli_config import (
     load_cli_config,
     save_cli_config,
 )
+from rivumi.policy_config import ProjectPolicyError, load_project_policy_config
 
 
 async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: Path) -> None:
@@ -124,3 +125,78 @@ def test_cli_config_previously_broke_app_startup_for_headless_external_runtimes(
     path.write_text('{"runtime":"opencode","provider":null,"model":null}')
 
     assert load_cli_config(path).runtime == "opencode"
+
+
+def test_project_policy_config_loads_missing_valid_and_invalid_policy(
+    tmp_path: Path,
+) -> None:
+    assert load_project_policy_config(tmp_path).deny_rules == ()
+
+    policy_dir = tmp_path / ".rivumi"
+    policy_dir.mkdir()
+    policy_path = policy_dir / "policy.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "deny_rules": [" read_file(.env*) "],
+                "allow_rules": ["run_check(pytest:*)"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_project_policy_config(tmp_path)
+    assert loaded.deny_rules == ("read_file(.env*)",)
+    assert loaded.allow_rules == ("run_check(pytest:*)",)
+
+    policy_path.write_text('{"deny_rules":["not valid"]}', encoding="utf-8")
+    with pytest.raises(ProjectPolicyError, match="project policy is invalid"):
+        load_project_policy_config(tmp_path)
+
+
+def test_implicit_cli_config_load_keeps_project_policy_out_of_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider": "ollama",
+                "deny_rules": ["read_file(.env*)"],
+                "allow_rules": ["run_check(pytest:*)"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    policy_dir = tmp_path / ".rivumi"
+    policy_dir.mkdir()
+    (policy_dir / "policy.json").write_text(
+        json.dumps(
+            {
+                "deny_rules": ["run_check(git push:*)"],
+                "allow_rules": ["read_file(docs/**)"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+
+    loaded = load_cli_config()
+
+    assert loaded.provider == "ollama"
+    assert loaded.deny_rules == ("read_file(.env*)",)
+    assert loaded.allow_rules == ("run_check(pytest:*)",)
+
+
+def test_explicit_cli_config_load_does_not_validate_cwd_project_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    policy_dir = tmp_path / ".rivumi"
+    policy_dir.mkdir()
+    (policy_dir / "policy.json").write_text('{"allow_rules":["not valid"]}', encoding="utf-8")
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"provider":"ollama"}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert load_cli_config(config_path).provider == "ollama"

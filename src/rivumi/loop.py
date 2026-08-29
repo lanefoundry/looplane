@@ -50,9 +50,11 @@ from rivumi.prompts import (
     CODING_AGENT_PROMPT_VERSION,
     CONTEXT_PRESSURE_REMINDER_VERSION,
     CONTEXT_SUMMARY_FALLBACK_VERSION,
+    WORKSPACE_CONTEXT_REMINDER_VERSION,
     build_coding_agent_system_prompt,
     build_context_pressure_reminder,
     build_history_summary_fallback_message,
+    build_workspace_context_reminder,
 )
 from rivumi.provider_catalog import estimate_cost
 from rivumi.runtime import (
@@ -65,6 +67,7 @@ from rivumi.runtime import (
 from rivumi.runtime_semantics import (
     history_summary_fallback_span,
     should_apply_history_summary_fallback,
+    should_inject_workspace_context_reminder,
     should_remind_context_pressure,
 )
 from rivumi.session import (
@@ -181,6 +184,7 @@ class AgentRunner:
         self._resume_ready = False
         self._context_pressure_reminder_sent = False
         self._history_summary_fallback_applied = False
+        self._workspace_context_reminder_sent = False
         self._cancel_requested = asyncio.Event()
 
     @property
@@ -266,6 +270,13 @@ class AgentRunner:
                 and item.role == "user"
                 and item.content is not None
                 and CONTEXT_SUMMARY_FALLBACK_VERSION in item.content
+                for item in runner._messages
+            )
+            runner._workspace_context_reminder_sent = any(
+                isinstance(item, Message)
+                and item.role == "user"
+                and item.content is not None
+                and WORKSPACE_CONTEXT_REMINDER_VERSION in item.content
                 for item in runner._messages
             )
             # A resumed workspace may already contain modifications from before the
@@ -784,6 +795,103 @@ class AgentRunner:
             source_start_index=start,
             source_end_index=end,
             retained_messages=len(self._messages),
+        )
+
+    def _recent_important_paths(self, *, max_items: int = 12) -> tuple[str, ...]:
+        seen: set[str] = set()
+        paths: list[str] = []
+
+        def add(value: object) -> None:
+            if not isinstance(value, str):
+                return
+            normalized = value.strip().replace("\\", "/")
+            if not normalized or "\x00" in normalized or normalized in {".", "/"}:
+                return
+            if normalized.startswith(("/", "../")) or "/../" in normalized:
+                return
+            if normalized not in seen:
+                seen.add(normalized)
+                paths.append(normalized)
+
+        for item in reversed(self._messages):
+            if isinstance(item, ToolObservation):
+                continue
+            for call in reversed(item.tool_calls):
+                add(call.arguments.get("path"))
+                raw_paths = call.arguments.get("paths")
+                if isinstance(raw_paths, Sequence) and not isinstance(raw_paths, str):
+                    for raw_path in raw_paths:
+                        add(raw_path)
+            if len(paths) >= max_items:
+                break
+        return tuple(paths[:max_items])
+
+    def _check_status_lines(self) -> tuple[str, ...]:
+        if not self._last_verification:
+            return ()
+        return tuple(
+            f"{outcome.name}: {'passed' if outcome.ok else 'failed'}"
+            + (
+                f" (exit {outcome.exit_code})"
+                if outcome.exit_code is not None
+                else ""
+            )
+            for outcome in self._last_verification
+        )
+
+    def _constraint_lines(self) -> tuple[str, ...]:
+        verification = "; ".join(
+            f"{command.name}={list(command.argv)!r}" for command in self.task.verification
+        )
+        token_limit = (
+            f"max_total_tokens={self.task.limits.max_total_tokens}"
+            if self.task.limits.max_total_tokens is not None
+            else "max_total_tokens=unbounded"
+        )
+        remaining_steps = max(0, self.task.limits.max_steps - self._step)
+        return (
+            "allowed_paths=" + ", ".join(self.task.allowed_paths),
+            "verification=" + verification,
+            f"remaining_steps_before_next_request={remaining_steps}",
+            token_limit,
+        )
+
+    async def _workspace_changed_files(self, deadline: float) -> tuple[str, ...]:
+        if self._executor is None:
+            return ()
+        try:
+            review = await asyncio.to_thread(
+                self._executor.reviewable_patch,
+                timeout_seconds=min(5.0, self._remaining(deadline)),
+            )
+        except (ToolExecutionError, TimeoutError):
+            return ("changed-file scan unavailable",)
+        return review.changed_paths
+
+    async def _maybe_inject_workspace_context_reminder(self, deadline: float) -> None:
+        if not should_inject_workspace_context_reminder(
+            compacted_context=self._history_summary_fallback_applied,
+            already_injected=self._workspace_context_reminder_sent,
+        ):
+            return
+        changed_files = await self._workspace_changed_files(deadline)
+        recent_paths = tuple(
+            dict.fromkeys((*changed_files, *self._recent_important_paths())).keys()
+        )
+        self._messages.append(
+            build_workspace_context_reminder(
+                changed_files=changed_files,
+                check_status=self._check_status_lines(),
+                recent_paths=recent_paths,
+                constraints=self._constraint_lines(),
+                max_chars=max(512, min(self.task.limits.max_tool_output_bytes, 4_000)),
+            )
+        )
+        self._workspace_context_reminder_sent = True
+        await self._event(
+            "context_pressure.workspace_reminder_injected",
+            changed_files=changed_files,
+            recent_paths=recent_paths,
         )
 
     async def _verify_all(self, deadline: float) -> tuple[VerificationOutcome, ...]:
@@ -1327,6 +1435,7 @@ class AgentRunner:
                     )
                 await self._maybe_apply_history_summary_fallback()
                 await self._maybe_inject_context_pressure_reminder()
+                await self._maybe_inject_workspace_context_reminder(deadline)
                 self._step += 1
                 await self._event("model.requested", step=self._step)
                 turn = await self._complete_model_with_retry(deadline)

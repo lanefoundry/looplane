@@ -8,7 +8,9 @@ import pytest
 from rivumi.session_replay import (
     MAX_REPLAY_TEXT_CHARS,
     ReplayValidationError,
+    canonical_fork_seed_json,
     canonical_replay_json,
+    fork_seed_at_sequence,
     reduce_events,
     reduce_jsonl,
 )
@@ -224,6 +226,57 @@ def test_replay_output_is_deterministic() -> None:
 
     assert canonical_replay_json(first) == canonical_replay_json(second)
     assert reduce_events(first).as_dict() == reduce_events(second).as_dict()
+
+
+def test_fork_seed_at_sequence_builds_side_effect_free_prefix() -> None:
+    events = (
+        {"event_type": "run.completed", "run_id": "run-1", "sequence": 3},
+        {
+            "event_type": "tool.completed",
+            "run_id": "run-1",
+            "sequence": 2,
+            "data": {"name": "apply_patch", "summary": "patched"},
+        },
+        {
+            "event_type": "run.created",
+            "run_id": "run-1",
+            "sequence": 0,
+            "data": {"provider": "scripted", "model": "scripted"},
+        },
+        {
+            "event_type": "user.message",
+            "run_id": "run-1",
+            "sequence": 1,
+            "turn_id": "turn-1",
+            "text": "Fix it",
+        },
+    )
+
+    seed = fork_seed_at_sequence(events, 2)
+
+    assert seed.fork_point_sequence == 2
+    assert seed.fork_point_event_type == "tool.completed"
+    assert seed.source_run_id == "run-1"
+    assert seed.events_included == 3
+    assert seed.side_effects_replayed is False
+    assert seed.run_started is False
+    assert seed.replay_state.last_sequence == 2
+    assert seed.replay_state.terminal_event_type is None
+    assert [item.sequence for item in seed.replay_state.timeline] == [0, 1, 2]
+    assert canonical_fork_seed_json(events, 2) == canonical_fork_seed_json(
+        tuple(reversed(events)),
+        2,
+    )
+
+
+def test_fork_seed_at_sequence_rejects_invalid_sequence() -> None:
+    events = ({"event_type": "run.created", "run_id": "run-1", "sequence": 0},)
+
+    with pytest.raises(ReplayValidationError, match="was not found"):
+        fork_seed_at_sequence(events, 1)
+
+    with pytest.raises(ReplayValidationError, match="non-negative integer"):
+        fork_seed_at_sequence(events, -1)
 
 
 def test_reduce_events_respects_event_count_bound() -> None:
