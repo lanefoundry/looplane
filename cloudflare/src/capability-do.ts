@@ -112,6 +112,26 @@ export class RunCapability extends DurableObject<unknown> {
       return json({ ok: true, remaining });
     }
 
+    if (path === "/check") {
+      const body = await parseBody(request);
+      if (
+        body === null ||
+        typeof body.model !== "string" ||
+        Object.keys(body).some((key) => key !== "model")
+      ) {
+        return json({ error: "invalid_check" }, 400);
+      }
+      const now = Date.now();
+      const record = await this.ctx.storage.get<CapabilityRecord>("capability");
+      if (record === undefined || record.model !== body.model) return json({ error: "inactive" }, 401);
+      if (record.expiresAt <= now) {
+        await this.ctx.storage.delete("capability");
+        return json({ error: "expired" }, 401);
+      }
+      if (record.usedRequests >= record.maxRequests) return json({ error: "exhausted" }, 429);
+      return json({ ok: true, remaining: record.maxRequests - record.usedRequests });
+    }
+
     if (path === "/revoke") {
       await this.ctx.storage.delete("capability");
       return new Response(null, { status: 204 });
@@ -162,6 +182,30 @@ export async function consumeCapability(
     return "inactive";
   }
   throw new Error("run capability consumption failed");
+}
+
+export async function checkCapability(
+  namespace: DurableObjectNamespace<RunCapability>,
+  runId: string,
+  model: string,
+): Promise<CapabilityConsumeResult> {
+  const response = await stub(namespace, runId).fetch("https://capability.internal/check", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+  if (response.status === 200) return "ok";
+  if (response.status === 429) return "exhausted";
+  if (response.status === 401) {
+    try {
+      const body: unknown = await response.json();
+      if (isObject(body) && body.error === "expired") return "expired";
+    } catch {
+      // Fail closed as inactive below.
+    }
+    return "inactive";
+  }
+  throw new Error("run capability check failed");
 }
 
 export async function revokeCapability(

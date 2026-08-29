@@ -2,7 +2,8 @@
 
 This subproject is the bounded M6 Worker/Sandbox slice. It accepts one synchronous coding run,
 stages a small text-only source tree in a fresh Sandbox, invokes one fixed Python entrypoint, reads
-the bounded result bundle, and destroys the Sandbox in `finally`.
+the bounded result bundle, persists terminal run metadata/artifacts, and destroys the Sandbox in
+`finally`.
 
 It does not accept Git URLs, archives, shell strings, provider credentials, consumer subscription
 tokens, custom model IDs, or caller-selected upstream URLs.
@@ -37,9 +38,41 @@ Requires `Authorization: Bearer <CONTROL_PLANE_TOKEN>` and `Content-Type: applic
 The accepted terminal HTTP status is `201`; `output.ok` carries the agent's terminal success. Exit
 `0` is accepted only with `ok: true` plus a `completed` result. Exit `1` is accepted only with
 `ok: false` plus a `failed` or `cancelled` result and the full artifact bundle. Every other
-exit/result/schema combination is a fail-closed `502`. The route is currently synchronous and has no
-durable run-artifact/status/cancel API. Capability revocation and Sandbox teardown happen before the
-response returns.
+exit/result/schema combination is a fail-closed `502`. The route is still synchronous for
+compatibility, but it also writes a `RunSession` Durable Object record for later status, event, and
+artifact reads. Capability revocation and Sandbox teardown happen before the response returns.
+
+### `GET /v1/runs/:runId`
+
+Requires `Authorization: Bearer <CONTROL_PLANE_TOKEN>`. Returns durable run metadata only:
+status, model, timestamps, request summary, terminal summary/reason, execution result, cancellation
+flag, and artifact key names. Artifact bodies are not included in this response.
+
+### `GET /v1/runs/:runId/events`
+
+Requires control-plane auth. Returns the stored terminal `events` artifact as
+`application/x-ndjson`. While a run is active, the Sandbox mirrors emitted `RunEvent` JSONL lines to
+the Worker and this route returns those live-appended lines; after completion it falls back to the
+terminal bundled artifact if no live lines were received.
+
+Pass `?stream=1` to receive `text/event-stream` frames. Stream mode replays the bounded stored
+event buffer on attach, keeps the connection open for non-terminal runs, pushes newly appended
+events, emits `: heartbeat` comments while idle, and closes when the run completes, fails, or is
+cancelled. Clients may send `Last-Event-ID` to replay only events whose integer `sequence` is newer
+than that cursor. A Durable Object restart drops in-memory subscribers, so clients should reconnect
+and rely on replayed stored lines.
+
+### `GET /v1/runs/:runId/artifacts/:name`
+
+Requires control-plane auth. `:name` must be one of `request`, `events`, `checkpoint`, `patch`,
+`test_log`, or `result`. Artifact contents may include source, prompts, diffs, and logs; callers
+should treat this route as sensitive.
+
+### `POST /v1/runs/:runId/cancel`
+
+Requires control-plane auth. Marks cancellation requested in `RunSession`. For non-terminal runs,
+the Worker revokes the run capability and destroys the sandbox best-effort, returning `202`. For
+already-terminal runs it returns the terminal status with `200`.
 
 A completed response is accepted only when every requested check appears exactly once with the
 same argv and a passing exit status, and every reported changed file is covered by the request's
@@ -59,17 +92,18 @@ No shell parsing is used for these checks. The only Worker-to-Sandbox exec comma
 /usr/local/bin/rivumi-sandbox-run
 ```
 
-The root-owned, mode `0555` wrapper validates the staged workspace and token file, changes the
-workspace owner to the image's non-root `rivumi` user, sets the token to owner-only mode `0600`, and
-uses `setpriv --no-new-privs` before invoking the fixed Python module. Caller data is never inserted
-into a shell command.
+The root-owned, mode `0555` wrapper validates the staged workspace and token files, changes the
+workspace owner to the image's non-root `rivumi` user, sets the tokens to owner-only mode `0600`,
+and uses `setpriv --no-new-privs` before invoking the fixed Python module. Caller data is never
+inserted into a shell command.
 
 ## Model capability boundary
 
-The Sandbox receives a five-minute HMAC capability containing only route audience, run ID, model,
-issued time, and expiry. The Worker writes it to `/workspace/.rivumi-run-token`, then the non-root
-Python entrypoint opens it without following links and immediately unlinks it. The capability is
-never present in the Sandbox exec environment.
+The Sandbox receives two five-minute HMAC capabilities containing only route audience, run ID,
+model, issued time, and expiry. The Worker writes the model-proxy token to
+`/workspace/.rivumi-run-token` and the event-append token to `/workspace/.rivumi-event-token`; the
+non-root Python entrypoint opens both without following links and immediately unlinks them. These
+capabilities are never present in the Sandbox exec environment.
 
 Each run also owns a strongly consistent `RunCapability` Durable Object. The Worker activates it
 with a `maxSteps + 2` model-request budget, atomically consumes one unit before each upstream call,
@@ -77,9 +111,19 @@ and revokes it before Sandbox teardown. A correctly signed token is therefore re
 teardown, after expiry, after budget exhaustion, or for a different model. This state is backed by
 Durable Object SQLite rather than an isolate-local map.
 
+Each run also owns a `RunSession` Durable Object keyed by run ID. It records
+`queued | running | completed | failed | cancelled` state, bounded request metadata, terminal
+summary, artifact key names, and explicit cleanup/cancellation markers. Full artifact bodies are
+available only through authenticated artifact routes.
+
 The Sandbox calls `/internal/v1/chat/completions`; that route verifies both the HMAC and active DO
 state, pins the operator model, rejects extra request fields/streaming, caps output tokens, and
 bounds request and response bodies while streaming them into memory.
+
+The Sandbox also posts live event JSONL batches to `/internal/v1/runs/:runId/events` with the
+event-append token. The route verifies the event audience, requires `task_id` to match the
+Cloudflare run ID, validates each line as one JSON object, and checks the run capability without
+consuming model-request budget. `RunSession` caps stored live events by line count and UTF-8 bytes.
 
 `OPENAI_API_KEY` remains in Worker env and is added only to the Worker-to-provider request. It is
 never written to a source file, runner request, Sandbox exec env, result, or error response.

@@ -13,11 +13,13 @@
   "durable_objects": {
     "bindings": [
       { "class_name": "Sandbox", "name": "Sandbox" },
-      { "class_name": "RunCapability", "name": "RUN_CAPABILITIES" }
+      { "class_name": "RunCapability", "name": "RUN_CAPABILITIES" },
+      { "class_name": "RunSession", "name": "RUN_SESSIONS" }
     ]
   },
   "migrations": [
     { "new_sqlite_classes": ["Sandbox"], "tag": "v1" },
-    { "new_sqlite_classes": ["RunCapability"], "tag": "v2" }
+    { "new_sqlite_classes": ["RunCapability"], "tag": "v2" },
+    { "new_sqlite_classes": ["RunSession"], "tag": "v3" }
   ]
 }

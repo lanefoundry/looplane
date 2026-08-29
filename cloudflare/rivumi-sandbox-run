@@ -3,16 +3,20 @@ set -eu
 
 workspace=/workspace
 token_file=/workspace/.rivumi-run-token
+event_token_file=/workspace/.rivumi-event-token
 
 test "$(id -u)" -eq 0
 test -d "$workspace/source"
 test -f "$workspace/request.json"
 test -f "$token_file"
 test ! -L "$token_file"
+test -f "$event_token_file"
+test ! -L "$event_token_file"
 
 chown -R rivumi:rivumi "$workspace"
 chmod 0700 "$workspace"
 chmod 0600 "$token_file"
+chmod 0600 "$event_token_file"
 
 exec setpriv \
   --reuid=rivumi \

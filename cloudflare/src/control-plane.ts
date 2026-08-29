@@ -3,6 +3,11 @@ import type {
   CapabilityConsumeResult,
   RunCapability as RunCapabilityDO,
 } from "./capability-do";
+import type {
+  RunSession as RunSessionDO,
+  RunSessionExecution,
+  RunSessionRequestSummary,
+} from "./run-session-do";
 
 export const LIMITS = {
   requestBytes: 768_000,
@@ -14,6 +19,11 @@ export const LIMITS = {
   checks: 4,
   modelBodyBytes: 256_000,
   modelResponseBytes: 1_000_000,
+  eventAppendBodyBytes: 128_000,
+  eventAppendLines: 128,
+  eventLineBytes: 64_000,
+  liveEventBytes: 1_000_000,
+  liveEventLines: 10_000,
   runResponseBytes: 1_500_000,
   runTokenSeconds: 300,
   sandboxTimeoutMs: 240_000,
@@ -44,6 +54,7 @@ const encoder = new TextEncoder();
 export interface Env {
   Sandbox: DurableObjectNamespace<Sandbox>;
   RUN_CAPABILITIES: DurableObjectNamespace<RunCapabilityDO>;
+  RUN_SESSIONS: DurableObjectNamespace<RunSessionDO>;
   CONTROL_PLANE_TOKEN: string;
   RUN_TOKEN_SECRET: string;
   OPENAI_API_KEY: string;
@@ -88,8 +99,36 @@ export interface WorkerDependencies {
     expiresAt: number,
     maxRequests: number,
   ): Promise<void>;
+  checkCapability(env: Env, runId: string, model: string): Promise<CapabilityConsumeResult>;
   consumeCapability(env: Env, runId: string, model: string): Promise<CapabilityConsumeResult>;
   revokeCapability(env: Env, runId: string): Promise<void>;
+  createRunSession(
+    env: Env,
+    runId: string,
+    request: RunSessionRequestSummary,
+    createdAt: number,
+  ): Promise<void>;
+  markRunSessionRunning(env: Env, runId: string): Promise<void>;
+  completeRunSession(
+    env: Env,
+    runId: string,
+    execution: RunSessionExecution,
+    output: Record<string, unknown>,
+  ): Promise<void>;
+  appendRunSessionEvents(env: Env, runId: string, lines: string[]): Promise<void>;
+  failRunSession(env: Env, runId: string, error: string): Promise<void>;
+  cancelRunSession(
+    env: Env,
+    runId: string,
+  ): Promise<{ status: string; terminal: boolean }>;
+  getRunSession(env: Env, runId: string): Promise<Response>;
+  getRunSessionEvents(
+    env: Env,
+    runId: string,
+    stream?: boolean,
+    lastEventId?: string,
+  ): Promise<Response>;
+  getRunSessionArtifact(env: Env, runId: string, name: string): Promise<Response>;
   decodeFileStream(stream: ReadableStream<Uint8Array>): AsyncIterable<string | Uint8Array>;
 }
 
@@ -172,6 +211,67 @@ function argvAllowed(value: unknown): value is string[] {
       (allowed) => allowed.length === value.length && allowed.every((part, i) => part === value[i]),
     )
   );
+}
+
+function validateRunIdPathSegment(value: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value)) {
+    throw new RequestProblem(404, "run_not_found");
+  }
+  return value;
+}
+
+function validateArtifactName(value: string): string {
+  if (!(ARTIFACT_KEYS as readonly string[]).includes(value)) {
+    throw new RequestProblem(404, "artifact_not_found");
+  }
+  return value;
+}
+
+function validateEventAppendBody(value: unknown, expectedRunId: string): string[] {
+  if (!isObject(value)) throw new RequestProblem(400, "invalid_event_append");
+  rejectUnknownKeys(value, ["lines"]);
+  if (
+    !Array.isArray(value.lines) ||
+    value.lines.length < 1 ||
+    value.lines.length > LIMITS.eventAppendLines
+  ) {
+    throw new RequestProblem(400, "invalid_event_append");
+  }
+  const lines: string[] = [];
+  for (const line of value.lines) {
+    if (
+      typeof line !== "string" ||
+      line.length < 2 ||
+      utf8Bytes(line) > LIMITS.eventLineBytes ||
+      !line.endsWith("\n") ||
+      line.slice(0, -1).includes("\n") ||
+      line.includes("\0")
+    ) {
+      throw new RequestProblem(400, "invalid_event_append");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      throw new RequestProblem(400, "invalid_event_append");
+    }
+    if (
+      !isObject(parsed) ||
+      typeof parsed.event_type !== "string" ||
+      !parsed.event_type ||
+      typeof parsed.run_id !== "string" ||
+      !parsed.run_id ||
+      parsed.task_id !== expectedRunId ||
+      typeof parsed.sequence !== "number" ||
+      !Number.isInteger(parsed.sequence) ||
+      parsed.sequence < 0 ||
+      (parsed.data !== undefined && !isObject(parsed.data))
+    ) {
+      throw new RequestProblem(400, "invalid_event_append");
+    }
+    lines.push(line);
+  }
+  return lines;
 }
 
 export function validateRunRequest(value: unknown, expectedModel: string): ValidatedRun {
@@ -295,9 +395,11 @@ function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
   return difference === 0;
 }
 
+type RunTokenAudience = "/internal/v1/chat/completions" | "/internal/v1/runs/events";
+
 interface RunCapability {
   v: 1;
-  aud: "/internal/v1/chat/completions";
+  aud: RunTokenAudience;
   runId: string;
   model: string;
   iat: number;
@@ -309,10 +411,11 @@ export async function createRunToken(
   runId: string,
   model: string,
   nowSeconds: number,
+  audience: RunTokenAudience = "/internal/v1/chat/completions",
 ): Promise<string> {
   const payload: RunCapability = {
     v: 1,
-    aud: "/internal/v1/chat/completions",
+    aud: audience,
     runId,
     model,
     iat: nowSeconds,
@@ -327,6 +430,7 @@ export async function verifyRunToken(
   secret: string,
   token: string,
   nowSeconds: number,
+  expectedAudience: RunTokenAudience = "/internal/v1/chat/completions",
 ): Promise<RunCapability> {
   const parts = token.split(".");
   if (parts.length !== 2) throw new RequestProblem(401, "invalid_run_token");
@@ -342,7 +446,7 @@ export async function verifyRunToken(
   if (!isObject(value)) throw new RequestProblem(401, "invalid_run_token");
   if (
     value.v !== 1 ||
-    value.aud !== "/internal/v1/chat/completions" ||
+    value.aud !== expectedAudience ||
     typeof value.runId !== "string" ||
     typeof value.model !== "string" ||
     !Number.isInteger(value.iat) ||
@@ -743,7 +847,21 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
   const input = validateRunRequest(await readJsonBounded(request, LIMITS.requestBytes), env.OPENAI_MODEL);
   const runId = dependencies.randomUUID();
   const nowSeconds = Math.floor(dependencies.now() / 1000);
+  const requestSummary: RunSessionRequestSummary = {
+    instruction: input.instruction,
+    model: input.model,
+    allowedPaths: input.allowedPaths,
+    checks: input.checks,
+    fileCount: input.files.length,
+  };
   const runToken = await createRunToken(env.RUN_TOKEN_SECRET, runId, input.model, nowSeconds);
+  const eventToken = await createRunToken(
+    env.RUN_TOKEN_SECRET,
+    runId,
+    input.model,
+    nowSeconds,
+    "/internal/v1/runs/events",
+  );
   const proxyUrl = `${new URL(request.url).origin}/internal/v1`;
   let sandbox: SandboxHandle | undefined;
   let capabilityActivated = false;
@@ -759,7 +877,10 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
       max_patch_bytes: 100_000,
     },
   };
+  let sessionCreated = false;
   try {
+    await dependencies.createRunSession(env, runId, requestSummary, dependencies.now());
+    sessionCreated = true;
     await dependencies.activateCapability(
       env,
       runId,
@@ -769,6 +890,7 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
     );
     capabilityActivated = true;
     sandbox = dependencies.getSandbox(env, runId);
+    await dependencies.markRunSessionRunning(env, runId);
     requireSdkSuccess(
       await sandbox.mkdir("/workspace/source", { recursive: true }),
       "mkdir",
@@ -794,6 +916,10 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
     );
     requireSdkSuccess(
       await sandbox.writeFile("/workspace/.rivumi-run-token", runToken),
+      "write",
+    );
+    requireSdkSuccess(
+      await sandbox.writeFile("/workspace/.rivumi-event-token", eventToken),
       "write",
     );
     const execution = await sandbox.exec(FIXED_COMMAND, {
@@ -832,14 +958,22 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
       throw new RequestProblem(502, "sandbox_response_json_invalid");
     }
     const output = validateSandboxResponse(result, runId, terminalSuccess, input);
+    const executionSummary = { success: execution.success, exitCode: execution.exitCode };
+    await dependencies.completeRunSession(env, runId, executionSummary, output);
     return json(
       {
         runId,
-        execution: { success: execution.success, exitCode: execution.exitCode },
+        execution: executionSummary,
         output,
       },
       201,
     );
+  } catch (error) {
+    if (sessionCreated) {
+      const code = error instanceof RequestProblem ? error.code : "internal_error";
+      await dependencies.failRunSession(env, runId, code).catch(() => undefined);
+    }
+    throw error;
   } finally {
     let cleanupFailed = false;
     if (capabilityActivated) {
@@ -856,8 +990,71 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
         cleanupFailed = true;
       }
     }
-    if (cleanupFailed) throw new RequestProblem(500, "sandbox_cleanup_failed");
+    if (cleanupFailed) {
+      if (sessionCreated) {
+        await dependencies
+          .failRunSession(env, runId, "sandbox_cleanup_failed")
+          .catch(() => undefined);
+      }
+      throw new RequestProblem(500, "sandbox_cleanup_failed");
+    }
   }
+}
+
+async function handleRunResource(
+  request: Request,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> {
+  if (!secretsEqual(env.CONTROL_PLANE_TOKEN, bearer(request))) {
+    throw new RequestProblem(401, "unauthorized");
+  }
+  const url = new URL(request.url);
+  const match = /^\/v1\/runs\/([^/]+)(?:\/(events|artifacts\/[^/]+|cancel))?$/u.exec(url.pathname);
+  if (match === null) throw new RequestProblem(404, "not_found");
+  const runId = validateRunIdPathSegment(match[1]!);
+  const resource = match[2];
+  if (resource === undefined) {
+    if (request.method !== "GET") throw new RequestProblem(405, "method_not_allowed");
+    return await dependencies.getRunSession(env, runId);
+  }
+  if (resource === "events") {
+    if (request.method !== "GET") throw new RequestProblem(405, "method_not_allowed");
+    const stream = url.searchParams.get("stream") === "1" || url.searchParams.get("stream") === "true";
+    return await dependencies.getRunSessionEvents(
+      env,
+      runId,
+      stream,
+      request.headers.get("last-event-id") ?? undefined,
+    );
+  }
+  if (resource === "cancel") {
+    if (request.method !== "POST") throw new RequestProblem(405, "method_not_allowed");
+    const cancellation = await dependencies.cancelRunSession(env, runId).catch((error) => {
+      if (error instanceof Error && error.message === "run not found") {
+        throw new RequestProblem(404, "run_not_found");
+      }
+      throw error;
+    });
+    if (!cancellation.terminal) {
+      await dependencies.revokeCapability(env, runId);
+      await destroySandboxBounded(dependencies.getSandbox(env, runId));
+    }
+    return json(
+      { ok: true, status: cancellation.status },
+      cancellation.terminal ? 200 : 202,
+    );
+  }
+  const artifact = /^artifacts\/([^/]+)$/u.exec(resource);
+  if (artifact !== null) {
+    if (request.method !== "GET") throw new RequestProblem(405, "method_not_allowed");
+    return await dependencies.getRunSessionArtifact(
+      env,
+      runId,
+      validateArtifactName(artifact[1]!),
+    );
+  }
+  throw new RequestProblem(404, "not_found");
 }
 
 function validateModelBody(value: unknown, capability: RunCapability, expectedModel: string): Record<string, unknown> {
@@ -883,7 +1080,12 @@ function validateModelBody(value: unknown, capability: RunCapability, expectedMo
 async function handleModelProxy(request: Request, env: Env, dependencies: WorkerDependencies): Promise<Response> {
   const token = bearer(request);
   if (!token) throw new RequestProblem(401, "invalid_run_token");
-  const capability = await verifyRunToken(env.RUN_TOKEN_SECRET, token, Math.floor(dependencies.now() / 1000));
+  const capability = await verifyRunToken(
+    env.RUN_TOKEN_SECRET,
+    token,
+    Math.floor(dependencies.now() / 1000),
+    "/internal/v1/chat/completions",
+  );
   const body = validateModelBody(
     await readJsonBounded(request, LIMITS.modelBodyBytes),
     capability,
@@ -940,6 +1142,45 @@ async function handleModelProxy(request: Request, env: Env, dependencies: Worker
   });
 }
 
+async function handleInternalRunEvents(
+  request: Request,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> {
+  const token = bearer(request);
+  if (!token) throw new RequestProblem(401, "invalid_run_token");
+  const capability = await verifyRunToken(
+    env.RUN_TOKEN_SECRET,
+    token,
+    Math.floor(dependencies.now() / 1000),
+    "/internal/v1/runs/events",
+  );
+  const match = /^\/internal\/v1\/runs\/([^/]+)\/events$/u.exec(new URL(request.url).pathname);
+  if (match === null || match[1] !== capability.runId) {
+    throw new RequestProblem(401, "invalid_run_token");
+  }
+  if (capability.model !== env.OPENAI_MODEL) {
+    throw new RequestProblem(400, "model_not_allowed");
+  }
+  const lines = validateEventAppendBody(
+    await readJsonBounded(request, LIMITS.eventAppendBodyBytes),
+    capability.runId,
+  );
+  const capabilityStatus = await dependencies.checkCapability(
+    env,
+    capability.runId,
+    capability.model,
+  );
+  if (capabilityStatus === "inactive" || capabilityStatus === "expired") {
+    throw new RequestProblem(401, "inactive_run_token");
+  }
+  if (capabilityStatus === "exhausted") {
+    throw new RequestProblem(429, "model_request_budget_exhausted");
+  }
+  await dependencies.appendRunSessionEvents(env, capability.runId, lines);
+  return json({ ok: true });
+}
+
 export async function handleRequest(
   request: Request,
   env: Env,
@@ -955,9 +1196,16 @@ export async function handleRequest(
       if (request.method !== "POST") throw new RequestProblem(405, "method_not_allowed");
       return await handleRun(request, env, dependencies);
     }
+    if (path.startsWith("/v1/runs/")) {
+      return await handleRunResource(request, env, dependencies);
+    }
     if (path === "/internal/v1/chat/completions") {
       if (request.method !== "POST") throw new RequestProblem(405, "method_not_allowed");
       return await handleModelProxy(request, env, dependencies);
+    }
+    if (/^\/internal\/v1\/runs\/[^/]+\/events$/u.test(path)) {
+      if (request.method !== "POST") throw new RequestProblem(405, "method_not_allowed");
+      return await handleInternalRunEvents(request, env, dependencies);
     }
     throw new RequestProblem(404, "not_found");
   } catch (error) {

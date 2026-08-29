@@ -63,6 +63,22 @@ describe("RunCapability Durable Object", () => {
     expect((await capability.fetch(post("/consume", { model: "gpt-5-mini" }))).status).toBe(401);
   });
 
+  it("checks an active capability without consuming request budget", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const capability = durableObject();
+    const activation = {
+      model: "gpt-5-mini",
+      expiresAt: now + 300_000,
+      maxRequests: 1,
+    };
+
+    expect((await capability.fetch(post("/activate", activation))).status).toBe(201);
+    expect((await capability.fetch(post("/check", { model: "gpt-5-mini" }))).status).toBe(200);
+    expect((await capability.fetch(post("/check", { model: "gpt-5-mini" }))).status).toBe(200);
+    expect((await capability.fetch(post("/consume", { model: "gpt-5-mini" }))).status).toBe(200);
+    expect((await capability.fetch(post("/consume", { model: "gpt-5-mini" }))).status).toBe(429);
+  });
+
   it("rejects model substitution and an overlapping activation", async () => {
     vi.spyOn(Date, "now").mockReturnValue(now);
     const capability = durableObject();
