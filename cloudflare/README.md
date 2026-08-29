@@ -65,6 +65,17 @@ cancelled. Clients may send `Last-Event-ID` to replay only events whose integer 
 than that cursor. A Durable Object restart drops in-memory subscribers, so clients should reconnect
 and rely on replayed stored lines.
 
+Python callers can use the lightweight attach client:
+
+```python
+from rivumi.cloudflare_client import CloudflareRunClient
+
+client = CloudflareRunClient(base_url="https://control.example", token=token)
+accepted = await client.start_run(request)
+async for event in client.attach_events(accepted["runId"], last_event_id=0):
+    print(event.event, event.data)
+```
+
 ### `GET /v1/runs/:runId/artifacts/:name`
 
 Requires control-plane auth. `:name` must be one of `request`, `events`, `checkpoint`, `patch`,
