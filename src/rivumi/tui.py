@@ -83,6 +83,7 @@ from rivumi.conversation_runtime import (
 )
 from rivumi.events import RunEvent
 from rivumi.memory import remember
+from rivumi.prompts import WORKSPACE_CONTEXT_REMINDER_VERSION, build_workspace_context_reminder
 from rivumi.provider_catalog import estimate_cost
 from rivumi.runtime_semantics import (
     ContextTelemetry,
@@ -2084,6 +2085,7 @@ class RivumiApp(App[RunResult | None]):
         self._native_session_has_context = False
         self._auto_compaction_armed = True
         self._auto_compaction_failed_contexts: set[str] = set()
+        self._native_compaction_reminder_pending = False
         self._queued_prompts: deque[str] = deque(maxlen=20)
         self._prompt_history: list[str] = []
         self._history_index: int | None = None
@@ -3344,6 +3346,40 @@ class RivumiApp(App[RunResult | None]):
         self._latest_context_telemetry = None
         self._auto_compaction_armed = True
         self._auto_compaction_failed_contexts.clear()
+        self._native_compaction_reminder_pending = False
+
+    async def _native_post_compaction_instruction(self, instruction: str) -> str:
+        if (
+            not self._native_compaction_reminder_pending
+            or not self._uses_native_conversation()
+        ):
+            return instruction
+        resource = self._native_compaction_resource()
+        changed_files: tuple[str, ...] = ()
+        if resource is not None and callable(getattr(resource, "changed_paths", None)):
+            try:
+                changed_files = tuple(await resource.changed_paths())
+            except Exception:
+                changed_files = ("changed-file scan unavailable",)
+        constraints = (
+            f"runtime={self._runtime()}",
+            f"mode={self._mode}",
+            f"permission_mode={self._permission_mode.value}",
+            "workspace=isolated committed-HEAD conversation workspace",
+        )
+        reminder = build_workspace_context_reminder(
+            changed_files=changed_files,
+            check_status=("native runtime checks are not declared in TUI ask mode",),
+            recent_paths=changed_files,
+            constraints=constraints,
+            max_chars=4_000,
+        )
+        self._native_compaction_reminder_pending = False
+        self._write_timeline(
+            "Workspace context re-injected",
+            f"{WORKSPACE_CONTEXT_REMINDER_VERSION} · {len(changed_files)} changed path(s)",
+        )
+        return f"{reminder.content}\n\nUser request:\n{instruction}"
 
     async def _perform_context_compaction(
         self,
@@ -3600,6 +3636,7 @@ class RivumiApp(App[RunResult | None]):
             if self._uses_native_conversation():
                 if self._ask_history and not self._native_session_has_context:
                     instruction = self._semantic_replay_prompt(instruction)
+                instruction = await self._native_post_compaction_instruction(instruction)
             else:
                 instruction = self._ask_prompt(instruction)
         request = TuiRunRequest(
@@ -4348,6 +4385,7 @@ class RivumiApp(App[RunResult | None]):
                 self._latest_context_telemetry = event.checkpoint.telemetry_after
             else:
                 self._latest_context_telemetry = None
+            self._native_compaction_reminder_pending = True
             self.query_one("#status", Static).update("Context compacted · ready")
             return
         if isinstance(event, RuntimeToolStartedEvent):

@@ -5,6 +5,7 @@ import builtins
 import json
 import runpy
 import stat
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +18,7 @@ from rivumi.approvals import HeadlessApprovalPolicy
 from rivumi.claude_conversation import IsolatedClaudeConversation
 from rivumi.codex_conversation import IsolatedCodexConversation
 from rivumi.codex_oauth import CodexCredentials, CodexCredentialStore
-from rivumi.contracts import ModelTurn, RunResult, RunStatus, ToolCall
+from rivumi.contracts import ModelTurn, RunResult, RunStatus, TaskContract, ToolCall
 from rivumi.conversation_controller import ConversationController
 from rivumi.loop import AgentRunner
 from rivumi.models import ScriptedModel
@@ -1181,12 +1182,27 @@ def test_sessions_replay_json_prints_deterministic_json(tmp_path: Path) -> None:
     assert [item["sequence"] for item in payload["timeline"]] == [0, 1, 2]
 
 
-def test_sessions_fork_from_event_prints_side_effect_free_seed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_sessions_fork_from_event_creates_side_effect_free_run(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_root = tmp_path / "runs"
     run_dir = run_root / "abcdef1234567890"
     run_dir.mkdir(parents=True)
+    base_sha = subprocess.run(
+        ("git", "-C", str(tiny_bug_repo), "rev-parse", "HEAD"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    request = TaskContract(
+        repository=tiny_bug_repo,
+        instruction="fix it",
+        allowed_paths=("src/**",),
+        verification=cli._commands(["git diff --check"]),
+        task_id="source-task",
+        base_sha=base_sha,
+    )
+    (run_dir / "request.json").write_text(request.model_dump_json() + "\n", encoding="utf-8")
     events = [
         {
             "event_type": "run.created",
@@ -1235,9 +1251,17 @@ def test_sessions_fork_from_event_prints_side_effect_free_seed(
     assert payload["fork_point_sequence"] == 1
     assert payload["fork_point_event_type"] == "tool.completed"
     assert payload["source_run_id"] == run_dir.name
+    assert payload["new_run_id"].startswith("fork-")
+    fork_dir = run_root / payload["new_run_id"]
+    assert (fork_dir / "workspace").is_dir()
+    assert (fork_dir / "request.json").is_file()
+    assert (fork_dir / "session.json").is_file()
+    fork_events = (fork_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(fork_events) == 1
+    assert json.loads(fork_events[0])["event_type"] == "run.forked"
     assert payload["events_included"] == 2
     assert payload["side_effects_replayed"] is False
-    assert payload["run_started"] is False
+    assert payload["run_started"] is True
     assert payload["replay_state"]["last_sequence"] == 1
     assert [item["sequence"] for item in payload["replay_state"]["timeline"]] == [0, 1]
 
@@ -1272,6 +1296,107 @@ def test_sessions_fork_from_event_rejects_invalid_sequence(tmp_path: Path) -> No
     assert "fork sequence 99 was not found" in missing.output
     assert omitted.exit_code == 2
     assert "--fork-from-event requires --sequence" in omitted.output
+
+
+def test_policy_inspect_reports_sources_precedence_and_effective_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "deny_rules": ["read_file(.env*)"],
+                "allow_rules": ["run_check(pytest:*)"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    org_policy = tmp_path / "org-policy.json"
+    org_policy.write_text(
+        json.dumps(
+            {
+                "deny_rules": ["run_check(git push:*)"],
+                "allow_rules": ["read_file(docs/**)"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir()
+    policy_dir = project_dir / ".rivumi"
+    policy_dir.mkdir()
+    (policy_dir / "policy.json").write_text(
+        json.dumps(
+            {
+                "deny_rules": ["read_file(secret/**)"],
+                "allow_rules": ["search_text(src/**)"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "policy",
+            "inspect",
+            "--repo",
+            str(project_dir),
+            "--org-policy",
+            str(org_policy),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["precedence"] == [
+        "critical command floor",
+        "user deny_rules",
+        "org deny_rules",
+        "project deny_rules",
+        "user allow_rules",
+        "org allow_rules",
+        "project allow_rules",
+    ]
+    assert payload["sources"]["user"]["path"] == str(config_path)
+    assert payload["sources"]["org"]["path"] == str(org_policy)
+    assert payload["sources"]["project"]["path"] == str(policy_dir / "policy.json")
+    assert payload["effective"]["deny_rules"] == [
+        "read_file(.env*)",
+        "run_check(git push:*)",
+        "read_file(secret/**)",
+    ]
+    assert payload["effective"]["allow_rules"] == [
+        "run_check(pytest:*)",
+        "read_file(docs/**)",
+        "search_text(src/**)",
+    ]
+
+
+def test_policy_inspect_reports_invalid_project_policy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir()
+    policy_dir = project_dir / ".rivumi"
+    policy_dir.mkdir()
+    policy_path = policy_dir / "policy.json"
+    policy_path.write_text('{"allow_rules":["not valid"]}', encoding="utf-8")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["policy", "inspect", "--repo", str(project_dir), "--json"],
+    )
+
+    assert result.exit_code == 2
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert str(policy_path) in payload["error"]
 
 
 def test_sessions_replay_rejects_invalid_events_jsonl(tmp_path: Path) -> None:

@@ -217,8 +217,10 @@ app = typer.Typer(
 )
 auth_app = typer.Typer(help="Manage provider credentials owned by this application.")
 backend_app = typer.Typer(help="Run a clearly separated external agent backend.")
+policy_app = typer.Typer(help="Inspect effective permission policy.")
 app.add_typer(auth_app, name="auth")
 app.add_typer(backend_app, name="backend")
+app.add_typer(policy_app, name="policy")
 
 
 def _default_run_root() -> Path:
@@ -2235,7 +2237,7 @@ def sessions(
         return
 
     if fork_from_event is not None:
-        from rivumi.session_replay import ReplayValidationError, fork_seed_jsonl
+        from rivumi.session_replay import ReplayValidationError, create_forked_run_from_event
 
         if sequence is None:
             raise typer.BadParameter("--fork-from-event requires --sequence")
@@ -2247,7 +2249,11 @@ def sessions(
             )
             raise typer.Exit(code=2)
         try:
-            fork_seed = fork_seed_jsonl(run_dir / "events.jsonl", sequence)
+            fork_seed = create_forked_run_from_event(
+                source_run_dir=run_dir,
+                run_root=run_root,
+                sequence=sequence,
+            )
         except ReplayValidationError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=2) from exc
@@ -2352,6 +2358,99 @@ def sessions(
     typer.echo(f"{'ID':<14}{'STATUS':<16}{'MODEL':<24}{'TOKENS':>12}  TIME")
     for _mtime, session_id, status, model, tokens, wall_text in visible:
         typer.echo(f"{session_id:<14}{status:<16}{model:<24}{tokens:>12}  {wall_text}")
+
+
+@policy_app.command("inspect")
+def policy_inspect(
+    repository: Annotated[
+        Path | None,
+        typer.Option("--cd", "-C", "--repo", exists=True, file_okay=False),
+    ] = None,
+    org_policy: Annotated[
+        Path | None,
+        typer.Option("--org-policy", help="Override RIVUMI_ORG_POLICY for diagnostics."),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable policy diagnostics."),
+    ] = False,
+) -> None:
+    """Show user/org/project policy sources and effective precedence."""
+
+    from rivumi.policy_config import ProjectPolicyError, discover_policy_rules
+
+    repository = repository or Path.cwd()
+    config_path = default_cli_config_path()
+    try:
+        config = load_cli_config(config_path)
+        discovery = discover_policy_rules(
+            repository=repository,
+            user_deny_rules=config.deny_rules,
+            user_allow_rules=config.allow_rules,
+            user_config_path=config_path,
+            org_policy_path=org_policy,
+        )
+    except (ValueError, ProjectPolicyError) as exc:
+        if json_output:
+            typer.echo(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        else:
+            typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    diagnostics = {
+        "ok": True,
+        "repository": str(repository.resolve()),
+        "precedence": list(discovery.source_precedence),
+        "sources": {
+            "user": {
+                "path": str(discovery.user_config_path) if discovery.user_config_path else None,
+                "exists": bool(
+                    discovery.user_config_path and discovery.user_config_path.exists()
+                ),
+                "deny_rules": list(config.deny_rules),
+                "allow_rules": list(config.allow_rules),
+            },
+            "org": {
+                "path": str(discovery.org_policy_path) if discovery.org_policy_path else None,
+                "exists": bool(
+                    discovery.org_policy_path and discovery.org_policy_path.exists()
+                ),
+                "deny_rules": list(discovery.org_policy.deny_rules),
+                "allow_rules": list(discovery.org_policy.allow_rules),
+            },
+            "project": {
+                "path": str(discovery.project_policy_path),
+                "exists": discovery.project_policy_path.exists(),
+                "deny_rules": list(discovery.project_policy.deny_rules),
+                "allow_rules": list(discovery.project_policy.allow_rules),
+            },
+        },
+        "effective": {
+            "deny_rules": [rule.raw_spec for rule in discovery.rules.deny_rules],
+            "allow_rules": [rule.raw_spec for rule in discovery.rules.allow_rules],
+        },
+    }
+    if json_output:
+        typer.echo(json.dumps(diagnostics, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    typer.echo("Policy diagnostics")
+    typer.echo(f"repository: {diagnostics['repository']}")
+    typer.echo("precedence:")
+    for index, source in enumerate(discovery.source_precedence, 1):
+        typer.echo(f"  {index}. {source}")
+    typer.echo("sources:")
+    for name, source in diagnostics["sources"].items():
+        assert isinstance(source, dict)
+        typer.echo(f"  {name}: {source['path'] or 'not configured'}")
+        typer.echo(f"    exists: {source['exists']}")
+        typer.echo(f"    deny_rules: {json.dumps(source['deny_rules'], ensure_ascii=False)}")
+        typer.echo(f"    allow_rules: {json.dumps(source['allow_rules'], ensure_ascii=False)}")
+    typer.echo("effective:")
+    effective = diagnostics["effective"]
+    assert isinstance(effective, dict)
+    typer.echo(f"  deny_rules: {json.dumps(effective['deny_rules'], ensure_ascii=False)}")
+    typer.echo(f"  allow_rules: {json.dumps(effective['allow_rules'], ensure_ascii=False)}")
 
 
 @app.command("config")

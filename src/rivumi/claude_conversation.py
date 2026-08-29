@@ -133,6 +133,10 @@ class IsolatedClaudeConversation:
             )
         return event
 
+    async def changed_paths(self) -> tuple[str, ...]:
+        review = await self._workspace().review(allowed_paths=self.allowed_paths)
+        return review.changed_paths
+
     async def respond_approval(self, request_id: str, decision: ApprovalDecision) -> None:
         await self._session().respond_approval(request_id, decision)
 

@@ -7,6 +7,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
+
+from rivumi.contracts import TaskContract
+from rivumi.events import RunEvent
+from rivumi.runtime import LocalGitWorkspace
+from rivumi.session import SessionManifest
 
 MAX_REPLAY_EVENTS = 10_000
 MAX_REPLAY_EVENT_BYTES = 128 * 1024
@@ -88,6 +94,8 @@ class ReplayForkSeed:
     fork_point_event_type: str
     source_run_id: str | None
     source_conversation_id: str | None
+    new_run_id: str | None
+    new_workspace: str | None
     events_included: int
     side_effects_replayed: bool
     run_started: bool
@@ -101,6 +109,8 @@ class ReplayForkSeed:
                 "fork_point_event_type": self.fork_point_event_type,
                 "source_run_id": self.source_run_id,
                 "source_conversation_id": self.source_conversation_id,
+                "new_run_id": self.new_run_id,
+                "new_workspace": self.new_workspace,
                 "events_included": self.events_included,
                 "side_effects_replayed": self.side_effects_replayed,
                 "run_started": self.run_started,
@@ -178,6 +188,8 @@ def fork_seed_at_sequence(
         fork_point_event_type=target_event["event_type"],
         source_run_id=replay_state.run_id,
         source_conversation_id=replay_state.conversation_id,
+        new_run_id=None,
+        new_workspace=None,
         events_included=len(prefix),
         side_effects_replayed=False,
         run_started=False,
@@ -207,10 +219,115 @@ def canonical_fork_seed_json(events: Iterable[Mapping[str, Any]], sequence: int)
     return fork_seed_at_sequence(events, sequence).canonical_json()
 
 
+def create_forked_run_from_event(
+    *,
+    source_run_dir: Path,
+    run_root: Path,
+    sequence: int,
+    new_run_id: str | None = None,
+    workspace_timeout_seconds: float = 60.0,
+) -> ReplayForkSeed:
+    """Create a real fork run/workspace without replaying prior side effects."""
+
+    source_run_dir = Path(source_run_dir).resolve(strict=True)
+    run_root = Path(run_root).resolve(strict=False)
+    seed = fork_seed_jsonl(source_run_dir / "events.jsonl", sequence)
+    request_path = source_run_dir / "request.json"
+    try:
+        task = TaskContract.model_validate_json(request_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ReplayValidationError("source run request.json is not a valid task contract") from exc
+    if task.base_sha is None:
+        raise ReplayValidationError("source run request.json has no base_sha")
+
+    fork_run_id = new_run_id or f"fork-{uuid4().hex}"
+    if not _safe_run_id(fork_run_id):
+        raise ReplayValidationError("new fork run id must be one safe relative path segment")
+    fork_run_dir = run_root / fork_run_id
+    if fork_run_dir.exists():
+        raise ReplayValidationError(f"fork run already exists: {fork_run_id}")
+
+    fork_task = task.model_copy(update={"task_id": f"{task.task_id}-fork-{uuid4().hex[:8]}"})
+    try:
+        fork_run_dir.mkdir(parents=True, exist_ok=False)
+        (fork_run_dir / "request.json").write_text(
+            fork_task.model_dump_json() + "\n",
+            encoding="utf-8",
+        )
+        manifest = SessionManifest.new(
+            run_id=fork_run_id,
+            task_id=fork_task.task_id,
+            provider_name="fork",
+            model_id="side-effect-free",
+            protocol="replay-fork",
+            base_sha=task.base_sha,
+        ).model_copy(update={"last_event_sequence": 0})
+        (fork_run_dir / "session.json").write_text(
+            manifest.model_dump_json() + "\n",
+            encoding="utf-8",
+        )
+        LocalGitWorkspace(
+            source_repo=fork_task.repository,
+            run_dir=fork_run_dir,
+            base_sha=task.base_sha,
+        ).prepare(timeout_seconds=workspace_timeout_seconds)
+        event = RunEvent(
+            event_type="run.forked",
+            run_id=fork_run_id,
+            task_id=fork_task.task_id,
+            sequence=0,
+            data={
+                "source_run_id": source_run_dir.name,
+                "fork_point_sequence": seed.fork_point_sequence,
+                "fork_point_event_type": seed.fork_point_event_type,
+                "events_included": seed.events_included,
+                "side_effects_replayed": False,
+                "workspace": "workspace",
+                "base_sha": task.base_sha,
+            },
+        )
+        (fork_run_dir / "events.jsonl").write_text(
+            event.model_dump_json() + "\n",
+            encoding="utf-8",
+        )
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(fork_run_dir, ignore_errors=True)
+        raise
+
+    return ReplayForkSeed(
+        schema_version=seed.schema_version,
+        fork_point_sequence=seed.fork_point_sequence,
+        fork_point_event_type=seed.fork_point_event_type,
+        source_run_id=seed.source_run_id,
+        source_conversation_id=seed.source_conversation_id,
+        new_run_id=fork_run_id,
+        new_workspace=str((fork_run_dir / "workspace").resolve(strict=False)),
+        events_included=seed.events_included,
+        side_effects_replayed=False,
+        run_started=True,
+        replay_state=seed.replay_state,
+    )
+
+
 def canonical_replay_json(events: Iterable[Mapping[str, Any]]) -> str:
     """Convenience wrapper for deterministic reducer output."""
 
     return reduce_events(events).canonical_json()
+
+
+def _safe_run_id(value: str) -> bool:
+    path = Path(value)
+    return (
+        bool(value)
+        and "\x00" not in value
+        and value not in {".", ".."}
+        and not path.is_absolute()
+        and path.name == value
+        and "/" not in value
+        and "\\" not in value
+    )
 
 
 def _load_jsonl_events(

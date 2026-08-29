@@ -58,6 +58,7 @@ from rivumi.conversation_runtime import (
 from rivumi.events import RunEvent
 from rivumi.loop import AgentRunner
 from rivumi.models import ScriptedModel
+from rivumi.prompts import WORKSPACE_CONTEXT_REMINDER_VERSION
 from rivumi.runtime_semantics import (
     ContextTelemetry,
     PermissionMode,
@@ -2438,7 +2439,9 @@ async def test_auto_compaction_runs_before_queued_follow_up(tmp_path: Path) -> N
 
         compact_release.set()
         await _wait_until(lambda: len(requests) == 2 and not app._agent_running, attempts=150)
-        assert [request.instruction for request in requests] == ["first", "second"]
+        assert requests[0].instruction == "first"
+        assert WORKSPACE_CONTEXT_REMINDER_VERSION in requests[1].instruction
+        assert requests[1].instruction.endswith("User request:\nsecond")
 
 
 async def test_auto_compaction_failure_is_debounced_per_context(tmp_path: Path) -> None:
@@ -2477,6 +2480,50 @@ async def test_auto_compaction_failure_is_debounced_per_context(tmp_path: Path) 
 
         assert resource.calls == 1
         assert app._runtime_context_id in app._auto_compaction_failed_contexts
+
+
+async def test_native_compaction_completed_reinjects_workspace_context_on_next_turn(
+    tmp_path: Path,
+) -> None:
+    requests = []
+
+    class ReminderResource(CompactingPersistentResource):
+        async def changed_paths(self) -> tuple[str, ...]:
+            return ("src/app.py",)
+
+    resource = ReminderResource()
+
+    def factory(request, approval_policy, event_sink):
+        requests.append(request)
+        return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), resource
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=factory,
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._persistent_resources.append(resource)
+        app.conversation_runtime_event_received(
+            ConversationRuntimeEventMessage(
+                CompactionCompletedEvent(sequence=11, turn_id="compact-1"),
+                app._generation,
+            )
+        )
+        assert app._native_compaction_reminder_pending is True
+
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("continue")
+        await pilot.press("enter")
+        await _wait_until(lambda: bool(requests) and not app._agent_running)
+
+    assert WORKSPACE_CONTEXT_REMINDER_VERSION in requests[0].instruction
+    assert "src/app.py" in requests[0].instruction
+    assert requests[0].instruction.endswith("User request:\ncontinue")
+    assert app._native_compaction_reminder_pending is False
 
 
 async def test_active_turn_keeps_idle_only_slash_command_in_composer(tmp_path: Path) -> None:

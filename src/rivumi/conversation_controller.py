@@ -151,6 +151,13 @@ class ConversationController:
                     with suppress(BaseException):
                         await close_iterator()
 
+    async def changed_paths(self) -> tuple[str, ...]:
+        method = getattr(self.session, "changed_paths", None)
+        if method is None:
+            return ()
+        paths = await method()
+        return tuple(str(path) for path in paths)
+
     async def aclose(self) -> None:
         async with self._lifecycle_lock:
             if self._closed:
