@@ -39,6 +39,8 @@ from rivumi.conversation import (
 from rivumi.conversation_runtime import (
     ApprovalRequestedEvent,
     ApprovalResolvedEvent,
+    CompactionCompletedEvent,
+    CompactionStartedEvent,
     ContextUsageUpdatedEvent,
     RuntimeApprovalKind,
     RuntimeApprovalRequest,
@@ -56,7 +58,12 @@ from rivumi.conversation_runtime import (
 from rivumi.events import RunEvent
 from rivumi.loop import AgentRunner
 from rivumi.models import ScriptedModel
-from rivumi.runtime_semantics import ContextTelemetry, PermissionMode, ProcessLocalGrant
+from rivumi.runtime_semantics import (
+    ContextTelemetry,
+    PermissionMode,
+    ProcessLocalGrant,
+    RuntimeCapabilities,
+)
 from rivumi.tui import (
     ApprovalModal,
     ConversationRuntimeEventMessage,
@@ -98,6 +105,58 @@ class LoopBoundPersistentResource:
 
     async def aclose(self) -> None:
         assert asyncio.get_running_loop() is self.loop
+        self.closed = True
+
+
+class CompactingPersistentResource:
+    persistent = True
+
+    def __init__(self, *, release: asyncio.Event | None = None) -> None:
+        self.release = release or asyncio.Event()
+        self.started = asyncio.Event()
+        self.compactions: list[str | None] = []
+        self.closed = False
+
+    @property
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(native_compaction=True)
+
+    async def compact_context(self, guidance=None, *, event_sink=None) -> str:
+        self.compactions.append(guidance)
+        self.started.set()
+        if event_sink is not None:
+            await event_sink.emit(
+                CompactionStartedEvent(
+                    sequence=10,
+                    turn_id="compact-1",
+                    guidance=guidance,
+                )
+            )
+        await self.release.wait()
+        if event_sink is not None:
+            await event_sink.emit(CompactionCompletedEvent(sequence=11, turn_id="compact-1"))
+        return "compact-1"
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class FailingCompactionResource:
+    persistent = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.closed = False
+
+    @property
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(native_compaction=True)
+
+    async def compact_context(self, guidance=None, *, event_sink=None) -> str:
+        self.calls += 1
+        raise RuntimeError("compact failed")
+
+    async def aclose(self) -> None:
         self.closed = True
 
 
@@ -1361,6 +1420,23 @@ def test_approval_fallback_names_verification_command() -> None:
     assert "No preview supplied" not in rendered
 
 
+def test_approval_preview_includes_policy_reason() -> None:
+    request = ApprovalRequest(
+        run_id="approval-run",
+        action_id="verify",
+        effect=ToolEffect.EXECUTE,
+        reason=ApprovalReason.FINAL_VERIFICATION,
+        preview="$ git status && git diff --check",
+        policy_reason="suspicious command shape: compound shell command",
+        command=VerificationCommand(name="tests", argv=("git", "status", "&&", "git", "diff")),
+    )
+
+    rendered = ApprovalModal._preview_text(request)
+
+    assert "$ git status && git diff --check" in rendered
+    assert "Policy: suspicious command shape: compound shell command" in rendered
+
+
 async def test_allow_session_is_reused_across_bounded_tasks() -> None:
     class ApprovalApp:
         calls = 0
@@ -2298,6 +2374,109 @@ async def test_follow_up_queue_runs_in_fifo_order(tmp_path: Path) -> None:
         await _wait_until(lambda: len(requests) == 3 and not app._agent_running, attempts=150)
         assert [request.instruction for request in requests] == ["first", "second", "third"]
         assert not app.query("#stop")
+
+
+async def test_auto_compaction_runs_before_queued_follow_up(tmp_path: Path) -> None:
+    first_gate = asyncio.Event()
+    compact_release = asyncio.Event()
+    requests = []
+    resource = CompactingPersistentResource(release=compact_release)
+
+    class QueueRunner(FakeRunner):
+        def __init__(self, request, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.request = request
+
+        async def run(self) -> RunResult:
+            if self.request.instruction == "first":
+                await first_gate.wait()
+            return RunResult(
+                run_id=self.request.instruction,
+                task_id=self.request.instruction,
+                status=RunStatus.COMPLETED,
+                summary=f"done {self.request.instruction}",
+                terminal_reason="completed",
+            )
+
+    def factory(request, approval_policy, event_sink):
+        requests.append(request)
+        return QueueRunner(
+            request,
+            approval_policy=approval_policy,
+            event_sink=event_sink,
+        ), resource
+
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=factory,
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._latest_context_telemetry = ContextTelemetry(
+            accuracy="exact",
+            input_tokens=80,
+            output_tokens=10,
+            total_tokens=90,
+            context_window=100,
+        )
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("first")
+        app._submit_current_task()
+        await pilot.pause()
+        composer.load_text("second")
+        app._submit_current_task()
+        await _wait_until(lambda: len(requests) == 1 and list(app._queued_prompts) == ["second"])
+
+        first_gate.set()
+        await asyncio.wait_for(resource.started.wait(), timeout=1)
+        await pilot.pause()
+        assert [request.instruction for request in requests] == ["first"]
+        assert resource.compactions == [None]
+
+        compact_release.set()
+        await _wait_until(lambda: len(requests) == 2 and not app._agent_running, attempts=150)
+        assert [request.instruction for request in requests] == ["first", "second"]
+
+
+async def test_auto_compaction_failure_is_debounced_per_context(tmp_path: Path) -> None:
+    resource = FailingCompactionResource()
+    app = RivumiApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda _request, approval_policy, event_sink: (
+            FakeRunner(approval_policy=approval_policy, event_sink=event_sink),
+            resource,
+        ),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)):
+        app._persistent_resources.append(resource)
+        app._result = RunResult(
+            run_id="turn-1",
+            task_id="turn-1",
+            status=RunStatus.COMPLETED,
+            summary="done",
+            terminal_reason="completed",
+        )
+        app._native_session_has_context = True
+        app._latest_context_telemetry = ContextTelemetry(
+            accuracy="exact",
+            input_tokens=80,
+            output_tokens=10,
+            total_tokens=90,
+            context_window=100,
+        )
+
+        await app._maybe_auto_compact_context()
+        await app._maybe_auto_compact_context()
+
+        assert resource.calls == 1
+        assert app._runtime_context_id in app._auto_compaction_failed_contexts
 
 
 async def test_active_turn_keeps_idle_only_slash_command_in_composer(tmp_path: Path) -> None:

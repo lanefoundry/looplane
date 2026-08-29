@@ -14,10 +14,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 from pydantic import Field
 
+from rivumi.console import EventSink
 from rivumi.contracts import ContractModel, Limits, TaskContract, VerificationCommand
-from rivumi.events import atomic_write_json
+from rivumi.events import RunEvent, atomic_write_json
 from rivumi.loop import AgentRunner
 from rivumi.models import ModelProvider, OpenAICompatibleModel
 from rivumi.runtime import run_bounded_command, sanitized_subprocess_env
@@ -39,6 +41,41 @@ class SandboxEntrypointError(RuntimeError):
 
 _PR_SET_DUMPABLE = 4
 _MAX_RUN_TOKEN_BYTES = 8_192
+_MAX_EVENT_BATCH_BYTES = 128_000
+
+
+class SandboxControlPlaneEventSink:
+    """Best-effort live event mirror from Sandbox to the Worker control plane."""
+
+    def __init__(self, *, base_url: str, run_id: str, token: str) -> None:
+        self._url = f"{base_url.rstrip('/')}/runs/{run_id}/events"
+        self._token = token
+        self._errors = 0
+        self._disabled = False
+
+    async def emit(self, event: RunEvent) -> None:
+        if self._disabled:
+            return
+        line = event.model_dump_json() + "\n"
+        if len(line.encode("utf-8")) > _MAX_EVENT_BATCH_BYTES:
+            self._disabled = True
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    self._url,
+                    headers={
+                        "authorization": f"Bearer {self._token}",
+                        "content-type": "application/json",
+                    },
+                    json={"lines": [line]},
+                )
+            if response.status_code >= 400:
+                self._errors += 1
+        except httpx.HTTPError:
+            self._errors += 1
+        if self._errors >= 3:
+            self._disabled = True
 
 
 def _harden_linux_process() -> None:
@@ -60,10 +97,10 @@ def _harden_linux_process() -> None:
         raise SandboxEntrypointError("could not harden sandbox agent process")
 
 
-def _read_and_remove_run_token(root: Path) -> str:
+def _read_and_remove_token(root: Path, filename: str) -> str:
     """Consume the fixed, owner-only capability file without following links."""
 
-    path = root / ".rivumi-run-token"
+    path = root / filename
     flags = os.O_RDONLY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -100,6 +137,14 @@ def _read_and_remove_run_token(root: Path) -> str:
     except OSError as exc:
         raise SandboxEntrypointError("sandbox run capability could not be consumed") from exc
     return token
+
+
+def _read_and_remove_run_token(root: Path) -> str:
+    return _read_and_remove_token(root, ".rivumi-run-token")
+
+
+def _read_and_remove_event_token(root: Path) -> str:
+    return _read_and_remove_token(root, ".rivumi-event-token")
 
 
 def _required_env(name: str) -> str:
@@ -204,21 +249,30 @@ async def run_sandbox_request(
     if model is None:
         _harden_linux_process()
         run_token = _read_and_remove_run_token(root)
+        event_token = _read_and_remove_event_token(root)
+        model_gateway_url = _required_env("RIVUMI_MODEL_GATEWAY_URL")
         selected_model = OpenAICompatibleModel(
             model=_required_env("RIVUMI_MODEL_ID"),
             api_key=run_token,
-            base_url=_required_env("RIVUMI_MODEL_GATEWAY_URL"),
+            base_url=model_gateway_url,
             supports_tool_calling=True,
             provider_name="cloudflare-model-proxy",
         )
+        event_sink: EventSink | None = SandboxControlPlaneEventSink(
+            base_url=model_gateway_url,
+            run_id=request.task_id,
+            token=event_token,
+        )
     else:
         selected_model = model
+        event_sink = None
     try:
         result = await AgentRunner(
             task,
             selected_model,
             runs,
             allow_unsafe_local_exec=True,
+            event_sink=event_sink,
         ).run()
     finally:
         if owns_model:

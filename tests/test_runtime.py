@@ -6,9 +6,12 @@ import pytest
 from conftest import run_git
 
 from rivumi.runtime import (
+    CommandSandbox,
     LocalGitWorkspace,
     WorkspacePreparationError,
+    resolve_command_sandbox,
     run_bounded_command,
+    sandboxed_command_argv,
 )
 
 
@@ -36,6 +39,59 @@ def test_bounded_command_delivers_complete_stdout_lines_before_exit(tmp_path: Pa
         ("done", False),
     ]
     assert delivered[1][2] - delivered[0][2] >= 0.3
+
+
+def test_bounded_command_fails_closed_when_required_sandbox_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rivumi.runtime as runtime
+
+    marker = tmp_path / "must-not-exist"
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+
+    result = run_bounded_command(
+        (sys.executable, "-c", f"open({str(marker)!r}, 'w').write('ran')"),
+        cwd=tmp_path,
+        timeout_seconds=2,
+        max_output_chars=1_000,
+        sandbox=CommandSandbox(mode="workspace-write"),
+    )
+
+    assert result.ok is False
+    assert result.returncode == 126
+    assert "sandbox is unavailable" in result.stderr
+    assert not marker.exists()
+
+
+def test_resolve_command_sandbox_adds_named_profile_and_read_roots(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    task_home = tmp_path / ".task-home"
+    extra = tmp_path / "toolchain"
+
+    sandbox = resolve_command_sandbox(
+        profile=None,
+        cwd=workspace,
+        task_home=task_home,
+        extra_read_roots=(extra, extra),
+    )
+
+    assert sandbox.mode == "workspace-write"
+    assert sandbox.profile == "verification"
+    assert sandbox.read_roots == (
+        workspace.resolve(strict=False),
+        task_home.resolve(strict=False),
+        extra.resolve(strict=False),
+    )
+    assert sandbox.writable_roots == (task_home.resolve(strict=False),)
+
+
+def test_sandboxed_command_rejects_unknown_profile_before_execution(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsupported command sandbox profile"):
+        sandboxed_command_argv(
+            (sys.executable, "-c", "print('must not run')"),
+            cwd=tmp_path,
+            sandbox=CommandSandbox(mode="workspace-write", profile="networked"),
+        )
 
 
 def test_bounded_command_bounds_each_callback_line_without_losing_capture(

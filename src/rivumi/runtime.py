@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -29,6 +31,16 @@ _SENSITIVE_ENV_MARKERS = ("API", "AUTH", "CREDENTIAL", "GITHUB", "PASSWORD", "SE
 
 class WorkspacePreparationError(RuntimeError):
     """Raised when a disposable Git workspace cannot be prepared safely."""
+
+
+@dataclass(frozen=True)
+class CommandSandbox:
+    """OS-level command sandbox request for local verification commands."""
+
+    mode: str
+    profile: str = "verification"
+    read_roots: tuple[Path, ...] = ()
+    writable_roots: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -243,6 +255,118 @@ def _stop_process_tree(process: subprocess.Popen[bytes]) -> None:
         process.wait()
 
 
+def _sandbox_path_literal(path: Path) -> str:
+    return str(path).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _normalize_sandbox_roots(roots: Sequence[Path], *, label: str) -> tuple[Path, ...]:
+    normalized: list[Path] = []
+    for root in roots:
+        resolved = Path(root).expanduser().resolve(strict=False)
+        if "\x00" in str(resolved):
+            raise ValueError(f"sandbox {label} roots must be NUL-free")
+        normalized.append(resolved)
+    return tuple(dict.fromkeys(normalized))
+
+
+def resolve_command_sandbox(
+    *,
+    profile: str | None = "verification",
+    cwd: Path,
+    task_home: Path,
+    extra_read_roots: Sequence[Path] = (),
+) -> CommandSandbox:
+    """Build a normalized verification sandbox request."""
+
+    profile_name = profile or "verification"
+    if profile_name != "verification":
+        raise ValueError(f"unsupported command sandbox profile: {profile_name}")
+    task_home = task_home.expanduser().resolve(strict=False)
+    read_roots = _normalize_sandbox_roots(
+        (cwd, task_home, *extra_read_roots),
+        label="read",
+    )
+    return CommandSandbox(
+        mode="workspace-write",
+        profile=profile_name,
+        read_roots=read_roots,
+        writable_roots=(task_home,),
+    )
+
+
+def _macos_sandbox_profile(
+    cwd: Path,
+    *,
+    read_roots: Sequence[Path],
+    writable_roots: Sequence[Path],
+) -> str:
+    write_roots = []
+    for root in (cwd, *writable_roots):
+        resolved = Path(root).resolve(strict=False)
+        if "\x00" in str(resolved):
+            raise ValueError("sandbox writable roots must be NUL-free")
+        write_roots.append(resolved)
+    read_roots = (
+        *_normalize_sandbox_roots((cwd, *read_roots, *writable_roots), label="read"),
+        Path("/System"),
+        Path("/Library"),
+        Path("/usr"),
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/private/var/folders"),
+        Path("/private/tmp"),
+        Path("/tmp"),
+    )
+    read_rules = "\n".join(
+        f'  (subpath "{_sandbox_path_literal(root)}")'
+        for root in dict.fromkeys(read_roots)
+    )
+    writable_rules = "\n".join(
+        f'  (subpath "{_sandbox_path_literal(root)}")'
+        for root in dict.fromkeys(write_roots)
+    )
+    return f"""
+(version 1)
+(deny default)
+(allow process*)
+(allow sysctl-read)
+(allow file-read-metadata)
+(allow file-read*
+{read_rules}
+)
+(allow file-write*
+{writable_rules}
+)
+""".strip()
+
+
+def sandboxed_command_argv(
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    sandbox: CommandSandbox | None,
+) -> tuple[str, ...] | str:
+    """Return argv wrapped in an OS sandbox, or an error string when unavailable."""
+
+    if sandbox is None:
+        return tuple(argv)
+    if sandbox.mode != "workspace-write":
+        raise ValueError("unsupported command sandbox mode")
+    if sandbox.profile != "verification":
+        raise ValueError("unsupported command sandbox profile")
+    if sys.platform != "darwin":
+        return "OS command sandbox is unavailable on this platform"
+    executable = shutil.which("sandbox-exec")
+    if executable is None:
+        return "macOS sandbox-exec is unavailable"
+    profile = _macos_sandbox_profile(
+        cwd,
+        read_roots=sandbox.read_roots,
+        writable_roots=sandbox.writable_roots,
+    )
+    return (executable, "-p", profile, *argv)
+
+
 def run_bounded_command(
     argv: Sequence[str],
     *,
@@ -254,6 +378,7 @@ def run_bounded_command(
     cancel_event: threading.Event | None = None,
     stdout_line_callback: Callable[[str, bool], None] | None = None,
     max_stdout_line_bytes: int | None = None,
+    sandbox: CommandSandbox | None = None,
 ) -> CommandResult:
     if not argv or not all(isinstance(item, str) and item for item in argv):
         raise ValueError("argv must be a non-empty sequence of non-empty strings")
@@ -263,12 +388,20 @@ def run_bounded_command(
         raise ValueError("max_output_chars must be positive")
     if max_stdout_line_bytes is not None and max_stdout_line_bytes <= 0:
         raise ValueError("max_stdout_line_bytes must be positive")
+    sandboxed_argv = sandboxed_command_argv(argv, cwd=cwd, sandbox=sandbox)
+    if isinstance(sandboxed_argv, str):
+        return CommandResult(
+            argv=tuple(argv),
+            returncode=126,
+            stdout="",
+            stderr=sandboxed_argv,
+        )
 
     creationflags = 0
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     process = subprocess.Popen(
-        list(argv),
+        list(sandboxed_argv),
         cwd=cwd,
         env=dict(env) if env is not None else sanitized_subprocess_env(),
         stdin=subprocess.PIPE if isinstance(stdin, str) else subprocess.DEVNULL,

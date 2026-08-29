@@ -34,6 +34,12 @@ SUPPORTED_RUNTIMES = frozenset(
     {"rivumi-agent", "claude-code", "codex-cli", "opencode", "pi", "omp"}
 )
 MAX_CONFIG_BYTES = 64 * 1024
+MAX_DENY_RULES = 128
+MAX_DENY_RULE_CHARS = 1024
+MAX_ALLOW_RULES = 128
+MAX_ALLOW_RULE_CHARS = 1024
+MAX_SANDBOX_READ_ROOTS = 64
+SUPPORTED_SANDBOX_PROFILES = frozenset({"verification"})
 
 
 class CliConfig(BaseModel):
@@ -47,6 +53,10 @@ class CliConfig(BaseModel):
     runtime: str | None = None
     runtime_model: str | None = None
     statusline_command: str | None = None
+    deny_rules: tuple[str, ...] = ()
+    allow_rules: tuple[str, ...] = ()
+    sandbox_profile: str | None = None
+    sandbox_read_roots: tuple[str, ...] = ()
 
     @field_validator("runtime")
     @classmethod
@@ -82,6 +92,69 @@ class CliConfig(BaseModel):
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         return _normalized(value)
+
+    @field_validator("deny_rules")
+    @classmethod
+    def validate_deny_rules(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) > MAX_DENY_RULES:
+            raise ValueError(f"deny_rules cannot contain more than {MAX_DENY_RULES} entries")
+        normalized: list[str] = []
+        from rivumi.permissions import DenyRule
+
+        for rule in value:
+            rule = _normalized(rule)
+            assert rule is not None
+            if len(rule) > MAX_DENY_RULE_CHARS:
+                raise ValueError(
+                    f"deny_rules entries cannot exceed {MAX_DENY_RULE_CHARS} characters"
+                )
+            DenyRule.parse(rule)
+            normalized.append(rule)
+        return tuple(normalized)
+
+    @field_validator("allow_rules")
+    @classmethod
+    def validate_allow_rules(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) > MAX_ALLOW_RULES:
+            raise ValueError(f"allow_rules cannot contain more than {MAX_ALLOW_RULES} entries")
+        normalized: list[str] = []
+        from rivumi.permissions import AllowRule
+
+        for rule in value:
+            rule = _normalized(rule)
+            assert rule is not None
+            if len(rule) > MAX_ALLOW_RULE_CHARS:
+                raise ValueError(
+                    f"allow_rules entries cannot exceed {MAX_ALLOW_RULE_CHARS} characters"
+                )
+            AllowRule.parse(rule)
+            normalized.append(rule)
+        return tuple(normalized)
+
+    @field_validator("sandbox_profile")
+    @classmethod
+    def validate_sandbox_profile(cls, value: str | None) -> str | None:
+        value = _normalized(value)
+        if value is not None and value not in SUPPORTED_SANDBOX_PROFILES:
+            choices = ", ".join(sorted(SUPPORTED_SANDBOX_PROFILES))
+            raise ValueError(f"sandbox_profile must be one of: {choices}")
+        return value
+
+    @field_validator("sandbox_read_roots")
+    @classmethod
+    def validate_sandbox_read_roots(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) > MAX_SANDBOX_READ_ROOTS:
+            raise ValueError(
+                f"sandbox_read_roots cannot contain more than {MAX_SANDBOX_READ_ROOTS} entries"
+            )
+        normalized: list[str] = []
+        for root in value:
+            normalized_root = _normalized(root)
+            assert normalized_root is not None
+            if not normalized_root.isprintable():
+                raise ValueError("sandbox_read_roots entries must be printable paths")
+            normalized.append(normalized_root)
+        return tuple(dict.fromkeys(normalized))
 
     @field_validator("api_url")
     @classmethod

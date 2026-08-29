@@ -20,8 +20,13 @@ from rivumi.runtime_semantics import (
     ProposedChange,
     ProposedChangeKind,
     QueuedTaskState,
+    RuntimeCapabilities,
     TaskStatus,
     decide_permission,
+    history_summary_fallback_span,
+    should_apply_history_summary_fallback,
+    should_auto_compact_context,
+    should_remind_context_pressure,
 )
 
 
@@ -99,6 +104,94 @@ def test_context_checkpoint_separates_summarized_and_retained_turns() -> None:
             telemetry_before=telemetry(30),
             telemetry_after=telemetry(40),
         )
+
+
+def test_auto_compaction_policy_requires_native_capability_and_window() -> None:
+    capabilities = RuntimeCapabilities(native_compaction=True)
+
+    assert should_auto_compact_context(telemetry(85), capabilities) is True
+    assert should_auto_compact_context(telemetry(84), capabilities) is False
+    assert (
+        should_auto_compact_context(
+            ContextTelemetry(
+                accuracy="exact",
+                input_tokens=90,
+                output_tokens=0,
+                total_tokens=90,
+                context_window=None,
+            ),
+            capabilities,
+        )
+        is False
+    )
+    assert (
+        should_auto_compact_context(
+            telemetry(90), RuntimeCapabilities(native_compaction=False)
+        )
+        is False
+    )
+
+
+def test_context_pressure_reminder_policy_uses_task_token_limit_only() -> None:
+    assert should_remind_context_pressure(total_tokens=85, max_total_tokens=100) is True
+    assert should_remind_context_pressure(total_tokens=84, max_total_tokens=100) is False
+    assert should_remind_context_pressure(total_tokens=99, max_total_tokens=None) is False
+
+    with pytest.raises(ValueError, match="trigger_ratio"):
+        should_remind_context_pressure(
+            total_tokens=1,
+            max_total_tokens=100,
+            trigger_ratio=0,
+        )
+    with pytest.raises(ValueError, match="negative"):
+        should_remind_context_pressure(total_tokens=-1, max_total_tokens=100)
+
+
+def test_history_summary_fallback_policy_requires_pressure_and_old_history() -> None:
+    assert (
+        should_apply_history_summary_fallback(
+            total_tokens=85,
+            max_total_tokens=100,
+            message_count=8,
+            already_applied=False,
+        )
+        is True
+    )
+    assert (
+        should_apply_history_summary_fallback(
+            total_tokens=84,
+            max_total_tokens=100,
+            message_count=8,
+            already_applied=False,
+        )
+        is False
+    )
+    assert (
+        should_apply_history_summary_fallback(
+            total_tokens=85,
+            max_total_tokens=100,
+            message_count=5,
+            already_applied=False,
+        )
+        is False
+    )
+    assert (
+        should_apply_history_summary_fallback(
+            total_tokens=85,
+            max_total_tokens=100,
+            message_count=8,
+            already_applied=True,
+        )
+        is False
+    )
+
+
+def test_history_summary_fallback_span_keeps_seed_and_recent_tail() -> None:
+    assert history_summary_fallback_span(message_count=8) == (2, 4)
+    assert history_summary_fallback_span(message_count=7) is None
+
+    with pytest.raises(ValueError, match="retained_tail_items"):
+        history_summary_fallback_span(message_count=8, retained_tail_items=-1)
 
 
 @pytest.mark.parametrize(

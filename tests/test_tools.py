@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -17,6 +18,9 @@ def make_executor(
     allowed_paths: tuple[str, ...] = ("src/**",),
     limits: Limits | dict[str, int] | None = None,
     verification_commands: tuple[VerificationCommand, ...] | None = None,
+    sandbox_checks: bool = False,
+    sandbox_profile: str | None = None,
+    sandbox_read_roots: tuple[Path, ...] = (),
 ) -> ToolExecutor:
     return ToolExecutor(
         workspace=workspace,
@@ -24,6 +28,9 @@ def make_executor(
         verification_commands=verification_commands
         or (VerificationCommand(name="tests", argv=("pytest", "-q"), timeout_seconds=30),),
         limits=limits,
+        sandbox_checks=sandbox_checks,
+        sandbox_profile=sandbox_profile,
+        sandbox_read_roots=sandbox_read_roots,
     )
 
 
@@ -43,6 +50,37 @@ def test_run_check_rejects_command_not_in_exact_allowlist(
     assert observation.error is not None
     assert "allow" in observation.error.lower() or "unknown" in observation.error.lower()
     assert not marker.exists(), "a rejected check must never reach process execution"
+
+
+def test_read_only_tool_definitions_mark_concurrency_safe(tiny_bug_repo: Path) -> None:
+    executor = make_executor(tiny_bug_repo)
+    definitions = {definition.name: definition for definition in executor.definitions}
+
+    for name in ("list_files", "read_file", "search_text", "git_diff"):
+        assert definitions[name].read_only is True
+        assert definitions[name].concurrency_safe is True
+    for name in ("replace_text", "apply_patch", "run_check"):
+        assert definitions[name].read_only is False
+        assert definitions[name].concurrency_safe is False
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep is not installed")
+def test_search_text_uses_rg_and_respects_gitignore(tiny_bug_repo: Path) -> None:
+    ignored_dir = tiny_bug_repo / "src" / "ignored"
+    ignored_dir.mkdir(parents=True)
+    (tiny_bug_repo / ".gitignore").write_text("src/ignored/\n", encoding="utf-8")
+    (ignored_dir / "hidden.py").write_text("needle\n", encoding="utf-8")
+    visible = tiny_bug_repo / "src" / "tiny_python_bug" / "visible.py"
+    visible.write_text("needle\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore", str(visible)], cwd=tiny_bug_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "search fixture"], cwd=tiny_bug_repo, check=True)
+    executor = make_executor(tiny_bug_repo, allowed_paths=("src/**",))
+
+    observation = executor.execute(ToolCall(name="search_text", arguments={"query": "needle"}))
+
+    assert observation.ok is True
+    assert "visible.py:1:needle" in observation.content
+    assert "hidden.py" not in observation.content
 
 
 def test_apply_patch_rejects_changes_outside_allowed_paths(tiny_bug_repo: Path) -> None:
@@ -506,6 +544,66 @@ def test_verification_process_does_not_receive_model_or_github_secrets(
     assert "github-secret-value" not in outcome.output
     assert outcome.output.count("missing") == 2
     assert "\n1\n" in outcome.output
+
+
+def test_sandboxed_verification_fails_closed_when_platform_support_is_missing(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rivumi.runtime as runtime
+
+    marker = tmp_path / "must-not-exist"
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+    command = VerificationCommand(
+        name="sandboxed",
+        argv=(sys.executable, "-c", f"open({str(marker)!r}, 'w').write('ran')"),
+        timeout_seconds=5,
+    )
+    executor = make_executor(
+        tiny_bug_repo,
+        verification_commands=(command,),
+        sandbox_checks=True,
+    )
+
+    outcome = executor.run_check("sandboxed")
+
+    assert outcome.ok is False
+    assert outcome.exit_code == 126
+    assert "sandbox is unavailable" in outcome.output
+    assert not marker.exists()
+
+
+def test_sandboxed_verification_passes_profile_and_read_roots(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rivumi.tools as tools
+
+    captured: dict[str, object] = {}
+
+    def fake_resolve_command_sandbox(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(tools, "resolve_command_sandbox", fake_resolve_command_sandbox)
+    extra_root = tmp_path / "toolchain"
+    command = VerificationCommand(
+        name="python",
+        argv=(sys.executable, "-c", "print('ok')"),
+        timeout_seconds=5,
+    )
+    executor = make_executor(
+        tiny_bug_repo,
+        verification_commands=(command,),
+        sandbox_checks=True,
+        sandbox_profile="verification",
+        sandbox_read_roots=(extra_root,),
+    )
+
+    outcome = executor.run_check("python")
+
+    assert outcome.ok is True
+    assert captured["profile"] == "verification"
+    assert captured["cwd"] == tiny_bug_repo.resolve(strict=True)
+    assert captured["extra_read_roots"] == (extra_root,)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group assertion is POSIX-specific")

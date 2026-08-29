@@ -82,6 +82,8 @@ from rivumi.conversation_runtime import (
     TurnCompletedEvent as RuntimeTurnCompletedEvent,
 )
 from rivumi.events import RunEvent
+from rivumi.memory import remember
+from rivumi.provider_catalog import estimate_cost
 from rivumi.runtime_semantics import (
     ContextTelemetry,
     PermissionDecision,
@@ -89,6 +91,7 @@ from rivumi.runtime_semantics import (
     ProcessLocalGrant,
     RuntimeCapabilities,
     decide_permission,
+    should_auto_compact_context,
 )
 from rivumi.slash_commands import (
     DEFAULT_SLASH_COMMAND_REGISTRY,
@@ -680,6 +683,8 @@ class ApprovalModal(ModalScreen[ApprovalDecision]):
     @staticmethod
     def _preview_text(request: ApprovalRequest) -> str:
         if request.preview.strip():
+            if request.policy_reason:
+                return f"{request.preview}\n\nPolicy: {request.policy_reason}"
             return request.preview
         if request.command is not None:
             action = f"verification command ({request.command.name})"
@@ -687,14 +692,19 @@ class ApprovalModal(ModalScreen[ApprovalDecision]):
             action = request.tool_call.name.removeprefix("external_").replace("_", " ")
         else:  # The approval contract rejects this, but keep the renderer fail-safe.
             action = "unknown action"
-        return "\n".join(
+        lines = [
+            f"Action: {action}",
+            f"Effect: {request.effect.value}",
+        ]
+        if request.policy_reason:
+            lines.append(f"Policy: {request.policy_reason}")
+        lines.extend(
             (
-                f"Action: {action}",
-                f"Effect: {request.effect.value}",
                 "Details: The runtime did not provide a command, file list, or diff.",
                 "Recommendation: Deny unless the preceding tool activity makes the impact clear.",
             )
         )
+        return "\n".join(lines)
 
     def on_mount(self) -> None:
         choices = self.query_one("#approval-choices", OptionList)
@@ -2072,6 +2082,8 @@ class RivumiApp(App[RunResult | None]):
         self._conversation_has_chunk = False
         self._runtime_context_id = uuid4().hex
         self._native_session_has_context = False
+        self._auto_compaction_armed = True
+        self._auto_compaction_failed_contexts: set[str] = set()
         self._queued_prompts: deque[str] = deque(maxlen=20)
         self._prompt_history: list[str] = []
         self._history_index: int | None = None
@@ -2392,8 +2404,7 @@ class RivumiApp(App[RunResult | None]):
                 await self.aclose_resources()
             except Exception as exc:
                 self.last_error = f"Previous runtime cleanup failed during context switch: {exc}"
-            self._runtime_context_id = uuid4().hex
-            self._native_session_has_context = False
+            self._reset_runtime_context_tracking()
             self._runtime_reported_model = None
             self._mode = "ask"
             before = f"{previous_runtime} · {previous_model or 'Automatic'}"
@@ -2404,8 +2415,7 @@ class RivumiApp(App[RunResult | None]):
             self._ask_history.clear()
             self._reset_transcript()
             self._mode = "ask" if self._uses_native_conversation(current_runtime) else "agent"
-            self._runtime_context_id = uuid4().hex
-            self._native_session_has_context = False
+            self._reset_runtime_context_tracking()
             self._runtime_reported_model = None
         self._refresh_context()
         self._refresh_mode()
@@ -3104,7 +3114,26 @@ class RivumiApp(App[RunResult | None]):
                 if turns:
                     average = session.total_tokens // turns
                     detail += f"\n{turns} turn(s) · avg {average:,} tokens/turn"
+                provider = self.config.provider or self._runtime()
+                model = (
+                    self._runtime_reported_model
+                    or self.config.model
+                    or self.config.runtime_model
+                )
+                if model:
+                    cost = estimate_cost(provider, model, session)
+                    if cost is not None:
+                        detail += f"\nEstimated cost ${cost.total_cost:.4f} {cost.currency}"
             self._write_timeline("Usage", detail)
+        elif command is SlashCommand.REMEMBER:
+            try:
+                entry = remember(argument or "", project=self.repository)
+            except ValueError as exc:
+                self.query_one("#status", Static).update(str(exc))
+                return
+            scope = "user" if entry.type == "user_preference" else "project"
+            self._write_timeline("Remembered", f"[{scope}] {entry.description}")
+            self.query_one("#status", Static).update("Memory saved")
         elif command is SlashCommand.PERMISSIONS:
             if argument:
                 self._apply_permission_command(argument)
@@ -3183,8 +3212,7 @@ class RivumiApp(App[RunResult | None]):
                 self.query_one("#status", Static).update(f"Model switch failed: {exc}")
                 return
             self._runtime_reported_model = None
-            self._runtime_context_id = uuid4().hex
-            self._native_session_has_context = False
+            self._reset_runtime_context_tracking()
         else:
             self.config = self.config.model_copy(update={"model": selected})
         if self.config.model is not None:
@@ -3287,8 +3315,7 @@ class RivumiApp(App[RunResult | None]):
             self._runtime_reported_model = previous_reported_model
             self.query_one("#status", Static).update(f"Runtime switch failed: {exc}")
             return
-        self._runtime_context_id = uuid4().hex
-        self._native_session_has_context = False
+        self._reset_runtime_context_tracking()
         self._runtime_reported_model = None
         self._mode = "ask" if self._uses_native_conversation(selected) else "agent"
         await self._persist_default_config()
@@ -3298,7 +3325,10 @@ class RivumiApp(App[RunResult | None]):
 
     @work(exclusive=True, group="configuration")
     async def _compact_context(self, guidance: str | None) -> None:
-        resource = next(
+        await self._perform_context_compaction(guidance, automatic=False)
+
+    def _native_compaction_resource(self) -> TuiResource | None:
+        return next(
             (
                 candidate
                 for candidate in reversed(self._persistent_resources)
@@ -3307,6 +3337,21 @@ class RivumiApp(App[RunResult | None]):
             ),
             None,
         )
+
+    def _reset_runtime_context_tracking(self) -> None:
+        self._runtime_context_id = uuid4().hex
+        self._native_session_has_context = False
+        self._latest_context_telemetry = None
+        self._auto_compaction_armed = True
+        self._auto_compaction_failed_contexts.clear()
+
+    async def _perform_context_compaction(
+        self,
+        guidance: str | None,
+        *,
+        automatic: bool,
+    ) -> bool:
+        resource = self._native_compaction_resource()
         if resource is None:
             self._write_timeline(
                 "Context compaction unavailable",
@@ -3315,27 +3360,61 @@ class RivumiApp(App[RunResult | None]):
                 severity="failure",
             )
             self.query_one("#status", Static).update("Native context compaction unavailable")
-            return
+            return False
         self.query_one("#status", Static).update("Compacting native context…")
         try:
-            compact_id = await resource.compact_context(guidance)
+            compact_id = await resource.compact_context(
+                guidance,
+                event_sink=TextualEventSink(self, self._generation),
+            )
         except Exception as exc:
             self.query_one("#status", Static).update(f"Context compaction failed: {exc}")
-            return
-        self._latest_context_telemetry = None
+            if automatic:
+                self._auto_compaction_failed_contexts.add(self._runtime_context_id)
+                self._write_timeline(
+                    "Auto compaction failed",
+                    str(exc),
+                    severity="failure",
+                )
+            return False
+        self._auto_compaction_armed = False
         detail = f"Native compaction requested · {compact_id}"
         if guidance:
             detail += f"\nGuidance: {guidance}"
-        self._write_timeline("Context compacted", detail)
+        self._write_timeline(
+            "Context auto-compacted" if automatic else "Context compacted",
+            detail,
+        )
         self.query_one("#status", Static).update("Context compacted · ready")
+        return True
+
+    async def _maybe_auto_compact_context(self) -> None:
+        if (
+            self._mode != "ask"
+            or not self._uses_native_conversation()
+            or self._result is None
+            or self._result.status != RunStatus.COMPLETED
+            or not self._native_session_has_context
+            or self._stop_requested
+            or self._exit_after_stop
+            or not self._auto_compaction_armed
+            or self._runtime_context_id in self._auto_compaction_failed_contexts
+        ):
+            return
+        resource = self._native_compaction_resource()
+        capabilities = getattr(resource, "capabilities", None) if resource is not None else None
+        if not isinstance(capabilities, RuntimeCapabilities):
+            return
+        if not should_auto_compact_context(self._latest_context_telemetry, capabilities):
+            return
+        await self._perform_context_compaction(None, automatic=True)
 
     @work(exclusive=True, group="conversation")
     async def _new_conversation(self) -> None:
         self._release_conversation()
         self._ask_history.clear()
         self._reset_transcript()
-        self._runtime_context_id = uuid4().hex
-        self._native_session_has_context = False
+        self._reset_runtime_context_tracking()
         self._runtime_reported_model = None
         self.query_one("#status", Static).update("New conversation · ready")
         self.query_one("#task", MessageComposer).focus()
@@ -3363,8 +3442,7 @@ class RivumiApp(App[RunResult | None]):
             }
         )
         self._mode = "ask"
-        self._runtime_context_id = uuid4().hex
-        self._native_session_has_context = False
+        self._reset_runtime_context_tracking()
         self._runtime_reported_model = None
         self._ask_history = [(message.role, message.content) for message in messages]
         self._reset_transcript()
@@ -3433,8 +3511,7 @@ class RivumiApp(App[RunResult | None]):
             }
         )
         self._mode = "ask"
-        self._runtime_context_id = uuid4().hex
-        self._native_session_has_context = False
+        self._reset_runtime_context_tracking()
         self._runtime_reported_model = None
         self._ask_history = [(message.role, message.content) for message in messages]
         self._reset_transcript()
@@ -3651,6 +3728,7 @@ class RivumiApp(App[RunResult | None]):
             self._resource = None
             self._model = None
             self._set_running(False)
+            await self._maybe_auto_compact_context()
             if self._exit_after_stop:
                 self._exit_after_stop = False
                 self.exit(self._result)
@@ -4251,6 +4329,10 @@ class RivumiApp(App[RunResult | None]):
             return
         elif isinstance(event, ContextUsageUpdatedEvent):
             self._latest_context_telemetry = event.telemetry
+            if event.telemetry.context_window is not None:
+                pressure = event.telemetry.total_tokens / event.telemetry.context_window
+                if pressure <= 0.70:
+                    self._auto_compaction_armed = True
             self._update_metrics()
             return
         elif isinstance(event, RuntimeModelUpdatedEvent):
@@ -4264,6 +4346,8 @@ class RivumiApp(App[RunResult | None]):
         elif isinstance(event, CompactionCompletedEvent):
             if event.checkpoint is not None:
                 self._latest_context_telemetry = event.checkpoint.telemetry_after
+            else:
+                self._latest_context_telemetry = None
             self.query_one("#status", Static).update("Context compacted · ready")
             return
         if isinstance(event, RuntimeToolStartedEvent):

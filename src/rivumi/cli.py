@@ -275,11 +275,53 @@ def _prompt_or_task(prompt: str | None, task: str | None) -> str | None:
     return prompt if prompt is not None else task
 
 
+def _parse_provider_model_spec(spec: str) -> tuple[str, str] | None:
+    """Return provider/model for a prefixed model spec when the provider is supported."""
+
+    if "/" not in spec:
+        return None
+    candidate, model = spec.split("/", 1)
+    if candidate in SUPPORTED_PROVIDERS and model:
+        return candidate, model
+    return None
+
+
+def _resolve_model_role_alias(
+    spec: str,
+    *,
+    provider: str | None = None,
+) -> tuple[tuple[str, str], ...] | None:
+    """Resolve ``@role`` aliases to static rivumi-agent provider/model candidates."""
+
+    if not spec.startswith("@") or len(spec) == 1:
+        return None
+    role_name = spec[1:]
+    try:
+        return provider_catalog.role_candidates(role_name, provider=provider)
+    except ValueError as exc:
+        known = ", ".join(f"@{role.value}" for role in provider_catalog.ModelRole)
+        raise typer.BadParameter(f"unknown model role alias {spec!r}; choose {known}") from exc
+
+
+def _first_model_role_candidate(
+    spec: str,
+    *,
+    provider: str | None = None,
+) -> tuple[str, str] | None:
+    candidates = _resolve_model_role_alias(spec, provider=provider)
+    if candidates is None:
+        return None
+    if not candidates:
+        raise typer.BadParameter(f"model role alias {spec!r} has no candidates")
+    return candidates[0]
+
+
 def _resolve_cli_settings(
     *,
     provider: str | None,
     model: str | None,
     api_url: str | None,
+    allow_model_role_alias: bool = False,
 ) -> tuple[str, str | None, str | None]:
     try:
         with _STARTUP.span("config.load"):
@@ -288,11 +330,14 @@ def _resolve_cli_settings(
         raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
 
     model_provider: str | None = None
-    if model and "/" in model:
-        candidate, unqualified = model.split("/", 1)
-        if candidate in SUPPORTED_PROVIDERS and unqualified:
-            model_provider = candidate
-            model = unqualified
+    if model and (parsed_model := _parse_provider_model_spec(model)) is not None:
+        model_provider, model = parsed_model
+    elif (
+        allow_model_role_alias
+        and model
+        and (role_candidate := _first_model_role_candidate(model, provider=provider))
+    ):
+        model_provider, model = role_candidate
     if provider and model_provider and provider != model_provider:
         raise typer.BadParameter(
             f"--provider {provider} conflicts with model prefix {model_provider}/"
@@ -472,7 +517,16 @@ def _interactive_setup(
         ollama_models=ollama_models,
     )
     api_url = current.api_url if current.provider == provider else None
-    configured = CliConfig(runtime="rivumi-agent", provider=provider, model=model, api_url=api_url)
+    configured = CliConfig(
+        runtime="rivumi-agent",
+        provider=provider,
+            model=model,
+            api_url=api_url,
+            deny_rules=current.deny_rules,
+            allow_rules=current.allow_rules,
+            sandbox_profile=current.sandbox_profile,
+            sandbox_read_roots=current.sandbox_read_roots,
+        )
     try:
         path = asyncio.run(save_cli_config(configured))
     except (OSError, ValueError) as exc:
@@ -527,6 +581,42 @@ def _enter_dangerous_mode(dangerous: bool):
                 f"could not record dangerous-mode acceptance: {exc}"
             ) from exc
     return ApprovalMode.DANGEROUS
+
+
+def _permission_guard_from_config(
+    *,
+    config: CliConfig,
+    deny_tool: list[str] | None = None,
+    dangerous: bool = False,
+):
+    from rivumi.permissions import (
+        AllowRule,
+        ApprovalMode,
+        DenyRule,
+        PermissionGuard,
+        merge_permission_rule_sources,
+    )
+
+    try:
+        deny_rules = tuple(
+            DenyRule.parse(spec) for spec in (*config.deny_rules, *(deny_tool or ()))
+        )
+        allow_rules = tuple(AllowRule.parse(spec) for spec in config.allow_rules)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    rules = merge_permission_rule_sources(
+        user_deny_rules=deny_rules,
+        user_allow_rules=allow_rules,
+    )
+    mode = _enter_dangerous_mode(dangerous)
+    return (
+        PermissionGuard(
+            mode=mode,
+            deny_rules=rules.deny_rules,
+            allow_rules=rules.allow_rules,
+        ),
+        mode is ApprovalMode.DANGEROUS or bool(rules.deny_rules) or bool(rules.allow_rules),
+    )
 
 
 @app.command("chat", hidden=True, cls=DefaultChatCommand)
@@ -616,6 +706,20 @@ def chat(
             ),
         ),
     ] = None,
+    auto_review: Annotated[
+        bool,
+        typer.Option(
+            "--auto-review/--no-auto-review",
+            help="After verified native edits, run a read-only reviewer model lane.",
+        ),
+    ] = False,
+    sandbox_checks: Annotated[
+        bool,
+        typer.Option(
+            "--sandbox-checks/--no-sandbox-checks",
+            help="Run native verification checks through the local OS sandbox when available.",
+        ),
+    ] = False,
 ) -> None:
     """Start this agent's own loop in the current repository."""
 
@@ -625,21 +729,21 @@ def chat(
     from rivumi.conversation_controller import decide_runtime_approval
     from rivumi.external_runner import ExternalCodingRunner
     from rivumi.loop import AgentRunner, UnsafeLocalExecutionError
-    from rivumi.permissions import ApprovalMode, DenyRule, GuardedApprovalPolicy, PermissionGuard
+    from rivumi.permissions import GuardedApprovalPolicy
 
     requested_provider = provider
     requested_model = model
     requested_api_url = api_url
     try:
-        deny_rules = tuple(DenyRule.parse(spec) for spec in (deny_tool or ()))
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    dangerous_mode = _enter_dangerous_mode(dangerous)
-    permission_guard = PermissionGuard(
-        mode=dangerous_mode,
-        deny_rules=deny_rules,
+        with _STARTUP.span("config.load"):
+            current_config = load_cli_config()
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
+    permission_guard, guard_needed = _permission_guard_from_config(
+        config=current_config,
+        deny_tool=deny_tool,
+        dangerous=dangerous,
     )
-    guard_needed = dangerous_mode is ApprovalMode.DANGEROUS or bool(deny_rules)
 
     def guarded(policy):
         if not guard_needed:
@@ -656,6 +760,7 @@ def chat(
 
     fallback_specs = fallback_model or ()
     fallback_cache: list = []
+    review_model_cache: list = []
 
     def build_fallback_models():
         """Construct --fallback-model candidates lazily (credentials resolve at call time)."""
@@ -664,22 +769,57 @@ def chat(
             return ()
         if not fallback_cache:
             for spec in fallback_specs:
-                if "/" not in spec:
-                    raise typer.BadParameter(
-                        f"--fallback-model requires provider/model format: {spec!r}"
-                    )
-                fb_provider, fb_model = spec.split("/", 1)
-                fallback_cache.append(
-                    _model_from_env(
-                        provider=fb_provider,
-                        model=fb_model,
-                        base_url=api_url,
-                        tool_calling=True,
-                        allow_custom_provider_endpoint=allow_custom_provider_endpoint,
-                        experimental_subscription=experimental_subscription,
-                    )
+                parsed_candidates = (
+                    _resolve_model_role_alias(spec) if spec.startswith("@") else None
                 )
+                if parsed_candidates is None:
+                    parsed = _parse_provider_model_spec(spec)
+                    if parsed is None:
+                        raise typer.BadParameter(
+                            f"--fallback-model requires provider/model or @role format: {spec!r}"
+                        )
+                    parsed_candidates = (parsed,)
+                if not parsed_candidates:
+                    raise typer.BadParameter(
+                        f"--fallback-model role alias has no candidates: {spec!r}"
+                    )
+                for fb_provider, fb_model in parsed_candidates:
+                    fallback_cache.append(
+                        _model_from_env(
+                            provider=fb_provider,
+                            model=fb_model,
+                            base_url=None,
+                            tool_calling=True,
+                            allow_custom_provider_endpoint=allow_custom_provider_endpoint,
+                            experimental_subscription=experimental_subscription,
+                        )
+                    )
         return tuple(fallback_cache)
+
+    def build_review_model(selected_provider: str | None):
+        """Construct the optional reviewer lane lazily."""
+
+        if not auto_review:
+            return None
+        if review_model_cache:
+            return review_model_cache[0]
+        candidates = _resolve_model_role_alias("@reviewer", provider=selected_provider)
+        if not candidates:
+            raise typer.BadParameter(
+                f"--auto-review has no @reviewer candidate for provider {selected_provider!r}"
+            )
+        review_provider, review_model = candidates[0]
+        review_model_cache.append(
+            _model_from_env(
+                provider=review_provider,
+                model=review_model,
+                base_url=None,
+                tool_calling=False,
+                allow_custom_provider_endpoint=allow_custom_provider_endpoint,
+                experimental_subscription=experimental_subscription,
+            )
+        )
+        return review_model_cache[0]
 
     if print_mode and prompt in SUPPORTED_PROVIDERS and provider is None:
         raise typer.BadParameter("-p now means --print; select a provider with --provider instead")
@@ -688,14 +828,11 @@ def chat(
         provider=provider,
         model=model,
         api_url=api_url,
+        allow_model_role_alias=True,
     )
     repository = repository or Path.cwd()
     if not print_mode and not plain and _terminal_supports_tui():
-        try:
-            with _STARTUP.span("config.load"):
-                current = load_cli_config()
-        except (OSError, ValueError) as exc:
-            raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
+        current = current_config
         explicit_rivumi_runtime = any(
             value is not None for value in (requested_provider, requested_model, requested_api_url)
         )
@@ -710,6 +847,10 @@ def chat(
                     else (current.model if selected_provider == current.provider else None)
                 ),
                 api_url=api_url,
+                deny_rules=current.deny_rules,
+                allow_rules=current.allow_rules,
+                sandbox_profile=current.sandbox_profile,
+                sandbox_read_roots=current.sandbox_read_roots,
             )
         else:
             initial_config = current
@@ -817,9 +958,16 @@ def chat(
                     approval_policy=approval_policy,
                     permission_guard=permission_guard,
                     fallback_models=build_fallback_models(),
+                    review_model=build_review_model(request.provider),
+                    sandbox_checks=sandbox_checks,
+                    sandbox_profile=initial_config.sandbox_profile,
+                    sandbox_read_roots=tuple(
+                        Path(root).expanduser()
+                        for root in initial_config.sandbox_read_roots
+                    ),
                     event_sink=event_sink,
                 ),
-                selected_model,
+                ModelBundleResource(selected_model, build_review_model(request.provider)),
             )
 
         async def _warmup_native_controller() -> None:
@@ -882,16 +1030,16 @@ def chat(
                 "no model is configured; run `rivumi config --interactive` in a terminal or pass "
                 "`--provider PROVIDER --model MODEL`"
             )
-        try:
-            with _STARTUP.span("config.load"):
-                current = load_cli_config()
-        except (OSError, ValueError) as exc:
-            raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
+        current = current_config
         preferred_provider = requested_provider or current.provider
         setup_current = CliConfig(
             provider=preferred_provider,
             model=current.model if preferred_provider == current.provider else None,
             api_url=api_url,
+            deny_rules=current.deny_rules,
+            allow_rules=current.allow_rules,
+            sandbox_profile=current.sandbox_profile,
+            sandbox_read_roots=current.sandbox_read_roots,
         )
         configured = _interactive_setup(
             current=setup_current,
@@ -941,9 +1089,17 @@ def chat(
                     ),
                     permission_guard=permission_guard,
                     fallback_models=build_fallback_models(),
+                    review_model=build_review_model(provider),
+                    sandbox_checks=sandbox_checks,
+                    sandbox_profile=current_config.sandbox_profile,
+                    sandbox_read_roots=tuple(
+                        Path(root).expanduser()
+                        for root in current_config.sandbox_read_roots
+                    ),
                     event_sink=None if print_mode else ConsoleEventSink(sys.stderr),
                 ),
                 selected_model,
+                build_review_model(provider),
             )
         )
     except (UnsafeLocalExecutionError, ValueError) as exc:
@@ -1807,57 +1963,330 @@ def resume(
 def sessions(
     run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
     limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+    show: Annotated[
+        str | None,
+        typer.Option("--show", help="Show a compact timeline for one run id or id prefix."),
+    ] = None,
+    replay: Annotated[
+        str | None,
+        typer.Option(
+            "--replay",
+            help="Replay deterministic state and timeline for one run id or id prefix.",
+        ),
+    ] = None,
+    query: Annotated[
+        str | None,
+        typer.Option(
+            "--query",
+            "-q",
+            help="Filter sessions by id, status, model, task, or summary.",
+        ),
+    ] = None,
 ) -> None:
     """List recent agent runs and saved conversations with their usage."""
 
-    import json
+    max_json_bytes = 16 * 1024 * 1024
+    max_event_search_parts = 256
+    max_event_search_part_chars = 4096
+    normalized_query = query.casefold().strip() if query else None
+
+    if show is not None and replay is not None:
+        raise typer.BadParameter("--show and --replay cannot be used together")
 
     def _read_json(path: Path) -> dict[str, object] | None:
         try:
-            return json.loads(path.read_text())
-        except (OSError, ValueError):
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > max_json_bytes:
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
             return None
+        return payload if isinstance(payload, dict) else None
 
-    rows: list[tuple[str, str, str, str, str]] = []
-    if run_root.exists():
+    def _safe_session_dir(path: Path) -> bool:
+        return (
+            not path.name.startswith(".")
+            and "/" not in path.name
+            and "\\" not in path.name
+            and path.name not in {".", ".."}
+            and not path.is_symlink()
+            and path.is_dir()
+        )
+
+    def _matches(parts: list[object]) -> bool:
+        if normalized_query is None:
+            return True
+        haystack = " ".join(str(part) for part in parts if part is not None).casefold()
+        return normalized_query in haystack
+
+    def _bounded_event_search_parts(value: object, parts: list[str]) -> None:
+        if len(parts) >= max_event_search_parts:
+            return
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                parts.append(text[:max_event_search_part_chars])
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                _bounded_event_search_parts(item, parts)
+                if len(parts) >= max_event_search_parts:
+                    return
+            return
+        if isinstance(value, list | tuple):
+            for item in value:
+                _bounded_event_search_parts(item, parts)
+                if len(parts) >= max_event_search_parts:
+                    return
+
+    def _event_search_parts(path: Path) -> list[str]:
+        if normalized_query is None:
+            return []
+        parts: list[str] = []
+        for event in _read_events(path):
+            _bounded_event_search_parts(event, parts)
+            if len(parts) >= max_event_search_parts:
+                break
+        return parts
+
+    def _conversation_event_search_parts(events: object) -> list[str]:
+        if normalized_query is None:
+            return []
+        parts: list[str] = []
+        for event in (events if isinstance(events, tuple) else ()):
+            payload = event.model_dump(mode="json") if hasattr(event, "model_dump") else event
+            _bounded_event_search_parts(payload, parts)
+            if len(parts) >= max_event_search_parts:
+                break
+        return parts
+
+    def _usage_total(source: dict[str, object]) -> object:
+        usage = source.get("usage") or {}
+        if not isinstance(usage, dict):
+            return 0
+        total = usage.get("provider_total_tokens") or usage.get("input_tokens", 0)
+        return 0 if isinstance(total, dict) else total
+
+    def _resolve_run_dir(identifier: str) -> Path | None:
+        if not identifier or "/" in identifier or "\\" in identifier or identifier in {".", ".."}:
+            return None
+        if not run_root.exists() or run_root.is_symlink() or not run_root.is_dir():
+            return None
+        exact = run_root / identifier
+        if _safe_session_dir(exact):
+            return exact
+        matches = [
+            path
+            for path in run_root.iterdir()
+            if _safe_session_dir(path) and path.name.startswith(identifier)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def _read_events(path: Path) -> list[dict[str, object]]:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > max_json_bytes:
+            return []
+        events: list[dict[str, object]] = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    events.append(value)
+        except (OSError, UnicodeError, ValueError):
+            return []
+        return sorted(
+            events,
+            key=lambda value: value.get("sequence")
+            if isinstance(value.get("sequence"), int)
+            else -1,
+        )
+
+    def _event_detail(event: dict[str, object]) -> str:
+        data = event.get("data")
+        data = data if isinstance(data, dict) else {}
+        for key in (
+            "summary",
+            "terminal_reason",
+            "reason",
+            "tool",
+            "name",
+            "model",
+            "provider",
+            "base_sha",
+        ):
+            value = data.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
+
+    if show is not None:
+        run_dir = _resolve_run_dir(show)
+        if run_dir is None:
+            typer.echo(f"error: no unique run matching {show!r} under {run_root}", err=True)
+            raise typer.Exit(code=2)
+        manifest = _read_json(run_dir / "session.json")
+        result = _read_json(run_dir / "result.json")
+        request = _read_json(run_dir / "request.json")
+        source = result or manifest or {}
+        typer.echo(f"Run {run_dir.name}")
+        typer.echo(f"status: {source.get('status') or source.get('phase') or '?'}")
+        provider_name = source.get("provider_name") or source.get("provider") or "?"
+        model_name = source.get("model_id") or source.get("model") or "?"
+        typer.echo(f"model: {provider_name} / {model_name}")
+        if request and request.get("instruction"):
+            typer.echo(f"task: {request['instruction']}")
+        if source.get("summary"):
+            typer.echo(f"summary: {source['summary']}")
+        events = _read_events(run_dir / "events.jsonl")
+        if not events:
+            typer.echo("events: none")
+            return
+        typer.echo("events:")
+        for event in events:
+            sequence = event.get("sequence")
+            event_type = event.get("event_type")
+            detail = _event_detail(event)
+            prefix = f"{sequence:>4}" if isinstance(sequence, int) else "   ?"
+            line = f"{prefix}  {event_type or '?'}"
+            if detail:
+                line = f"{line}  {detail}"
+            typer.echo(line)
+        return
+
+    if replay is not None:
+        from rivumi.session_replay import ReplayValidationError, reduce_jsonl
+
+        run_dir = _resolve_run_dir(replay)
+        if run_dir is None:
+            typer.echo(f"error: no unique run matching {replay!r} under {run_root}", err=True)
+            raise typer.Exit(code=2)
+        try:
+            replay_state = reduce_jsonl(run_dir / "events.jsonl")
+        except ReplayValidationError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+
+        typer.echo(f"Replay {run_dir.name}")
+        typer.echo("state:")
+        for key, value in replay_state.as_dict().items():
+            if key == "timeline":
+                continue
+            typer.echo(f"  {key}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
+        typer.echo("timeline:")
+        if not replay_state.timeline:
+            typer.echo("  none")
+            return
+        for item in replay_state.timeline:
+            parts = [f"{item.sequence:>4}", item.event_type]
+            if item.turn_id is not None:
+                parts.append(f"turn={item.turn_id}")
+            if item.text is not None:
+                parts.append(f"text={json.dumps(item.text, ensure_ascii=False)}")
+            if item.detail is not None:
+                parts.append(f"detail={json.dumps(item.detail, ensure_ascii=False)}")
+            typer.echo("  " + "  ".join(parts))
+        return
+
+    rows: list[tuple[float, str, str, str, str, str]] = []
+    if run_root.exists() and not run_root.is_symlink() and run_root.is_dir():
         run_dirs = sorted(
-            (path for path in run_root.iterdir() if path.is_dir()),
+            (path for path in run_root.iterdir() if _safe_session_dir(path)),
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
-        for run_dir in run_dirs[:limit]:
+        for run_dir in run_dirs:
             manifest = _read_json(run_dir / "session.json")
             result = _read_json(run_dir / "result.json")
-            if manifest is None and result is None:
+            request = _read_json(run_dir / "request.json")
+            if manifest is None and result is None and request is None:
                 continue
-            source = manifest if manifest is not None else result
-            assert source is not None
+            source = manifest or result or request or {}
             status = str(source.get("status") or source.get("phase") or "?")
-            model = str(source.get("model_id") or "?")
-            usage = source.get("usage") or {}
-            total = usage.get("provider_total_tokens") or usage.get("input_tokens", 0)
-            if isinstance(total, dict):  # defensive: computed field serialization
-                total = 0
+            model = str(source.get("model_id") or source.get("model") or "?")
+            total = _usage_total(source)
             wall = source.get("active_wall_time_seconds")
             wall_text = f"{wall:.0f}s" if isinstance(wall, (int, float)) else "-"
-            rows.append((run_dir.name[:12], status, model, f"{total:,}", wall_text))
+            search_parts = [
+                run_dir.name,
+                status,
+                model,
+                source.get("provider_name"),
+                source.get("provider"),
+                source.get("summary"),
+                source.get("changed_files"),
+                request.get("instruction") if request else None,
+            ]
+            search_parts.extend(_event_search_parts(run_dir / "events.jsonl"))
+            if not _matches(search_parts):
+                continue
+            rows.append(
+                (
+                    run_dir.stat().st_mtime,
+                    run_dir.name[:12],
+                    status,
+                    model,
+                    f"{total:,}",
+                    wall_text,
+                )
+            )
+            if len(rows) >= limit:
+                break
 
     state_root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
     conversation_root = state_root / "rivumi" / "conversations"
-    if conversation_root.exists():
-        for conv_dir in sorted(
-            (path for path in conversation_root.iterdir() if path.is_dir()),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )[:limit]:
-            rows.append((conv_dir.name[:12], "conversation", "-", "-", "-"))
+    if conversation_root.exists() and not conversation_root.is_symlink():
+        from rivumi.conversation import ConversationStore
 
-    if not rows:
-        typer.echo(f"No sessions found under {run_root}")
+        try:
+            conversations = asyncio.run(ConversationStore(conversation_root).list())
+        except (OSError, ValueError):
+            conversations = ()
+        for conversation in conversations:
+            model = conversation.model_override or "-"
+            search_parts = [
+                conversation.conversation_id,
+                "conversation",
+                conversation.runtime,
+                conversation.model_override,
+                conversation.title,
+            ]
+            if normalized_query is not None:
+                try:
+                    snapshot = asyncio.run(
+                        ConversationStore(conversation_root).load(conversation.conversation_id)
+                    )
+                except (OSError, ValueError):
+                    snapshot = None
+                if snapshot is not None:
+                    search_parts.extend(_conversation_event_search_parts(snapshot.events))
+            if not _matches(search_parts):
+                continue
+            rows.append(
+                (
+                    conversation.updated_at.timestamp(),
+                    conversation.conversation_id[:12],
+                    "conversation",
+                    model,
+                    "-",
+                    "-",
+                )
+            )
+            if len(rows) >= limit:
+                break
+
+    rows.sort(key=lambda row: row[0], reverse=True)
+    visible = rows[:limit]
+    if not visible:
+        if normalized_query:
+            typer.echo(f"No sessions matching {query!r} under {run_root}")
+        else:
+            typer.echo(f"No sessions found under {run_root}")
         return
     typer.echo(f"{'ID':<14}{'STATUS':<16}{'MODEL':<24}{'TOKENS':>12}  TIME")
-    for row in rows[:limit]:
-        typer.echo(f"{row[0]:<14}{row[1]:<16}{row[2]:<24}{row[3]:>12}  {row[4]}")
+    for _mtime, session_id, status, model, tokens, wall_text in visible:
+        typer.echo(f"{session_id:<14}{status:<16}{model:<24}{tokens:>12}  {wall_text}")
 
 
 @app.command("config")
@@ -1897,6 +2326,10 @@ def configure(
             typer.echo(f"provider: {current.provider or '(not set)'}")
             typer.echo(f"model: {current.model or '(not set)'}")
             typer.echo(f"api_url: {current.api_url or '(not set)'}")
+            typer.echo(f"deny_rules: {len(current.deny_rules)}")
+            typer.echo(f"allow_rules: {len(current.allow_rules)}")
+            typer.echo(f"sandbox_profile: {current.sandbox_profile or '(default)'}")
+            typer.echo(f"sandbox_read_roots: {len(current.sandbox_read_roots)}")
             return
         provider_changed = provider is not None and provider != current.provider
         updated = CliConfig(
@@ -1909,6 +2342,10 @@ def configure(
                 if clear_api_url or (provider_changed and api_url is None)
                 else (api_url if api_url is not None else current.api_url)
             ),
+            deny_rules=current.deny_rules,
+            allow_rules=current.allow_rules,
+            sandbox_profile=current.sandbox_profile,
+            sandbox_read_roots=current.sandbox_read_roots,
         )
         asyncio.run(save_cli_config(updated, path))
     except (OSError, ValueError) as exc:
@@ -2038,10 +2475,17 @@ def run(
     instruction = _prompt_or_task(prompt, instruction)
     if instruction is None:
         raise typer.BadParameter("PROMPT or --task is required")
+    try:
+        with _STARTUP.span("config.load"):
+            current_config = load_cli_config()
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(f"CLI config could not be loaded: {exc}") from exc
+    permission_guard, _guard_needed = _permission_guard_from_config(config=current_config)
     provider, model, base_url = _resolve_cli_settings(
         provider=provider,
         model=model,
         api_url=base_url,
+        allow_model_role_alias=True,
     )
     if model is None:
         raise typer.BadParameter("--model is required when no config default exists")
@@ -2070,6 +2514,12 @@ def run(
                     selected_model,
                     run_root,
                     allow_unsafe_local_exec=unsafe_local_exec,
+                    permission_guard=permission_guard,
+                    sandbox_profile=current_config.sandbox_profile,
+                    sandbox_read_roots=tuple(
+                        Path(root).expanduser()
+                        for root in current_config.sandbox_read_roots
+                    ),
                 ),
                 selected_model,
             )
@@ -2082,11 +2532,20 @@ def run(
         raise typer.Exit(code=1)
 
 
-async def _run_and_close(runner: AgentRunner, model: ModelProvider):
+class ModelBundleResource:
+    def __init__(self, *models: ModelProvider | None) -> None:
+        self._models = tuple(model for model in models if model is not None)
+
+    async def aclose(self) -> None:
+        for model in self._models:
+            await model.aclose()
+
+
+async def _run_and_close(runner: AgentRunner, *models: ModelProvider | None):
     try:
         return await runner.run()
     finally:
-        await model.aclose()
+        await ModelBundleResource(*models).aclose()
 
 
 @app.command("export-otel")
@@ -2133,12 +2592,14 @@ async def _resume_and_close(
     event_sink: ConsoleEventSink,
 ):
     from rivumi.loop import AgentRunner
+    from rivumi.permissions import PermissionGuard
 
     try:
         runner = await AgentRunner.resume(
             run_dir,
             model,
             approval_policy=approval_policy,
+            permission_guard=PermissionGuard(),
             event_sink=event_sink,
         )
         return await runner.run()

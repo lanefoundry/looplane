@@ -41,6 +41,7 @@ class ApprovalRequest(ContractModel):
     action_id: str = Field(min_length=1)
     effect: ToolEffect
     reason: ApprovalReason
+    policy_reason: str = Field(default="", max_length=2_000)
     preview: str = Field(default="", max_length=16_000)
     tool_call: ToolCall | None = None
     command: VerificationCommand | None = None
@@ -114,6 +115,8 @@ class TTYApprovalPolicy:
         self._output.write(
             f"\nApproval required: {request.effect.value} ({request.reason.value})\n"
         )
+        if request.policy_reason:
+            self._output.write(f"Policy: {request.policy_reason}\n")
         if request.preview:
             self._output.write(f"{request.preview}\n")
         self._output.write("Allow? [y] once / [a] session / [n] deny / [c] cancel: ")
@@ -146,6 +149,10 @@ TOOL_EFFECTS: dict[str, ToolEffect] = {
 def effect_for_tool(tool_name: str) -> ToolEffect:
     """Fail closed when a newly added tool has no explicit effect classification."""
 
+    if tool_name.startswith(("mcp_resource__", "mcp_prompt__")):
+        return ToolEffect.READ
+    if tool_name.startswith("mcp__"):
+        return ToolEffect.EXECUTE
     try:
         return TOOL_EFFECTS[tool_name]
     except KeyError as exc:

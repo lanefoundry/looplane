@@ -21,6 +21,10 @@ async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: 
         provider="ollama",
         model="qwen3:4b",
         api_url="http://127.0.0.1:11434/v1/",
+        deny_rules=("read_file(.env*)",),
+        allow_rules=("run_check(pytest:*)",),
+        sandbox_profile="verification",
+        sandbox_read_roots=(" ~/cache ", "~/cache", "/opt/toolchain"),
     )
 
     await save_cli_config(config, path)
@@ -29,6 +33,10 @@ async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: 
         provider="ollama",
         model="qwen3:4b",
         api_url="http://127.0.0.1:11434/v1",
+        deny_rules=("read_file(.env*)",),
+        allow_rules=("run_check(pytest:*)",),
+        sandbox_profile="verification",
+        sandbox_read_roots=("~/cache", "/opt/toolchain"),
     )
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert set(json.loads(path.read_text())) == {
@@ -38,6 +46,10 @@ async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: 
         "runtime",
         "runtime_model",
         "statusline_command",
+        "deny_rules",
+        "allow_rules",
+        "sandbox_profile",
+        "sandbox_read_roots",
     }
 
 
@@ -46,6 +58,14 @@ def test_cli_config_rejects_credentials_unknown_fields_and_symlinks(tmp_path: Pa
         CliConfig(api_url="https://secret@example.test/v1")
     with pytest.raises(ValidationError, match="Extra inputs"):
         CliConfig.model_validate({"provider": "ollama", "api_key": "must-not-persist"})
+    with pytest.raises(ValidationError, match="invalid deny rule"):
+        CliConfig(deny_rules=("not valid",))
+    with pytest.raises(ValidationError, match="invalid allow rule"):
+        CliConfig(allow_rules=("not valid",))
+    with pytest.raises(ValidationError, match="sandbox_profile"):
+        CliConfig(sandbox_profile="networked")
+    with pytest.raises(ValidationError, match="NUL"):
+        CliConfig(sandbox_read_roots=("bad\x00root",))
 
     real = tmp_path / "real.json"
     real.write_text('{"provider":"ollama"}')

@@ -113,7 +113,12 @@ class ConversationController:
     def is_closed(self) -> bool:
         return self._closed
 
-    async def compact_context(self, guidance: str | None = None) -> str:
+    async def compact_context(
+        self,
+        guidance: str | None = None,
+        *,
+        event_sink: ConversationEventSink | None = None,
+    ) -> str:
         if self._closed:
             raise RuntimeError("conversation controller is closed")
         if not self.capabilities.native_compaction:
@@ -136,6 +141,8 @@ class ConversationController:
                         raise ConversationProtocolError(
                             "received an event for another context during compaction"
                         )
+                    if event_sink is not None:
+                        await event_sink.emit(event)
                     if isinstance(event, CompactionCompletedEvent):
                         return turn_id
             finally:

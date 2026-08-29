@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import run_git
 
+from rivumi.approvals import ApprovalDecision, ApprovalReason, ApprovalRequest, ToolEffect
 from rivumi.contracts import (
     Limits,
     Message,
@@ -23,6 +24,7 @@ from rivumi.contracts import (
 )
 from rivumi.loop import AgentRunner
 from rivumi.models import ProviderError, ProviderErrorKind, ScriptedModel
+from rivumi.permissions import PermissionGuard
 
 BROKEN_PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
@@ -86,6 +88,143 @@ def read_events(result: RunResult) -> list[dict[str, object]]:
         for line in Path(artifacts["events"]).read_text().splitlines()
         if line.strip()
     ]
+
+
+@pytest.mark.asyncio
+async def test_execute_approval_audit_includes_suspicious_policy_reason(
+    tmp_path: Path,
+) -> None:
+    class RecordingApprovalPolicy:
+        def __init__(self) -> None:
+            self.calls: list[ApprovalRequest] = []
+
+        async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
+            self.calls.append(request)
+            return ApprovalDecision.ALLOW_ONCE
+
+    approval_policy = RecordingApprovalPolicy()
+    command = VerificationCommand(
+        name="diff",
+        argv=("git", "status", "&&", "git", "diff", "--check"),
+        timeout_seconds=30,
+    )
+    task = TaskContract(
+        repository=tmp_path,
+        instruction="Check the patch.",
+        allowed_paths=("**",),
+        verification=(command,),
+        limits=Limits(),
+    )
+    runner = AgentRunner(
+        task,
+        ScriptedModel([ModelTurn(content="unused")]),
+        tmp_path / "runs",
+        approval_policy=approval_policy,
+        permission_guard=PermissionGuard(),
+        run_id="approval-policy-reason",
+    )
+
+    decision, _request_id = await runner._approval(
+        action_id="verification:diff",
+        effect=ToolEffect.EXECUTE,
+        reason=ApprovalReason.FINAL_VERIFICATION,
+        preview="$ git status && git diff --check",
+        command=command,
+    )
+
+    events = [
+        json.loads(line)
+        for line in (runner.run_dir / "events.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    requested = next(event for event in events if event["event_type"] == "approval.requested")
+    assert decision is ApprovalDecision.ALLOW_ONCE
+    assert approval_policy.calls[0].policy_reason.startswith("suspicious command shape:")
+    assert "compound shell command" in requested["data"]["policy_reason"]
+
+
+def write_loop_mcp_server(path: Path) -> None:
+    path.write_text(
+        """
+from __future__ import annotations
+
+import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if "id" not in request:
+        continue
+    if method == "initialize":
+        result = {
+            "protocolVersion": request["params"]["protocolVersion"],
+            "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+            "serverInfo": {"name": "fake", "version": "1"},
+        }
+    elif method == "tools/list":
+        result = {"tools": []}
+    elif method == "resources/list":
+        result = {"resources": [{"uri": "file:///notes.md", "name": "notes"}]}
+    elif method == "prompts/list":
+        result = {"prompts": [{"name": "review", "description": "Review a topic."}]}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_initial_prompt_injects_explicit_memory(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory_path = tmp_path / "memory.jsonl"
+    monkeypatch.setenv("RIVUMI_MEMORY_PATH", str(memory_path))
+    from rivumi.memory import remember
+
+    remember("user: prefer concise final answers", project=tiny_bug_repo)
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=1))
+    model = ScriptedModel([ModelTurn(content="No change needed.")])
+
+    await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    first_messages, _tools = model.calls[0]
+    system = first_messages[0]
+    assert isinstance(system, Message)
+    assert system.role == "system"
+    assert "Known context from explicit /remember entries" in (system.content or "")
+    assert "prefer concise final answers" in (system.content or "")
+
+
+@pytest.mark.asyncio
+async def test_initial_prompt_injects_project_instructions(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    (tiny_bug_repo / "AGENTS.md").write_text("Project instruction: use pytest.", encoding="utf-8")
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=1))
+    model = ScriptedModel([ModelTurn(content="No change needed.")])
+
+    await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    first_messages, _tools = model.calls[0]
+    system = first_messages[0]
+    assert isinstance(system, Message)
+    assert system.role == "system"
+    assert "Additional instructions from configured files" in (system.content or "")
+    assert "Project instruction: use pytest." in (system.content or "")
 
 
 @pytest.mark.asyncio
@@ -262,6 +401,117 @@ async def test_conversational_run_skips_verification_and_completes_without_chang
     assert not any(event["event_type"].startswith("verification.") for event in events)
     assert events[-1]["event_type"] == "run.completed"
     assert events[-1]["data"]["terminal_reason"] == "no_changes"
+
+
+@pytest.mark.asyncio
+async def test_read_only_tool_calls_execute_as_parallel_batch(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=4, wall_time_seconds=30))
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(name="list_files", arguments={"path": "."}),
+                    ToolCall(
+                        name="read_file",
+                        arguments={"path": "src/tiny_python_bug/calculator.py"},
+                    ),
+                )
+            ),
+            ModelTurn(content="Inspected the repository."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    events = read_events(result)
+    assert any(event["event_type"] == "tool.batch_started" for event in events)
+    assert any(event["event_type"] == "tool.batch_completed" for event in events)
+    completed = [event for event in events if event["event_type"] == "tool.completed"]
+    assert {event["data"]["name"] for event in completed} == {"list_files", "read_file"}
+    observations = [item for item in model.calls[1][0] if not isinstance(item, Message)]
+    assert [item.name for item in observations] == ["list_files", "read_file"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_resource_and_prompt_reads_execute_as_parallel_batch(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = tmp_path / "fake_mcp_server.py"
+    write_loop_mcp_server(server)
+    (tiny_bug_repo / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "local": {"command": sys.executable, "args": [str(server)]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RIVUMI_MCP_ALLOWLIST", "local")
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(max_steps=4, wall_time_seconds=30),
+        allowed_paths=("src/**", ".mcp.json"),
+    )
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(name="mcp_resource__local__list"),
+                    ToolCall(name="mcp_prompt__local__list"),
+                )
+            ),
+            ModelTurn(content="Inspected MCP resources and prompts."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    events = read_events(result)
+    assert any(event["event_type"] == "tool.batch_started" for event in events)
+    assert any(event["event_type"] == "tool.batch_completed" for event in events)
+    observations = [item for item in model.calls[1][0] if not isinstance(item, Message)]
+    assert [item.name for item in observations] == [
+        "mcp_resource__local__list",
+        "mcp_prompt__local__list",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_read_only_batch_preserves_repetition_guard_progress(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    repeated = ToolCall(name="read_file", arguments={"path": "src/tiny_python_bug/calculator.py"})
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=4, wall_time_seconds=30))
+    model = ScriptedModel([ModelTurn(tool_calls=(repeated, repeated, repeated))])
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.FAILED
+    assert result.terminal_reason == "repeated_action"
+    events = read_events(result)
+    assert sum(event["event_type"] == "tool.completed" for event in events) == 2
+    assert events[-1]["event_type"] == "run.failed"
 
 
 @pytest.mark.asyncio
@@ -599,6 +849,148 @@ async def test_token_budget_cap_fails_the_run_before_more_model_calls(
 
 
 @pytest.mark.asyncio
+async def test_context_pressure_reminder_is_injected_once_before_next_model_request(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(
+            max_steps=3,
+            wall_time_seconds=60,
+            max_total_tokens=100,
+        ),
+        verification=(
+            VerificationCommand(
+                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
+            ),
+        ),
+    )
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="read_file",
+                        arguments={"path": "src/tiny_python_bug/calculator.py"},
+                    ),
+                ),
+                usage=Usage(input_tokens=80, output_tokens=5),
+            ),
+            ModelTurn(
+                content="Partial answer.",
+                finish_reason="length",
+                usage=Usage(input_tokens=1, output_tokens=1),
+            ),
+            ModelTurn(content="No repository change is needed."),
+        ]
+    )
+    runner = AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True)
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.COMPLETED
+    assert len(model.calls) == 3
+    first_call_messages, _tools = model.calls[0]
+    second_call_messages, _tools = model.calls[1]
+    third_call_messages, _tools = model.calls[2]
+    assert not [
+        message
+        for message in first_call_messages
+        if isinstance(message, Message)
+        and message.content
+        and "b9-b1-context-pressure-v1" in message.content
+    ]
+    second_reminders = [
+        message
+        for message in second_call_messages
+        if isinstance(message, Message)
+        and message.content
+        and "b9-b1-context-pressure-v1" in message.content
+    ]
+    third_reminders = [
+        message
+        for message in third_call_messages
+        if isinstance(message, Message)
+        and message.content
+        and "b9-b1-context-pressure-v1" in message.content
+    ]
+    assert len(second_reminders) == 1
+    assert len(third_reminders) == 1
+    assert "85 of 100 allowed task tokens" in (second_reminders[0].content or "")
+    events = read_events(result)
+    assert len(
+        [
+            event
+            for event in events
+            if event["event_type"] == "context_pressure.reminder_injected"
+        ]
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_history_summary_fallback_compacts_old_native_messages_once(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(
+            max_steps=4,
+            wall_time_seconds=60,
+            max_total_tokens=100,
+        ),
+        verification=(
+            VerificationCommand(
+                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
+            ),
+        ),
+    )
+    read_calculator = ToolCall(
+        name="read_file",
+        arguments={"path": "src/tiny_python_bug/calculator.py"},
+    )
+    read_package = ToolCall(
+        name="read_file",
+        arguments={"path": "src/tiny_python_bug/__init__.py"},
+    )
+    model = ScriptedModel(
+        [
+            ModelTurn(tool_calls=(read_calculator,), usage=Usage(input_tokens=40)),
+            ModelTurn(tool_calls=(read_package,), usage=Usage(input_tokens=45)),
+            ModelTurn(tool_calls=(read_calculator,), usage=Usage(input_tokens=1)),
+            ModelTurn(content="No repository change is needed."),
+        ]
+    )
+    runner = AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True)
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.COMPLETED
+    assert len(model.calls) == 4
+    fourth_call_messages, _tools = model.calls[3]
+    summaries = [
+        message
+        for message in fourth_call_messages
+        if isinstance(message, Message)
+        and message.content
+        and "b9-summary-fallback-v1" in message.content
+    ]
+    assert len(summaries) == 1
+    assert "Compacted source message indexes: 2..5" in (summaries[0].content or "")
+    assert isinstance(fourth_call_messages[0], Message)
+    assert fourth_call_messages[0].role == "system"
+    assert isinstance(fourth_call_messages[1], Message)
+    assert fourth_call_messages[1].role == "user"
+    events = read_events(result)
+    assert len(
+        [
+            event
+            for event in events
+            if event["event_type"] == "context_pressure.summary_fallback_applied"
+        ]
+    ) == 1
+
+
+@pytest.mark.asyncio
 async def test_retryable_provider_errors_are_retried_until_success(
     tiny_bug_repo: Path, tmp_path: Path
 ) -> None:
@@ -727,6 +1119,51 @@ async def test_fallback_exhaustion_fails_after_all_candidates(
     assert len(fallback.calls) == 5
     events = read_events(result)
     assert len([e for e in events if e["event_type"] == "model.fallback"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_verified_patch_runs_read_only_reviewer_lane(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = _clean_check_task(tiny_bug_repo)
+    primary = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),),
+                usage=Usage(input_tokens=10, output_tokens=5),
+            ),
+            ModelTurn(content="Fixed calculator.", usage=Usage(input_tokens=20, output_tokens=5)),
+        ],
+        model_id="primary",
+    )
+    reviewer = ScriptedModel(
+        [ModelTurn(content="Verdict: no findings.", usage=Usage(input_tokens=7, output_tokens=3))],
+        model_id="reviewer",
+    )
+
+    result = await AgentRunner(
+        task,
+        primary,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+        review_model=reviewer,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert "Reviewer lane:\nVerdict: no findings." in result.summary
+    assert Path(result.artifacts["review"]).read_text(encoding="utf-8") == (
+        "Verdict: no findings."
+    )
+    assert len(reviewer.calls) == 1
+    review_messages, review_tools = reviewer.calls[0]
+    assert review_tools == ()
+    assert "Patch:" in (review_messages[1].content or "")
+    assert [record.lane for record in result.model_usage] == ["primary", "primary", "reviewer"]
+    assert result.usage.total_tokens == 50
+    assert result.cost is None
+    events = read_events(result)
+    assert any(event["event_type"] == "role_lane.requested" for event in events)
+    assert any(event["event_type"] == "role_lane.completed" for event in events)
 
 
 @pytest.mark.asyncio

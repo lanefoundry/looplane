@@ -84,7 +84,11 @@ def default_model(
     cross-provider families, before falling back to the first remaining entry.
     """
 
-    usable = [model for model in models if model and ":free" not in model]
+    usable = [
+        model
+        for model in models
+        if model and ":free" not in model and not model.startswith("@")
+    ]
     for pattern in _PROVIDER_BRAND_PATTERNS.get(provider or "", ()):
         for model in usable:
             if pattern in model.lower():

@@ -65,6 +65,22 @@ async def test_tty_session_grant_avoids_second_prompt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tty_prompt_includes_policy_reason() -> None:
+    input_stream = TTYInput("n\n")
+    output = StringIO()
+    request_with_reason = request(ToolEffect.EXECUTE).model_copy(
+        update={"policy_reason": "suspicious command shape: compound shell command"}
+    )
+
+    assert (
+        await TTYApprovalPolicy(input_stream, output).decide(request_with_reason)
+        == ApprovalDecision.DENY
+    )
+
+    assert "Policy: suspicious command shape: compound shell command" in output.getvalue()
+
+
+@pytest.mark.asyncio
 async def test_non_tty_never_prompts() -> None:
     stream = StringIO("y\n")
     assert (

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import builtins
+import json
 import runpy
 import stat
 from pathlib import Path
@@ -190,6 +192,17 @@ def test_config_command_and_cli_env_config_precedence(tmp_path: Path, monkeypatc
         model="gemini/gemini-test",
         api_url=None,
     ) == ("gemini", "gemini-test", None)
+    assert cli._resolve_cli_settings(provider=None, model="@cheap", api_url=None) == (
+        "ollama",
+        "@cheap",
+        "http://127.0.0.1:11434/v1",
+    )
+    assert cli._resolve_cli_settings(
+        provider=None,
+        model="@cheap",
+        api_url=None,
+        allow_model_role_alias=True,
+    ) == ("openai-compatible", "gpt-5-mini", None)
 
     switched = CliRunner().invoke(
         cli.app,
@@ -321,6 +334,871 @@ def test_exec_positional_and_legacy_run_flags_share_headless_contract(
     assert [task.instruction for task in tasks] == ["Fix it", "Fix it again"]
     assert all(task.repository == tiny_bug_repo for task in tasks)
     assert [options["tool_calling"] for options in model_options] == [False, False]
+
+
+def test_fallback_model_does_not_reuse_primary_custom_api_url(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+
+    captured_runner_kwargs: dict[str, object] = {}
+    model_options: list[dict[str, object]] = []
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **kwargs) -> None:
+            captured_runner_kwargs.update(kwargs)
+
+        async def run(self):
+            return RunResult(
+                run_id="headless-run",
+                task_id="headless-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    def fake_model(**kwargs):
+        model_options.append(kwargs)
+        return ScriptedModel([ModelTurn(content="unused")])
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(cli, "_model_from_env", fake_model)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "--task",
+            "Fix it",
+            "-C",
+            str(tiny_bug_repo),
+            "--provider",
+            "openai-compatible",
+            "--model",
+            "primary",
+            "--api-url",
+            "https://proxy.example/v1",
+            "--fallback-model",
+            "openrouter/meta-llama/llama-3.1-8b-instruct",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    fallback_models = captured_runner_kwargs["fallback_models"]
+    assert len(fallback_models) == 1
+    assert [options["provider"] for options in model_options] == [
+        "openai-compatible",
+        "openrouter",
+    ]
+    assert model_options[0]["base_url"] == "https://proxy.example/v1"
+    assert model_options[1]["base_url"] is None
+
+
+def test_model_role_alias_resolves_before_model_construction(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+
+    model_options: list[dict[str, object]] = []
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **_kwargs) -> None:
+            return None
+
+        async def run(self):
+            return RunResult(
+                run_id="headless-run",
+                task_id="headless-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    def fake_model(**kwargs):
+        model_options.append(kwargs)
+        return ScriptedModel([ModelTurn(content="unused")])
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(cli, "_model_from_env", fake_model)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["--task", "Fix it", "-C", str(tiny_bug_repo), "--model", "@cheap"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert model_options[0]["provider"] == "openai-compatible"
+    assert model_options[0]["model"] == "gpt-5-mini"
+
+
+def test_fallback_model_role_alias_expands_to_ordered_candidates(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+
+    captured_runner_kwargs: dict[str, object] = {}
+    model_options: list[dict[str, object]] = []
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **kwargs) -> None:
+            captured_runner_kwargs.update(kwargs)
+
+        async def run(self):
+            return RunResult(
+                run_id="headless-run",
+                task_id="headless-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    def fake_model(**kwargs):
+        model_options.append(kwargs)
+        return ScriptedModel([ModelTurn(content="unused")])
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(cli, "_model_from_env", fake_model)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "--task",
+            "Fix it",
+            "-C",
+            str(tiny_bug_repo),
+            "--provider",
+            "openai-compatible",
+            "--model",
+            "primary",
+            "--api-url",
+            "https://proxy.example/v1",
+            "--fallback-model",
+            "@cheap",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(captured_runner_kwargs["fallback_models"]) == 2
+    assert [(options["provider"], options["model"]) for options in model_options] == [
+        ("openai-compatible", "primary"),
+        ("openai-compatible", "gpt-5-mini"),
+        ("openai-compatible", "gpt-5.4-mini"),
+    ]
+    assert model_options[1]["base_url"] is None
+    assert model_options[2]["base_url"] is None
+
+
+def test_auto_review_builds_reviewer_lane_without_reusing_primary_custom_api_url(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+
+    captured_runner_kwargs: dict[str, object] = {}
+    model_options: list[dict[str, object]] = []
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **kwargs) -> None:
+            captured_runner_kwargs.update(kwargs)
+
+        async def run(self):
+            return RunResult(
+                run_id="headless-run",
+                task_id="headless-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    def fake_model(**kwargs):
+        model_options.append(kwargs)
+        return ScriptedModel([ModelTurn(content="unused")], model_id=str(kwargs["model"]))
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(cli, "_model_from_env", fake_model)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "--task",
+            "Fix it",
+            "-C",
+            str(tiny_bug_repo),
+            "--provider",
+            "openai-compatible",
+            "--model",
+            "primary",
+            "--api-url",
+            "https://proxy.example/v1",
+            "--auto-review",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured_runner_kwargs["review_model"] is not None
+    assert [(options["provider"], options["model"]) for options in model_options] == [
+        ("openai-compatible", "primary"),
+        ("openai-compatible", "gpt-5"),
+    ]
+    assert model_options[0]["base_url"] == "https://proxy.example/v1"
+    assert model_options[1]["base_url"] is None
+    assert model_options[1]["tool_calling"] is False
+
+
+def test_sandbox_checks_flag_reaches_native_runner(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+
+    captured_runner_kwargs: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **kwargs) -> None:
+            captured_runner_kwargs.update(kwargs)
+
+        async def run(self):
+            return RunResult(
+                run_id="headless-run",
+                task_id="headless-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(
+        cli,
+        "_model_from_env",
+        lambda **kwargs: ScriptedModel(
+            [ModelTurn(content="unused")],
+            model_id=str(kwargs["model"]),
+        ),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "--task",
+            "Fix it",
+            "-C",
+            str(tiny_bug_repo),
+            "--provider",
+            "openai-compatible",
+            "--model",
+            "primary",
+            "--sandbox-checks",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured_runner_kwargs["sandbox_checks"] is True
+
+
+def test_sandbox_config_reaches_native_runner(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime": "rivumi-agent",
+                "provider": "openai-compatible",
+                "model": "primary",
+                "sandbox_profile": "verification",
+                "sandbox_read_roots": [str(tmp_path / "toolchain")],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured_runner_kwargs: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **kwargs) -> None:
+            captured_runner_kwargs.update(kwargs)
+
+        async def run(self):
+            return RunResult(
+                run_id="headless-run",
+                task_id="headless-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(
+        cli,
+        "_model_from_env",
+        lambda **kwargs: ScriptedModel(
+            [ModelTurn(content="unused")],
+            model_id=str(kwargs["model"]),
+        ),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "--task",
+            "Fix it",
+            "-C",
+            str(tiny_bug_repo),
+            "--sandbox-checks",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured_runner_kwargs["sandbox_checks"] is True
+    assert captured_runner_kwargs["sandbox_profile"] == "verification"
+    assert captured_runner_kwargs["sandbox_read_roots"] == (tmp_path / "toolchain",)
+
+
+def test_exec_alias_wires_default_permission_guard(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+    from rivumi.permissions import PermissionGuard
+
+    captured_runner_kwargs: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **kwargs) -> None:
+            captured_runner_kwargs.update(kwargs)
+
+        async def run(self):
+            return RunResult(
+                run_id="exec-run",
+                task_id="exec-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(
+        cli,
+        "_model_from_env",
+        lambda **kwargs: ScriptedModel(
+            [ModelTurn(content="unused")],
+            model_id=str(kwargs["model"]),
+        ),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "exec",
+            "Fix it",
+            "-C",
+            str(tiny_bug_repo),
+            "--provider",
+            "openai-compatible",
+            "--model",
+            "primary",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured_runner_kwargs["permission_guard"], PermissionGuard)
+
+
+def test_exec_alias_wires_configured_permission_guard(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+    from rivumi.permissions import PermissionGuard
+
+    captured_runner_kwargs: dict[str, object] = {}
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider": "openai-compatible",
+                "model": "primary",
+                "deny_rules": ["read_file(.env*)"],
+                "allow_rules": ["run_check(pytest:*)"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **kwargs) -> None:
+            captured_runner_kwargs.update(kwargs)
+
+        async def run(self):
+            return RunResult(
+                run_id="exec-run",
+                task_id="exec-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(
+        cli,
+        "_model_from_env",
+        lambda **kwargs: ScriptedModel(
+            [ModelTurn(content="unused")],
+            model_id=str(kwargs["model"]),
+        ),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["exec", "Fix it", "-C", str(tiny_bug_repo)],
+    )
+
+    assert result.exit_code == 0, result.output
+    guard = captured_runner_kwargs["permission_guard"]
+    assert isinstance(guard, PermissionGuard)
+    assert [rule.tool_name for rule in guard.deny_rules] == ["read_file"]
+    assert [rule.tool_name for rule in guard.allow_rules] == ["run_check"]
+
+
+def test_sessions_query_matches_request_and_skips_unsafe_dirs(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    run_root.mkdir()
+    matching = run_root / "matching-session"
+    matching.mkdir()
+    (matching / "request.json").write_text(
+        json.dumps(
+            {
+                "repository": str(tmp_path),
+                "instruction": "Fix calculator overflow",
+                "allowed_paths": ["**"],
+                "verification": [{"name": "check-1", "argv": ["pytest"], "timeout_seconds": 1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (matching / "result.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "model_id": "gpt-5",
+                "summary": "calculator fixed",
+                "usage": {"provider_total_tokens": 42},
+            }
+        ),
+        encoding="utf-8",
+    )
+    ignored = run_root / "ignored-session"
+    ignored.mkdir()
+    (ignored / "result.json").write_text("{not json", encoding="utf-8")
+    (run_root / ".hidden").mkdir()
+    (run_root / "linked").symlink_to(matching, target_is_directory=True)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["sessions", "--run-root", str(run_root), "--query", "overflow"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "matching-se" in result.output
+    assert "completed" in result.output
+    assert "ignored-session" not in result.output
+    assert "linked" not in result.output
+
+
+def test_sessions_query_matches_bounded_event_content(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    run_root.mkdir()
+    matching = run_root / "event-session"
+    matching.mkdir()
+    (matching / "result.json").write_text(
+        json.dumps({"status": "completed", "model_id": "gpt-5"}),
+        encoding="utf-8",
+    )
+    (matching / "events.jsonl").write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                {
+                    "event_type": "message",
+                    "sequence": 0,
+                    "text": "Investigated bounded replay needle",
+                    "data": {"source": "codex-cli"},
+                },
+                {
+                    "event_type": "tool",
+                    "sequence": 1,
+                    "data": {"tool": "run_check"},
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+    invalid = run_root / "invalid-event-session"
+    invalid.mkdir()
+    (invalid / "result.json").write_text(
+        json.dumps({"status": "completed", "model_id": "gpt-5"}),
+        encoding="utf-8",
+    )
+    (invalid / "events.jsonl").write_text(
+        '{"event_type":"message","text":"bounded replay needle"}\n{not json',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["sessions", "--run-root", str(run_root), "--query", "bounded replay needle"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "event-sessio" in result.output
+    assert "invalid-even" not in result.output
+
+
+def test_sessions_query_matches_conversation_event_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rivumi.conversation import ConversationEventKind, ConversationStore
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    conversation_root = tmp_path / "state" / "rivumi" / "conversations"
+    store = ConversationStore(conversation_root, durable=False)
+    created = asyncio.run(store.create(runtime="codex-cli", title="notes"))
+    snapshot, lease = asyncio.run(store.resume(created.manifest.conversation_id))
+    try:
+        asyncio.run(
+            store.append(
+                lease,
+                ConversationEventKind.USER_MESSAGE,
+                turn_id="1" * 32,
+                text="Find the ceramic capacitor regression",
+            )
+        )
+        asyncio.run(
+            store.append(
+                lease,
+                ConversationEventKind.ASSISTANT_CHUNK,
+                turn_id="1" * 32,
+                text="Found it.",
+            )
+        )
+        asyncio.run(
+            store.append(
+                lease,
+                ConversationEventKind.TURN_COMPLETED,
+                turn_id="1" * 32,
+            )
+        )
+    finally:
+        lease.release()
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "sessions",
+            "--run-root",
+            str(tmp_path / "runs"),
+            "--query",
+            "ceramic capacitor",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert snapshot.manifest.conversation_id[:12] in result.output
+    assert "conversation" in result.output
+
+
+def test_sessions_show_renders_compact_timeline(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    run_dir = run_root / "abcdef1234567890"
+    run_dir.mkdir(parents=True)
+    (run_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "repository": str(tmp_path),
+                "instruction": "Fix calculator overflow",
+                "allowed_paths": ["**"],
+                "verification": [{"name": "check-1", "argv": ["pytest"], "timeout_seconds": 1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "provider": "openai-compatible",
+                "model_id": "gpt-5",
+                "summary": "calculator fixed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    events = [
+        {
+            "event_type": "run.completed",
+            "run_id": run_dir.name,
+            "sequence": 2,
+            "data": {"summary": "done"},
+        },
+        {
+            "event_type": "run.created",
+            "run_id": run_dir.name,
+            "sequence": 0,
+            "data": {"provider": "openai-compatible", "model": "gpt-5"},
+        },
+    ]
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["sessions", "--run-root", str(run_root), "--show", "abcdef"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Run abcdef1234567890" in result.output
+    assert "task: Fix calculator overflow" in result.output
+    assert "summary: calculator fixed" in result.output
+    assert result.output.index("   0  run.created") < result.output.index("   2  run.completed")
+
+
+def test_sessions_replay_renders_deterministic_state_and_timeline(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    run_dir = run_root / "abcdef1234567890"
+    run_dir.mkdir(parents=True)
+    events = [
+        {
+            "event_type": "turn.completed",
+            "run_id": run_dir.name,
+            "sequence": 2,
+            "turn_id": "turn-1",
+            "data": {"summary": "done"},
+        },
+        {
+            "event_type": "run.created",
+            "run_id": run_dir.name,
+            "sequence": 0,
+            "data": {"provider": "openai-compatible", "model": "gpt-5"},
+        },
+        {
+            "event_type": "user.message",
+            "run_id": run_dir.name,
+            "sequence": 1,
+            "turn_id": "turn-1",
+            "text": "Fix calculator overflow",
+        },
+    ]
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["sessions", "--run-root", str(run_root), "--replay", "abcdef"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Replay abcdef1234567890" in result.output
+    assert "  schema_version: 1" in result.output
+    assert "  event_count: 3" in result.output
+    assert '  run_id: "abcdef1234567890"' in result.output
+    assert '  completed_turn_ids: ["turn-1"]' in result.output
+    assert '  terminal_event_type: "turn.completed"' in result.output
+    assert result.output.index("   0  run.created") < result.output.index(
+        '   1  user.message  turn=turn-1  text="Fix calculator overflow"'
+    )
+    assert result.output.index("   1  user.message") < result.output.index(
+        '   2  turn.completed  turn=turn-1  detail="done"'
+    )
+
+
+def test_sessions_replay_rejects_invalid_events_jsonl(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    run_dir = run_root / "abcdef1234567890"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(
+        '{"sequence":0,"event_type":"run.created"}',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["sessions", "--run-root", str(run_root), "--replay", "abcdef"],
+    )
+
+    assert result.exit_code == 2
+    assert "partial final line" in result.output
+
+
+def test_sessions_show_and_replay_are_mutually_exclusive(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "sessions",
+            "--run-root",
+            str(tmp_path / "runs"),
+            "--show",
+            "abc",
+            "--replay",
+            "abc",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--show and --replay cannot be used together" in result.output
+
+
+def test_model_role_alias_honors_explicit_provider_filter(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from rivumi import loop
+
+    model_options: list[dict[str, object]] = []
+
+    class FakeRunner:
+        def __init__(self, _task, _model, _run_root, **_kwargs) -> None:
+            return None
+
+        async def run(self):
+            return RunResult(
+                run_id="headless-run",
+                task_id="headless-task",
+                status=RunStatus.COMPLETED,
+                summary="verified",
+                terminal_reason="verified",
+                artifacts={"patch": str(tmp_path / "changes.patch")},
+            )
+
+    def fake_model(**kwargs):
+        model_options.append(kwargs)
+        return ScriptedModel([ModelTurn(content="unused")])
+
+    monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(cli, "_model_from_env", fake_model)
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "--task",
+            "Fix it",
+            "-C",
+            str(tiny_bug_repo),
+            "--provider",
+            "opencode-zen",
+            "--model",
+            "@parser",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert model_options[0]["provider"] == "opencode-zen"
+    assert model_options[0]["model"] == "muse-spark-1.2-contributor-free"
+
+
+def test_model_role_alias_without_candidates_fails_before_model_construction(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    def fail_model(**_kwargs):
+        raise AssertionError("_model_from_env should not run")
+
+    monkeypatch.setattr(cli, "_model_from_env", fail_model)
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "--task",
+            "Fix it",
+            "-C",
+            str(tiny_bug_repo),
+            "--provider",
+            "openrouter",
+            "--model",
+            "@parser",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "has no candidates" in result.output
+
+
+def test_unknown_model_role_alias_fails_before_model_construction(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    def fail_model(**_kwargs):
+        raise AssertionError("_model_from_env should not run")
+
+    monkeypatch.setattr(cli, "_model_from_env", fail_model)
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["--task", "Fix it", "-C", str(tiny_bug_repo), "--model", "@missing"],
+    )
+
+    assert result.exit_code == 2
+    assert "unknown model role alias" in result.output
+
+
+def test_unknown_fallback_model_role_alias_fails_before_model_construction(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    model_calls = 0
+
+    def fail_model(**_kwargs):
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ScriptedModel([ModelTurn(content="unused")])
+        raise AssertionError("_model_from_env should not run for unknown fallback alias")
+
+    monkeypatch.setattr(cli, "_model_from_env", fail_model)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "--task",
+            "Fix it",
+            "-C",
+            str(tiny_bug_repo),
+            "--model",
+            "primary",
+            "--fallback-model",
+            "@missing",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "unknown model role alias" in result.output
+    assert model_calls == 1
 
 
 def test_ollama_preset_retains_a_bounded_tool_turn_budget(monkeypatch) -> None:

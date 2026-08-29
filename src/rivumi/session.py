@@ -20,6 +20,7 @@ from rivumi.approvals import ApprovalDecision, ApprovalRequest, ToolEffect
 from rivumi.contracts import (
     ContractModel,
     ConversationItem,
+    ModelUsageRecord,
     TaskContract,
     Usage,
     VerificationOutcome,
@@ -86,6 +87,7 @@ class SessionManifest(ContractModel):
     step: int = Field(default=0, ge=0)
     messages: tuple[ConversationItem, ...] = ()
     usage: Usage = Field(default_factory=Usage)
+    model_usage: tuple[ModelUsageRecord, ...] = ()
     final_summary: str = ""
     last_action_fingerprint: str | None = None
     repeat_count: int = Field(default=0, ge=0)

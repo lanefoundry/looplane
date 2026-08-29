@@ -29,6 +29,16 @@ def test_runtime_model_map_covers_every_runtime() -> None:
     assert set(model_map) == set(runtime_registry.RUNTIME_REGISTRY)
 
 
+def test_runtime_model_map_does_not_expose_native_role_aliases() -> None:
+    model_map = runtime_registry.runtime_model_map()
+
+    assert model_map["rivumi-agent"] == ()
+    for slug, options in model_map.items():
+        if slug == "rivumi-agent":
+            continue
+        assert all(value is None or not value.startswith("@") for _label, value in options)
+
+
 def test_native_session_runtimes_use_native_controller_dispatch() -> None:
     for slug in ("claude-code", "codex-cli"):
         adapter = runtime_registry.RUNTIME_REGISTRY[slug]

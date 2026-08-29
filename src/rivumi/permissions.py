@@ -11,8 +11,11 @@ wrapped policy so host command execution keeps its own gate.
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
+from typing import Self
 
 from rivumi.approvals import (
     ApprovalDecision,
@@ -43,17 +46,64 @@ class DangerousModeError(ValueError):
 DANGEROUS_AUTO_ALLOW_MAX_RANK = _TIER_RANK[ToolEffect.MODIFY]
 
 _COMPOUND_SPLIT = re.compile(r"(?:\|\||&&|[;|])")
+_COMPOUND_OPERATORS = frozenset({"&&", "||", ";", "|"})
+SUSPICIOUS_COMMAND_TIMEOUT_DENY_SECONDS = 120.0
+
+
+class CommandPolicyAction(StrEnum):
+    """Pure command-policy outcome before the approval UI is consulted."""
+
+    ALLOW = "allow"
+    ASK = "ask"
+    DENY = "deny"
+
+
+@dataclass(frozen=True)
+class CommandPolicyResult:
+    """Auditable command classification result."""
+
+    action: CommandPolicyAction
+    reason: str
+    subject: str = ""
 
 
 def command_segments(command: str) -> tuple[str, ...]:
     """Split a shell command line into individual pipeline/compound segments.
 
-    This is a lexical best-effort splitter (quoting is not fully honoured);
-    over-splitting only risks missing a match inside quotes, never inventing
-    one.
+    This is a lexical best-effort splitter. ``shlex`` handles quoted shell
+    text; malformed shell input falls back to the conservative legacy regex
+    splitter so critical deny checks still inspect each visible segment.
     """
 
-    return tuple(segment.strip() for segment in _COMPOUND_SPLIT.split(command) if segment.strip())
+    return tuple(segment for segment, _operator in _split_command_line(command))
+
+
+def _split_command_line(command: str) -> tuple[tuple[str, str | None], ...]:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        tokens = tuple(lexer)
+    except ValueError:
+        return tuple(
+            (segment.strip(), None)
+            for segment in _COMPOUND_SPLIT.split(command)
+            if segment.strip()
+        )
+
+    segments: list[tuple[str, str | None]] = []
+    current: list[str] = []
+    pending_operator: str | None = None
+    for token in tokens:
+        if token in _COMPOUND_OPERATORS:
+            if current:
+                segments.append((" ".join(current), pending_operator))
+                current = []
+            pending_operator = token
+            continue
+        current.append(token)
+    if current:
+        segments.append((" ".join(current), pending_operator))
+    return tuple(segments)
 
 
 CRITICAL_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
@@ -95,6 +145,79 @@ def find_critical_command_violation(segments: Sequence[str]) -> str | None:
     return None
 
 
+SUSPICIOUS_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (reason, re.compile(pattern, re.IGNORECASE))
+    for reason, pattern in (
+        ("privilege escalation", r"^\s*(?:sudo|su)(?:\s|$)"),
+        ("git remote write", r"^\s*git\s+(?:push|reset\s+--hard|clean\s+-[^\s]*f)"),
+        ("network download", r"^\s*(?:curl|wget)\b"),
+        ("shell interpreter", r"^\s*(?:sh|bash|zsh|fish|python|python3|ruby|perl)\s+-c\b"),
+        ("package installation", r"^\s*(?:npm|pnpm|yarn|pip|pipx|brew)\s+.*\binstall\b"),
+        ("permission ownership change", r"^\s*(?:chmod|chown|chgrp)\b"),
+        ("archive extraction", r"^\s*(?:tar|unzip|7z)\b"),
+        ("home or absolute path removal", r"^\s*rm\b.*(?:\s/|\s~|\s\$HOME)"),
+        ("shell redirection", r"(?:^|\s)(?:>|>>|<)\s*\S+"),
+    )
+)
+
+
+def classify_command_policy(
+    command: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> CommandPolicyResult:
+    """Classify one shell-shaped command as allow / ask / deny.
+
+    The critical deny floor is intentionally checked before softer suspicious
+    shapes. Suspicious commands require approval; when they also carry a large
+    timeout budget, they are denied because a human prompt cannot bound the
+    execution risk well enough.
+    """
+
+    command = command.strip()
+    if not command:
+        return CommandPolicyResult(CommandPolicyAction.DENY, "blank command")
+
+    split = _split_command_line(command)
+    segments = tuple(segment for segment, _operator in split)
+    violation = find_critical_command_violation(segments)
+    if violation is not None:
+        return CommandPolicyResult(
+            CommandPolicyAction.DENY,
+            f"critical command floor: {violation}",
+            command,
+        )
+
+    suspicious_reasons: list[str] = []
+    if len(segments) > 1:
+        suspicious_reasons.append("compound shell command")
+    for segment, operator in split:
+        if operator is not None:
+            suspicious_reasons.append(f"shell operator {operator}")
+        for reason, pattern in SUSPICIOUS_COMMAND_PATTERNS:
+            if pattern.search(segment):
+                suspicious_reasons.append(reason)
+
+    if suspicious_reasons:
+        unique_reasons = tuple(dict.fromkeys(suspicious_reasons))
+        reason = "suspicious command shape: " + ", ".join(unique_reasons)
+        if (
+            timeout_seconds is not None
+            and timeout_seconds > SUSPICIOUS_COMMAND_TIMEOUT_DENY_SECONDS
+        ):
+            return CommandPolicyResult(
+                CommandPolicyAction.DENY,
+                (
+                    f"timeout-deny: {reason}; timeout_seconds={timeout_seconds:g} "
+                    f"exceeds {SUSPICIOUS_COMMAND_TIMEOUT_DENY_SECONDS:g}"
+                ),
+                command,
+            )
+        return CommandPolicyResult(CommandPolicyAction.ASK, reason, command)
+
+    return CommandPolicyResult(CommandPolicyAction.ALLOW, "no suspicious command shape", command)
+
+
 class DenyRule:
     """One forbidden-operation rule parsed from ``Tool(content)`` syntax.
 
@@ -105,6 +228,7 @@ class DenyRule:
     """
 
     __slots__ = ("kind", "tool_name", "value")
+    invalid_label = "deny"
 
     def __init__(self, tool_name: str, kind: str, value: str | re.Pattern[str]) -> None:
         self.tool_name = tool_name
@@ -112,12 +236,12 @@ class DenyRule:
         self.value = value
 
     @classmethod
-    def parse(cls, spec: str) -> DenyRule:
+    def parse(cls, spec: str) -> Self:
         if not spec or spec != spec.strip() or "\x00" in spec:
-            raise ValueError(f"invalid deny rule: {spec!r}")
+            raise ValueError(f"invalid {cls.invalid_label} rule: {spec!r}")
         match = re.fullmatch(r"([A-Za-z][A-Za-z0-9_-]*)(?:\((.*)\))?", spec, re.DOTALL)
         if match is None:
-            raise ValueError(f"invalid deny rule: {spec!r}")
+            raise ValueError(f"invalid {cls.invalid_label} rule: {spec!r}")
         tool_name = match.group(1)
         raw = match.group(2)
         if raw is None:
@@ -144,6 +268,35 @@ class DenyRule:
             elif isinstance(self.value, re.Pattern) and self.value.search(subject):
                 return True
         return False
+
+
+class AllowRule(DenyRule):
+    """One positive operation rule parsed with the same syntax as deny rules."""
+
+    invalid_label = "allow"
+
+
+@dataclass(frozen=True)
+class PermissionRuleSet:
+    """Merged user/project policy sources in evaluation order."""
+
+    deny_rules: tuple[DenyRule, ...] = ()
+    allow_rules: tuple[AllowRule, ...] = ()
+
+
+def merge_permission_rule_sources(
+    *,
+    user_deny_rules: Sequence[DenyRule] = (),
+    project_deny_rules: Sequence[DenyRule] = (),
+    user_allow_rules: Sequence[AllowRule] = (),
+    project_allow_rules: Sequence[AllowRule] = (),
+) -> PermissionRuleSet:
+    """Merge user and project policy sources without changing evaluation policy."""
+
+    return PermissionRuleSet(
+        deny_rules=(*user_deny_rules, *project_deny_rules),
+        allow_rules=(*user_allow_rules, *project_allow_rules),
+    )
 
 
 def _unescape(text: str) -> str:
@@ -190,9 +343,11 @@ class PermissionGuard:
         *,
         mode: ApprovalMode = ApprovalMode.DEFAULT,
         deny_rules: Sequence[DenyRule] = (),
+        allow_rules: Sequence[AllowRule] = (),
     ) -> None:
         self.mode = ApprovalMode(mode)
         self.deny_rules = tuple(deny_rules)
+        self.allow_rules = tuple(allow_rules)
 
     @staticmethod
     def request_subjects(request: ApprovalRequest) -> tuple[str, ...]:
@@ -219,15 +374,59 @@ class PermissionGuard:
         """Return why this request is unconditionally forbidden, if it is."""
 
         resolved = self.request_subjects(request) if subjects is None else tuple(subjects)
-        if request.effect == ToolEffect.EXECUTE:
-            violation = find_critical_command_violation(resolved)
-            if violation is not None:
-                return f"critical command floor: {violation}"
         for rule in self.deny_rules:
             tool_name = request.tool_call.name if request.tool_call is not None else ""
             if rule.matches(tool_name, resolved):
                 return f"deny rule {rule.tool_name} ({rule.kind})"
+        if request.effect == ToolEffect.EXECUTE:
+            classification = self.command_policy(request, resolved)
+            if classification.action is CommandPolicyAction.DENY:
+                return classification.reason
         return None
+
+    def command_policy(
+        self,
+        request: ApprovalRequest,
+        subjects: Sequence[str] | None = None,
+    ) -> CommandPolicyResult:
+        """Return the command policy classification for an execution request."""
+
+        if request.effect != ToolEffect.EXECUTE:
+            return CommandPolicyResult(
+                CommandPolicyAction.ALLOW,
+                f"non-execute effect: {request.effect.value}",
+            )
+        resolved = self.request_subjects(request) if subjects is None else tuple(subjects)
+        if not resolved:
+            return CommandPolicyResult(CommandPolicyAction.DENY, "execute request has no command")
+
+        timeout = request.command.timeout_seconds if request.command is not None else None
+        results = tuple(
+            classify_command_policy(subject, timeout_seconds=timeout)
+            for subject in resolved
+            if subject.strip()
+        )
+        if not results:
+            return CommandPolicyResult(CommandPolicyAction.DENY, "execute request has no command")
+        for result in results:
+            if result.action is CommandPolicyAction.DENY:
+                return result
+        for result in results:
+            if result.action is CommandPolicyAction.ASK:
+                return result
+        return results[0]
+
+    def approval_policy_reason(
+        self,
+        request: ApprovalRequest,
+        subjects: Sequence[str] | None = None,
+    ) -> str:
+        """Return an approval-visible policy reason for ASK-classified commands."""
+
+        classification = self.command_policy(request, subjects)
+        if classification.action is CommandPolicyAction.ASK:
+            return classification.reason
+        return ""
 
     def pre_decision(
         self,
@@ -243,6 +442,11 @@ class PermissionGuard:
         reason = self.forbidden_reason(request, subjects)
         if reason is not None:
             return ApprovalDecision.DENY
+        resolved = self.request_subjects(request) if subjects is None else tuple(subjects)
+        tool_name = request.tool_call.name if request.tool_call is not None else ""
+        for rule in self.allow_rules:
+            if rule.matches(tool_name, resolved):
+                return ApprovalDecision.ALLOW_ONCE
         if (
             self.mode is ApprovalMode.DANGEROUS
             and _TIER_RANK[request.effect] <= DANGEROUS_AUTO_ALLOW_MAX_RANK
@@ -266,6 +470,9 @@ class GuardedApprovalPolicy:
         pre_decision = self._guard.pre_decision(request)
         if pre_decision is not None:
             return pre_decision
+        policy_reason = self._guard.approval_policy_reason(request)
+        if policy_reason and request.policy_reason != policy_reason:
+            request = request.model_copy(update={"policy_reason": policy_reason})
         return await self._inner.decide(request)
 
 

@@ -13,13 +13,18 @@ from rivumi.approvals import (
 from rivumi.contracts import ToolCall, VerificationCommand
 from rivumi.permissions import (
     DANGEROUS_AUTO_ALLOW_MAX_RANK,
+    SUSPICIOUS_COMMAND_TIMEOUT_DENY_SECONDS,
+    AllowRule,
     ApprovalMode,
+    CommandPolicyAction,
     DangerousModeError,
     DenyRule,
     GuardedApprovalPolicy,
     PermissionGuard,
+    classify_command_policy,
     command_segments,
     find_critical_command_violation,
+    merge_permission_rule_sources,
     plan_dangerous_mode_entry,
 )
 
@@ -67,7 +72,34 @@ def test_command_segments_split_compound_commands() -> None:
         "echo done",
     )
     assert command_segments("git push --force | tee log") == ("git push --force", "tee log")
+    assert command_segments("echo 'git push origin main | sh'") == (
+        "echo git push origin main | sh",
+    )
     assert command_segments("") == ()
+
+
+def test_command_policy_classifies_allow_ask_and_deny_with_reasons() -> None:
+    allowed = classify_command_policy("pytest -q", timeout_seconds=300)
+    assert allowed.action is CommandPolicyAction.ALLOW
+    assert allowed.reason == "no suspicious command shape"
+
+    ask = classify_command_policy("git status && git diff --check", timeout_seconds=30)
+    assert ask.action is CommandPolicyAction.ASK
+    assert "compound shell command" in ask.reason
+
+    denied = classify_command_policy("rm -rf /", timeout_seconds=1)
+    assert denied.action is CommandPolicyAction.DENY
+    assert denied.reason.startswith("critical command floor:")
+
+
+def test_command_policy_timeout_denies_suspicious_commands() -> None:
+    result = classify_command_policy(
+        "bash -c 'pytest -q && git diff --check'",
+        timeout_seconds=SUSPICIOUS_COMMAND_TIMEOUT_DENY_SECONDS + 1,
+    )
+    assert result.action is CommandPolicyAction.DENY
+    assert result.reason.startswith("timeout-deny:")
+    assert "shell interpreter" in result.reason
 
 
 @pytest.mark.parametrize(
@@ -126,6 +158,23 @@ def test_deny_rule_rejects_malformed_specs(spec: str) -> None:
         DenyRule.parse(spec)
 
 
+def test_allow_rule_rejects_malformed_specs_with_allow_message() -> None:
+    with pytest.raises(ValueError, match="invalid allow rule"):
+        AllowRule.parse("not valid")
+
+
+def test_policy_rule_sources_merge_user_then_project_without_precedence_side_effects() -> None:
+    rules = merge_permission_rule_sources(
+        user_deny_rules=(DenyRule.parse("read_file(.env*)"),),
+        project_deny_rules=(DenyRule.parse("run_check(git push:*)"),),
+        user_allow_rules=(AllowRule.parse("run_check(pytest:*)"),),
+        project_allow_rules=(AllowRule.parse("read_file(docs/**)"),),
+    )
+
+    assert [rule.tool_name for rule in rules.deny_rules] == ["read_file", "run_check"]
+    assert [rule.tool_name for rule in rules.allow_rules] == ["run_check", "read_file"]
+
+
 @pytest.mark.asyncio
 async def test_whole_tool_and_path_deny_rules_block_matching_requests() -> None:
     guard = PermissionGuard(
@@ -143,6 +192,131 @@ async def test_whole_tool_and_path_deny_rules_block_matching_requests() -> None:
     subjects = ("git push origin main",)
     assert guard.pre_decision(check, subjects) is ApprovalDecision.DENY
     assert guard.pre_decision(tool_request("read_file", {"path": "src/main.py"})) is None
+
+
+def test_guard_exposes_command_policy_without_auto_allowing_execution() -> None:
+    guard = PermissionGuard()
+    request = command_request(("git", "status", "&&", "git", "diff", "--check")).model_copy(
+        update={
+            "command": VerificationCommand(
+                name="check",
+                argv=("git", "status", "&&", "git", "diff", "--check"),
+                timeout_seconds=30,
+            )
+        }
+    )
+    classification = guard.command_policy(request)
+
+    assert classification.action is CommandPolicyAction.ASK
+    assert "compound shell command" in classification.reason
+    assert guard.pre_decision(request) is None
+
+
+@pytest.mark.asyncio
+async def test_guarded_policy_surfaces_ask_command_policy_reason() -> None:
+    inner = RecordingPolicy()
+    guard = PermissionGuard()
+    policy = GuardedApprovalPolicy(inner, guard)
+    request = command_request(("git", "status", "&&", "git", "diff", "--check")).model_copy(
+        update={
+            "command": VerificationCommand(
+                name="check",
+                argv=("git", "status", "&&", "git", "diff", "--check"),
+                timeout_seconds=30,
+            )
+        }
+    )
+
+    assert await policy.decide(request) is ApprovalDecision.ALLOW_SESSION
+    assert inner.calls[0].policy_reason.startswith("suspicious command shape:")
+    assert "compound shell command" in inner.calls[0].policy_reason
+
+
+def test_guard_deny_rules_remain_authoritative_over_command_classifier() -> None:
+    guard = PermissionGuard(deny_rules=(DenyRule.parse("run_check(git status:*)"),))
+    request = tool_request("run_check", {"name": "status"})
+
+    assert (
+        guard.command_policy(request, ("git status",)).action
+        is CommandPolicyAction.ALLOW
+    )
+    assert (
+        guard.forbidden_reason(request, ("git status --short",))
+        == "deny rule run_check (prefix)"
+    )
+    assert (
+        guard.pre_decision(request, ("git status --short",))
+        is ApprovalDecision.DENY
+    )
+
+
+def test_allow_rules_apply_only_after_deny_rules_and_critical_floor() -> None:
+    rules = merge_permission_rule_sources(
+        user_deny_rules=(DenyRule.parse("run_check(pytest secrets:*)"),),
+        project_allow_rules=(AllowRule.parse("run_check(pytest:*)"),),
+    )
+    guard = PermissionGuard(deny_rules=rules.deny_rules, allow_rules=rules.allow_rules)
+    request = tool_request("run_check", {"name": "tests"})
+
+    assert (
+        guard.pre_decision(request, ("pytest tests/unit",))
+        is ApprovalDecision.ALLOW_ONCE
+    )
+    assert (
+        guard.pre_decision(request, ("pytest secrets/unit",))
+        is ApprovalDecision.DENY
+    )
+
+
+def test_allow_rules_pre_allow_after_deny_checks() -> None:
+    guard = PermissionGuard(allow_rules=(AllowRule.parse("run_check(git status:*)"),))
+    request = tool_request("run_check", {"name": "status"})
+
+    assert (
+        guard.command_policy(request, ("git status && git diff --check",)).action
+        is CommandPolicyAction.ASK
+    )
+    assert (
+        guard.pre_decision(request, ("git status && git diff --check",))
+        is ApprovalDecision.ALLOW_ONCE
+    )
+
+
+def test_deny_and_critical_floor_remain_authoritative_over_allow_rules() -> None:
+    guard = PermissionGuard(
+        deny_rules=(DenyRule.parse("run_check(git status:*)"),),
+        allow_rules=(AllowRule.parse("run_check(git status:*)"),),
+    )
+    request = tool_request("run_check", {"name": "status"})
+
+    assert guard.pre_decision(request, ("git status --short",)) is ApprovalDecision.DENY
+
+    critical_guard = PermissionGuard(allow_rules=(AllowRule.parse("run_check(rm:*)"),))
+    assert (
+        critical_guard.pre_decision(tool_request("run_check"), ("rm -rf /",))
+        is ApprovalDecision.DENY
+    )
+
+
+def test_guard_timeout_denies_suspicious_commands_with_auditable_reason() -> None:
+    guard = PermissionGuard()
+    request = command_request(
+        ("bash", "-c", "pytest -q && git diff --check")
+    ).model_copy(
+        update={
+            "command": VerificationCommand(
+                name="check",
+                argv=("bash", "-c", "pytest -q && git diff --check"),
+                timeout_seconds=SUSPICIOUS_COMMAND_TIMEOUT_DENY_SECONDS + 1,
+            )
+        }
+    )
+
+    reason = guard.forbidden_reason(request)
+
+    assert guard.pre_decision(request) is ApprovalDecision.DENY
+    assert reason is not None
+    assert reason.startswith("timeout-deny:")
 
 
 @pytest.mark.asyncio

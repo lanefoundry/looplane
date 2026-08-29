@@ -64,6 +64,7 @@ _NATIVE_CAPS = frozenset(
         RuntimeCapability.DIFF_REPORTING,
         RuntimeCapability.MULTI_TURN,
         RuntimeCapability.MODEL_SWITCHING,
+        RuntimeCapability.MCP,
         RuntimeCapability.CANCELLATION,
         RuntimeCapability.USAGE,
     }

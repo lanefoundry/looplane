@@ -61,6 +61,99 @@ class RuntimeCapabilities(ContractModel):
     background_task_management: bool = False
 
 
+def should_auto_compact_context(
+    telemetry: ContextTelemetry | None,
+    capabilities: RuntimeCapabilities,
+    *,
+    trigger_ratio: float = 0.85,
+) -> bool:
+    """Return whether a native conversation should compact after a completed turn."""
+
+    if trigger_ratio <= 0 or trigger_ratio > 1:
+        raise ValueError("trigger_ratio must be within (0, 1]")
+    if telemetry is None or not capabilities.native_compaction:
+        return False
+    if telemetry.context_window is None:
+        return False
+    return telemetry.total_tokens / telemetry.context_window >= trigger_ratio
+
+
+def should_remind_context_pressure(
+    *,
+    total_tokens: int,
+    max_total_tokens: int | None,
+    trigger_ratio: float = 0.85,
+) -> bool:
+    """Return whether a native-loop task should receive a one-shot pressure reminder."""
+
+    if trigger_ratio <= 0 or trigger_ratio > 1:
+        raise ValueError("trigger_ratio must be within (0, 1]")
+    if total_tokens < 0:
+        raise ValueError("total_tokens cannot be negative")
+    if max_total_tokens is None:
+        return False
+    if max_total_tokens < 1:
+        raise ValueError("max_total_tokens must be positive")
+    return total_tokens / max_total_tokens >= trigger_ratio
+
+
+def should_apply_history_summary_fallback(
+    *,
+    total_tokens: int,
+    max_total_tokens: int | None,
+    message_count: int,
+    already_applied: bool,
+    trigger_ratio: float = 0.85,
+    protected_head_items: int = 2,
+    retained_tail_items: int = 4,
+    min_summarized_items: int = 2,
+) -> bool:
+    """Return whether the native loop should replace older history with a summary."""
+
+    if already_applied:
+        return False
+    if protected_head_items < 0:
+        raise ValueError("protected_head_items cannot be negative")
+    if retained_tail_items < 0:
+        raise ValueError("retained_tail_items cannot be negative")
+    if min_summarized_items < 1:
+        raise ValueError("min_summarized_items must be positive")
+    if message_count < 0:
+        raise ValueError("message_count cannot be negative")
+    if not should_remind_context_pressure(
+        total_tokens=total_tokens,
+        max_total_tokens=max_total_tokens,
+        trigger_ratio=trigger_ratio,
+    ):
+        return False
+    return message_count - protected_head_items - retained_tail_items >= min_summarized_items
+
+
+def history_summary_fallback_span(
+    *,
+    message_count: int,
+    protected_head_items: int = 2,
+    retained_tail_items: int = 4,
+    min_summarized_items: int = 2,
+) -> tuple[int, int] | None:
+    """Return the half-open message span eligible for deterministic summarization."""
+
+    if protected_head_items < 0:
+        raise ValueError("protected_head_items cannot be negative")
+    if retained_tail_items < 0:
+        raise ValueError("retained_tail_items cannot be negative")
+    if min_summarized_items < 1:
+        raise ValueError("min_summarized_items must be positive")
+    if message_count < 0:
+        raise ValueError("message_count cannot be negative")
+
+    start = min(protected_head_items, message_count)
+    end = max(start, message_count - retained_tail_items)
+    if end - start < min_summarized_items:
+        return None
+    return start, end
+
+
 class ContextSummary(ContractModel):
     """A bounded model-produced summary replacing one or more complete turns."""
 

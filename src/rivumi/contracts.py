@@ -100,6 +100,8 @@ class ToolDefinition(ContractModel):
     name: str = Field(min_length=1)
     description: str = ""
     input_schema: dict[str, Any] = Field(default_factory=dict)
+    read_only: bool = False
+    concurrency_safe: bool = False
 
 
 class ToolCall(ContractModel):
@@ -169,6 +171,33 @@ class Usage(ContractModel):
         if self.provider_total_tokens is not None:
             return self.provider_total_tokens
         return self.input_tokens + self.output_tokens
+
+
+class CostBreakdown(ContractModel):
+    """Best-effort token cost estimate; never a billing authority."""
+
+    currency: Literal["USD"] = "USD"
+    source: Literal["estimated", "authoritative"] = "estimated"
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    input_cost: float = Field(default=0.0, ge=0)
+    cached_input_cost: float = Field(default=0.0, ge=0)
+    output_cost: float = Field(default=0.0, ge=0)
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        return self.input_cost + self.cached_input_cost + self.output_cost
+
+
+class ModelUsageRecord(ContractModel):
+    """Usage and cost attribution for one model lane."""
+
+    lane: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    usage: Usage = Field(default_factory=Usage)
+    cost: CostBreakdown | None = None
 
 
 class ModelCapabilities(ContractModel):
@@ -256,6 +285,8 @@ class RunResult(ContractModel):
     changed_files: tuple[str, ...] = ()
     verification: tuple[VerificationOutcome, ...] = ()
     usage: Usage = Field(default_factory=Usage)
+    model_usage: tuple[ModelUsageRecord, ...] = ()
+    cost: CostBreakdown | None = None
     terminal_reason: str = Field(min_length=1)
     error: str | None = Field(default=None, max_length=16_000)
     artifacts: dict[str, str] = Field(default_factory=dict)

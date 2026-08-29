@@ -176,9 +176,14 @@ async def test_two_turns_share_session_and_project_typed_actions() -> None:
 async def test_native_compaction_drains_its_lifecycle_before_the_next_turn() -> None:
     session = FakeSession()
     controller = ConversationController(session)
+    sink = RecordingSink()
 
-    assert await controller.compact_context("keep failures") == "compact-1"
+    assert await controller.compact_context("keep failures", event_sink=sink) == "compact-1"
     assert session.queue.empty()
+    assert [type(event) for event in sink.events] == [
+        CompactionStartedEvent,
+        CompactionCompletedEvent,
+    ]
 
     handle = controller.turn(
         "Continue",

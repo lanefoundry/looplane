@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import os
 import shlex
+import shutil
 import stat
 import time
 from collections.abc import Mapping, Sequence
@@ -19,10 +20,19 @@ from .contracts import (
     VerificationCommand,
     VerificationOutcome,
 )
+from .mcp_client import (
+    McpError,
+    NativeMcpServerConfig,
+    StdioMcpClient,
+    native_mcp_prompt_tool_name,
+    native_mcp_resource_tool_name,
+    split_native_mcp_tool_name,
+)
 from .policy import PathPolicyError, SafePathPolicy
 from .runtime import (
     LocalGitWorkspace,
     bounded_text,
+    resolve_command_sandbox,
     run_bounded_command,
     sanitized_subprocess_env,
 )
@@ -47,6 +57,10 @@ class ToolExecutor:
         limits: object | None = None,
         *,
         git_dir: Path | None = None,
+        mcp_servers: Sequence[NativeMcpServerConfig] = (),
+        sandbox_checks: bool = False,
+        sandbox_profile: str | None = None,
+        sandbox_read_roots: Sequence[Path] = (),
     ) -> None:
         self.workspace = (
             workspace.workspace_path
@@ -71,7 +85,22 @@ class ToolExecutor:
         self.max_list_files = self._limit(limits, "max_list_files", 500)
         self.max_search_results = self._limit(limits, "max_search_results", 100)
         self._task_home = self.workspace.parent / ".check-task-env"
+        self._sandbox_checks = sandbox_checks
+        self._sandbox_profile = sandbox_profile or "verification"
+        self._sandbox_read_roots = tuple(Path(root) for root in sandbox_read_roots)
         self._read_versions: dict[str, str] = {}
+        self._mcp_clients: dict[str, StdioMcpClient] = {
+            config.name: StdioMcpClient(
+                config,
+                cwd=self.workspace,
+                task_home=self._task_home,
+                max_output_chars=self.max_output_chars,
+            )
+            for config in mcp_servers
+        }
+        self._mcp_tools: dict[str, tuple[StdioMcpClient, str]] = {}
+        self._mcp_resource_tools: dict[str, tuple[StdioMcpClient, str]] = {}
+        self._mcp_prompt_tools: dict[str, tuple[StdioMcpClient, str]] = {}
 
         self.verification_commands: dict[str, VerificationCommand] = {}
         self.verification_outcomes: dict[str, VerificationOutcome] = {}
@@ -87,6 +116,7 @@ class ToolExecutor:
                 raise ValueError(f"duplicate verification command name: {name}")
             self.verification_commands[name] = command
         definitions = list(self._tool_definitions())
+        definitions.extend(self._mcp_tool_definitions())
         run_check_index = next(
             index for index, definition in enumerate(definitions) if definition.name == "run_check"
         )
@@ -101,6 +131,87 @@ class ToolExecutor:
             update={"input_schema": run_check_schema}
         )
         self.definitions = tuple(definitions)
+
+    def close(self) -> None:
+        for client in self._mcp_clients.values():
+            client.close()
+
+    def _mcp_tool_definitions(self) -> tuple[ToolDefinition, ...]:
+        definitions: list[ToolDefinition] = []
+        for client in self._mcp_clients.values():
+            definitions.extend(self._mcp_bridge_definitions(client))
+            for definition in client.tool_definitions():
+                split = split_native_mcp_tool_name(definition.name)
+                if split is None:
+                    continue
+                _server, remote_tool = split
+                self._mcp_tools[definition.name] = (client, remote_tool)
+                definitions.append(definition)
+        return tuple(definitions)
+
+    def _mcp_bridge_definitions(self, client: StdioMcpClient) -> tuple[ToolDefinition, ...]:
+        server_name = client.config.name
+        resource_list = native_mcp_resource_tool_name(server_name, "list")
+        resource_read = native_mcp_resource_tool_name(server_name, "read")
+        prompt_list = native_mcp_prompt_tool_name(server_name, "list")
+        prompt_get = native_mcp_prompt_tool_name(server_name, "get")
+        self._mcp_resource_tools[resource_list] = (client, "list")
+        self._mcp_resource_tools[resource_read] = (client, "read")
+        self._mcp_prompt_tools[prompt_list] = (client, "list")
+        self._mcp_prompt_tools[prompt_get] = (client, "get")
+        return (
+            ToolDefinition(
+                name=resource_list,
+                description=f"List MCP resources exposed by server {server_name!r}.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                read_only=True,
+                concurrency_safe=True,
+            ),
+            ToolDefinition(
+                name=resource_read,
+                description=f"Read one MCP resource URI from server {server_name!r}.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "uri": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "MCP resource URI returned by the server.",
+                        }
+                    },
+                    "required": ["uri"],
+                    "additionalProperties": False,
+                },
+                read_only=True,
+                concurrency_safe=True,
+            ),
+            ToolDefinition(
+                name=prompt_list,
+                description=f"List MCP prompts exposed by server {server_name!r}.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                read_only=True,
+                concurrency_safe=True,
+            ),
+            ToolDefinition(
+                name=prompt_get,
+                description=f"Get one MCP prompt from server {server_name!r}.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1},
+                        "arguments": {
+                            "type": "object",
+                            "additionalProperties": True,
+                            "default": {},
+                        },
+                    },
+                    "required": ["name"],
+                    "additionalProperties": False,
+                },
+                read_only=True,
+                concurrency_safe=True,
+            ),
+        )
 
     @staticmethod
     def _limit(limits: object | None, name: str, default: int) -> int:
@@ -132,26 +243,43 @@ class ToolExecutor:
         return (
             ToolDefinition(
                 name="list_files",
-                description="List allowed files below a workspace-relative path.",
+                description=(
+                    "List allowed files below a workspace-relative path. Use this to discover "
+                    "file names before reading. It is read-only and bounded; do not use it when "
+                    "you already know the exact file and can call read_file directly."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {"path": {**path, "default": "."}},
                     "additionalProperties": False,
                 },
+                read_only=True,
+                concurrency_safe=True,
             ),
             ToolDefinition(
                 name="read_file",
-                description="Read one allowed UTF-8 text file with a bounded result.",
+                description=(
+                    "Read one allowed UTF-8 text file with a bounded result. Use this before "
+                    "replace_text and whenever exact source text matters. Do not use shell "
+                    "commands to inspect file contents."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {"path": path},
                     "required": ["path"],
                     "additionalProperties": False,
                 },
+                read_only=True,
+                concurrency_safe=True,
             ),
             ToolDefinition(
                 name="search_text",
-                description="Search allowed files for a literal text string.",
+                description=(
+                    "Search allowed files for a literal text string, respecting .gitignore when "
+                    "ripgrep is available. Use it to locate symbols or exact snippets before "
+                    "reading files. It is not a regex search and returns bounded path:line:text "
+                    "matches."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -163,12 +291,17 @@ class ToolExecutor:
                     "required": ["query"],
                     "additionalProperties": False,
                 },
+                read_only=True,
+                concurrency_safe=True,
             ),
             ToolDefinition(
                 name="replace_text",
                 description=(
                     "Replace an exact text fragment in one existing UTF-8 file. Read the file "
-                    "first. Prefer this for small edits; old_text must occur exactly once."
+                    "first. Prefer this for small edits; old_text must occur exactly once. "
+                    "Correct example: copy old_text directly from read_file, preserving spaces "
+                    "and newlines. Do not use it for new files, deletions, multi-hunk edits, or "
+                    "guessed text."
                 ),
                 input_schema={
                     "type": "object",
@@ -183,7 +316,12 @@ class ToolExecutor:
             ),
             ToolDefinition(
                 name="apply_patch",
-                description="Apply one bounded unified text diff after path and git checks.",
+                description=(
+                    "Apply one bounded unified text diff after path and git checks. Use this "
+                    "for multi-hunk edits, new files, and deletions. The patch must include "
+                    "diff --git, ---/+++ file headers, and @@ hunks; do not use it for a small "
+                    "single exact replacement where replace_text is safer."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {"patch": {"type": "string", "minLength": 1}},
@@ -194,7 +332,9 @@ class ToolExecutor:
             ToolDefinition(
                 name="run_check",
                 description=(
-                    "Run one exact argv verification command selected by its allowlisted name."
+                    "Run one exact argv verification command selected by its allowlisted name. "
+                    "The allowed names come from the task contract, and the harness controls "
+                    "timeouts. Do not invent commands or pass shell syntax."
                 ),
                 input_schema={
                     "type": "object",
@@ -211,8 +351,13 @@ class ToolExecutor:
             ),
             ToolDefinition(
                 name="git_diff",
-                description="Return the bounded uncommitted workspace patch.",
+                description=(
+                    "Return the bounded uncommitted workspace patch for review. Use it after "
+                    "edits when you need to inspect the cumulative diff; it is read-only."
+                ),
                 input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                read_only=True,
+                concurrency_safe=True,
             ),
         )
 
@@ -276,6 +421,14 @@ class ToolExecutor:
         root = self.policy.resolve(path, allow_workspace_root=True)
         if not root.exists():
             raise ToolExecutionError(f"path does not exist: {path}")
+        rg_result = self._search_text_with_rg(
+            query=query,
+            root=root,
+            glob=glob,
+            case_sensitive=case_sensitive,
+        )
+        if rg_result is not None:
+            return rg_result
         needle = query if case_sensitive else query.casefold()
         matches: list[str] = []
         for file_path in self._walk_files(root):
@@ -300,6 +453,57 @@ class ToolExecutor:
                             f"... search truncated at {self.max_search_results} matches ..."
                         )
                         return bounded_text("\n".join(matches), self.max_output_chars)
+        return bounded_text("\n".join(matches), self.max_output_chars)
+
+    def _search_text_with_rg(
+        self,
+        *,
+        query: str,
+        root: Path,
+        glob: str | None,
+        case_sensitive: bool,
+    ) -> str | None:
+        if shutil.which("rg") is None:
+            return None
+        try:
+            search_root = root.relative_to(self.workspace).as_posix()
+        except ValueError:
+            return None
+        argv = [
+            "rg",
+            "--fixed-strings",
+            "--line-number",
+            "--no-heading",
+            "--color",
+            "never",
+        ]
+        if not case_sensitive:
+            argv.append("--ignore-case")
+        if glob:
+            argv.extend(("--glob", glob))
+        argv.extend(("--", query, search_root))
+        result = run_bounded_command(
+            tuple(argv),
+            cwd=self.workspace,
+            timeout_seconds=10.0,
+            max_output_chars=self.max_output_chars,
+            env=sanitized_subprocess_env(task_home=self._task_home),
+        )
+        if result.returncode not in {0, 1}:
+            return None
+        matches: list[str] = []
+        for line in result.stdout.splitlines():
+            relative, separator, _rest = line.partition(":")
+            if not separator:
+                continue
+            try:
+                self.policy.resolve(relative)
+            except (PathPolicyError, ValueError):
+                continue
+            matches.append(line)
+            if len(matches) >= self.max_search_results:
+                matches.append(f"... search truncated at {self.max_search_results} matches ...")
+                break
         return bounded_text("\n".join(matches), self.max_output_chars)
 
     @staticmethod
@@ -610,6 +814,16 @@ class ToolExecutor:
                 timeout_seconds=effective_timeout,
                 max_output_chars=self.max_output_chars,
                 env=sanitized_subprocess_env(task_home=self._task_home),
+                sandbox=(
+                    resolve_command_sandbox(
+                        profile=self._sandbox_profile,
+                        cwd=self.workspace,
+                        task_home=self._task_home,
+                        extra_read_roots=self._sandbox_read_roots,
+                    )
+                    if self._sandbox_checks
+                    else None
+                ),
             )
         duration = time.monotonic() - started_at
         status = "passed" if result.ok else "failed"
@@ -699,6 +913,107 @@ class ToolExecutor:
         }
         handler = handlers.get(name)
         if handler is None:
+            mcp_resource_tool = self._mcp_resource_tools.get(name)
+            if mcp_resource_tool is not None:
+                try:
+                    if "timeout_seconds" in arguments:
+                        raise ToolExecutionError("timeout_seconds is controlled by the harness")
+                    client, operation = mcp_resource_tool
+                    if operation == "list":
+                        content = client.list_resources(
+                            timeout_seconds=self._effective_timeout(10.0, timeout_seconds)
+                        )
+                    else:
+                        uri = arguments.get("uri")
+                        if not isinstance(uri, str) or not uri:
+                            raise ToolExecutionError("uri must be a non-empty string")
+                        content = client.read_resource(
+                            uri,
+                            timeout_seconds=self._effective_timeout(30.0, timeout_seconds),
+                        )
+                    return ToolObservation(
+                        tool_call_id=tool_call_id,
+                        name=name,
+                        ok=True,
+                        content=bounded_text(content, self.max_output_chars),
+                        error=None,
+                    )
+                except (McpError, ToolExecutionError, TypeError, OSError) as exc:
+                    error = bounded_text(f"{type(exc).__name__}: {exc}", self.max_output_chars)
+                    return ToolObservation(
+                        tool_call_id=tool_call_id,
+                        name=name,
+                        ok=False,
+                        content="",
+                        error=error,
+                    )
+            mcp_prompt_tool = self._mcp_prompt_tools.get(name)
+            if mcp_prompt_tool is not None:
+                try:
+                    if "timeout_seconds" in arguments:
+                        raise ToolExecutionError("timeout_seconds is controlled by the harness")
+                    client, operation = mcp_prompt_tool
+                    if operation == "list":
+                        content = client.list_prompts(
+                            timeout_seconds=self._effective_timeout(10.0, timeout_seconds)
+                        )
+                    else:
+                        prompt_name = arguments.get("name")
+                        if not isinstance(prompt_name, str) or not prompt_name:
+                            raise ToolExecutionError("name must be a non-empty string")
+                        prompt_arguments = arguments.get("arguments")
+                        if prompt_arguments is not None and not isinstance(
+                            prompt_arguments, Mapping
+                        ):
+                            raise ToolExecutionError("arguments must be an object")
+                        content = client.get_prompt(
+                            prompt_name,
+                            prompt_arguments,
+                            timeout_seconds=self._effective_timeout(30.0, timeout_seconds),
+                        )
+                    return ToolObservation(
+                        tool_call_id=tool_call_id,
+                        name=name,
+                        ok=True,
+                        content=bounded_text(content, self.max_output_chars),
+                        error=None,
+                    )
+                except (McpError, ToolExecutionError, TypeError, OSError) as exc:
+                    error = bounded_text(f"{type(exc).__name__}: {exc}", self.max_output_chars)
+                    return ToolObservation(
+                        tool_call_id=tool_call_id,
+                        name=name,
+                        ok=False,
+                        content="",
+                        error=error,
+                    )
+            mcp_tool = self._mcp_tools.get(name)
+            if mcp_tool is not None:
+                try:
+                    if "timeout_seconds" in arguments:
+                        raise ToolExecutionError("timeout_seconds is controlled by the harness")
+                    client, remote_tool = mcp_tool
+                    ok, content, error = client.call_tool(
+                        remote_tool,
+                        arguments,
+                        timeout_seconds=self._effective_timeout(30.0, timeout_seconds),
+                    )
+                    return ToolObservation(
+                        tool_call_id=tool_call_id,
+                        name=name,
+                        ok=ok,
+                        content=bounded_text(content, self.max_output_chars),
+                        error=error,
+                    )
+                except (McpError, ToolExecutionError, TypeError, OSError) as exc:
+                    error = bounded_text(f"{type(exc).__name__}: {exc}", self.max_output_chars)
+                    return ToolObservation(
+                        tool_call_id=tool_call_id,
+                        name=name,
+                        ok=False,
+                        content="",
+                        error=error,
+                    )
             return ToolObservation(
                 tool_call_id=tool_call_id,
                 name=name,

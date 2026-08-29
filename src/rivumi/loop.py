@@ -29,6 +29,7 @@ from rivumi.contracts import (
     ConversationItem,
     Message,
     ModelTurn,
+    ModelUsageRecord,
     RunResult,
     RunStatus,
     TaskContract,
@@ -39,16 +40,32 @@ from rivumi.contracts import (
     VerificationOutcome,
 )
 from rivumi.events import EventWriter, RunEvent, atomic_write_json
+from rivumi.instructions import load_instruction_documents, render_instruction_context
+from rivumi.mcp_client import load_native_mcp_server_configs
+from rivumi.memory import relevant_memory_entries, render_known_context
 from rivumi.models import ModelProvider, ProviderError
 from rivumi.permissions import PermissionGuard
 from rivumi.policy import SafePathPolicy
-from rivumi.prompts import CODING_AGENT_PROMPT_VERSION, CODING_AGENT_SYSTEM_PROMPT
+from rivumi.prompts import (
+    CODING_AGENT_PROMPT_VERSION,
+    CONTEXT_PRESSURE_REMINDER_VERSION,
+    CONTEXT_SUMMARY_FALLBACK_VERSION,
+    build_coding_agent_system_prompt,
+    build_context_pressure_reminder,
+    build_history_summary_fallback_message,
+)
+from rivumi.provider_catalog import estimate_cost
 from rivumi.runtime import (
     LocalGitWorkspace,
     WorkspacePreparationError,
     bounded_text,
     run_bounded_command,
     sanitized_subprocess_env,
+)
+from rivumi.runtime_semantics import (
+    history_summary_fallback_span,
+    should_apply_history_summary_fallback,
+    should_remind_context_pressure,
 )
 from rivumi.session import (
     ApprovalAuditRecord,
@@ -101,11 +118,19 @@ class AgentRunner:
         approval_policy: ApprovalPolicy | None = None,
         permission_guard: PermissionGuard | None = None,
         fallback_models: Sequence[ModelProvider] = (),
+        review_model: ModelProvider | None = None,
+        sandbox_checks: bool = False,
+        sandbox_profile: str | None = None,
+        sandbox_read_roots: Sequence[Path] = (),
         event_sink: EventSink | None = None,
     ) -> None:
         self.task = task
         self.model_retry_delay = retry_delay_seconds
         self._model_candidates: tuple[ModelProvider, ...] = (model, *fallback_models)
+        self._review_model = review_model
+        self._sandbox_checks = sandbox_checks
+        self._sandbox_profile = sandbox_profile or "verification"
+        self._sandbox_read_roots = tuple(Path(root) for root in sandbox_read_roots)
         self._active_model_index = 0
         self.run_root = Path(run_root).resolve(strict=False)
         self.run_id = run_id or uuid4().hex
@@ -139,6 +164,7 @@ class AgentRunner:
         self._writer_token = uuid4().hex
         self._messages: list[ConversationItem] = []
         self._usage = Usage()
+        self._model_usage: list[ModelUsageRecord] = []
         self._step = 0
         self._last_fingerprint: str | None = None
         self._repeat_count = 0
@@ -153,6 +179,8 @@ class AgentRunner:
         self._session_lease: SessionWriterLease | None = None
         self._manifest: SessionManifest | None = None
         self._resume_ready = False
+        self._context_pressure_reminder_sent = False
+        self._history_summary_fallback_applied = False
         self._cancel_requested = asyncio.Event()
 
     @property
@@ -222,9 +250,24 @@ class AgentRunner:
             runner._sequence = manifest.last_event_sequence + 1
             runner._messages = list(manifest.messages)
             runner._usage = manifest.usage
+            runner._model_usage = list(manifest.model_usage)
             runner._step = manifest.step
             runner._last_fingerprint = manifest.last_action_fingerprint
             runner._last_verification = manifest.verification
+            runner._context_pressure_reminder_sent = any(
+                isinstance(item, Message)
+                and item.role == "user"
+                and item.content is not None
+                and CONTEXT_PRESSURE_REMINDER_VERSION in item.content
+                for item in runner._messages
+            )
+            runner._history_summary_fallback_applied = any(
+                isinstance(item, Message)
+                and item.role == "user"
+                and item.content is not None
+                and CONTEXT_SUMMARY_FALLBACK_VERSION in item.content
+                for item in runner._messages
+            )
             # A resumed workspace may already contain modifications from before the
             # interruption, so keep the final-verification gate conservatively armed.
             runner._made_changes = True
@@ -235,6 +278,10 @@ class AgentRunner:
                 policy=SafePathPolicy(workspace, task.allowed_paths),
                 verification_commands=task.verification,
                 limits=task.limits,
+                mcp_servers=load_native_mcp_server_configs(task.repository),
+                sandbox_checks=runner._sandbox_checks,
+                sandbox_profile=runner._sandbox_profile,
+                sandbox_read_roots=runner._sandbox_read_roots,
             )
             runner._resume_ready = True
             return runner
@@ -257,6 +304,7 @@ class AgentRunner:
                     "step": self._step,
                     "messages": tuple(self._messages),
                     "usage": self._usage,
+                    "model_usage": tuple(self._model_usage),
                     "last_action_fingerprint": self._last_fingerprint,
                     "repeat_count": self._repeat_count,
                     "verification": self._last_verification,
@@ -296,23 +344,30 @@ class AgentRunner:
         preview: str,
         tool_call: ToolCall | None = None,
         command: VerificationCommand | None = None,
-    ) -> ApprovalDecision:
+    ) -> tuple[ApprovalDecision, str]:
+        preview_text = bounded_text(preview, 16_000)
+        guard_subjects = self._guard_subjects(tool_call=tool_call, command=command)
         request = ApprovalRequest(
             run_id=self.run_id,
             action_id=action_id,
             effect=effect,
             reason=reason,
-            preview=bounded_text(preview, 16_000),
+            preview=preview_text,
             tool_call=tool_call,
             command=command,
         )
+        if self.permission_guard is not None and effect is ToolEffect.EXECUTE:
+            policy_reason = self.permission_guard.approval_policy_reason(
+                request, guard_subjects
+            )
+            request = request.model_copy(update={"policy_reason": policy_reason})
         # Deny-first guard: forbidden operations win even over session grants
         # and dangerous-mode auto-approval, so evaluate it before reuse.
         pre_decision: ApprovalDecision | None = None
         if self.permission_guard is not None:
             pre_decision = self.permission_guard.pre_decision(
                 request,
-                self._guard_subjects(tool_call=tool_call, command=command),
+                guard_subjects,
             )
         if (
             pre_decision is None
@@ -322,7 +377,7 @@ class AgentRunner:
             self._manifest = self._manifest.model_copy(
                 update={
                     "phase": SessionPhase.RUNNING,
-                    "pending_action": request,
+                    "pending_action": None if effect is ToolEffect.READ else request,
                 }
             )
             await self._save_manifest()
@@ -332,8 +387,9 @@ class AgentRunner:
                 action_id=action_id,
                 effect=effect.value,
                 reason=reason.value,
+                policy_reason=request.policy_reason,
             )
-            return ApprovalDecision.ALLOW_ONCE
+            return ApprovalDecision.ALLOW_ONCE, request.request_id
         if self._manifest is not None:
             self._manifest = self._manifest.model_copy(
                 update={
@@ -348,6 +404,7 @@ class AgentRunner:
             action_id=action_id,
             effect=effect.value,
             reason=reason.value,
+            policy_reason=request.policy_reason,
             preview=request.preview,
         )
         decision = (
@@ -359,7 +416,7 @@ class AgentRunner:
             granted_effects = self._manifest.granted_effects
             if decision == ApprovalDecision.ALLOW_SESSION:
                 granted_effects = frozenset((*granted_effects, effect))
-            pending_action = request
+            pending_action = request if effect is not ToolEffect.READ else None
             if decision in {ApprovalDecision.DENY, ApprovalDecision.CANCEL}:
                 pending_action = None
             self._manifest = self._manifest.model_copy(
@@ -380,9 +437,10 @@ class AgentRunner:
             action_id=action_id,
             effect=effect.value,
             reason=reason.value,
+            policy_reason=request.policy_reason,
             decision=decision.value,
         )
-        return decision
+        return decision, request.request_id
 
     async def _mark_approved_action_started(self, request_id: str) -> None:
         """Clear an approved action only after its started event is durable."""
@@ -509,6 +567,7 @@ class AgentRunner:
                     "step": self._step,
                     "messages": tuple(self._messages),
                     "usage": self._usage,
+                    "model_usage": tuple(self._model_usage),
                     "last_action_fingerprint": self._last_fingerprint,
                     "repeat_count": self._repeat_count,
                     "verification": self._last_verification,
@@ -525,6 +584,27 @@ class AgentRunner:
             reasoning_tokens=left.reasoning_tokens + right.reasoning_tokens,
             provider_total_tokens=left.total_tokens + right.total_tokens,
         )
+
+    def _record_model_usage(self, lane: str, model: ModelProvider, usage: Usage) -> None:
+        self._usage = self._add_usage(self._usage, usage)
+        self._model_usage.append(
+            ModelUsageRecord(
+                lane=lane,
+                provider=model.provider_name,
+                model=model.model_id,
+                usage=usage,
+                cost=estimate_cost(model.provider_name, model.model_id, usage),
+            )
+        )
+
+    def _aggregate_cost(self):
+        if not self._model_usage:
+            return estimate_cost(self.model.provider_name, self.model.model_id, self._usage)
+        providers = {(record.provider, record.model) for record in self._model_usage}
+        if len(providers) != 1:
+            return None
+        provider, model = next(iter(providers))
+        return estimate_cost(provider, model, self._usage)
 
     @staticmethod
     def _remaining(deadline: float) -> float:
@@ -575,6 +655,15 @@ class AgentRunner:
             f"- {command.name}: {list(command.argv)!r}" for command in self.task.verification
         )
         paths = "\n".join(f"- {pattern}" for pattern in self.task.allowed_paths)
+        known_context = render_known_context(
+            relevant_memory_entries(project=self.task.repository)
+        )
+        instruction_context = render_instruction_context(
+            load_instruction_documents(
+                project_root=self.task.repository,
+                start_dir=Path.cwd(),
+            )
+        )
         request = (
             f"Task: {self.task.instruction}\n"
             f"Base commit: {base_sha}\n"
@@ -583,7 +672,13 @@ class AgentRunner:
             "Inspect the repository, make the smallest correct patch, and verify it."
         )
         return [
-            Message(role="system", content=CODING_AGENT_SYSTEM_PROMPT),
+            Message(
+                role="system",
+                content=build_coding_agent_system_prompt(
+                    known_context=known_context,
+                    instruction_context=instruction_context,
+                ),
+            ),
             Message(role="user", content=request),
         ]
 
@@ -606,13 +701,98 @@ class AgentRunner:
             self._repeat_count = 1
         return self._repeat_count >= 3
 
+    def _tool_definition_by_name(self, name: str):
+        assert self._executor is not None
+        return next(
+            (definition for definition in self._executor.definitions if definition.name == name),
+            None,
+        )
+
+    def _can_execute_concurrently(self, call: ToolCall) -> bool:
+        definition = self._tool_definition_by_name(call.name)
+        if definition is None:
+            return False
+        return (
+            definition.read_only
+            and definition.concurrency_safe
+            and effect_for_tool(call.name) is ToolEffect.READ
+        )
+
+    def _token_budget_error(self) -> str | None:
+        max_total_tokens = self.task.limits.max_total_tokens
+        if max_total_tokens is None or self._usage.total_tokens <= max_total_tokens:
+            return None
+        return (
+            f"Token budget exceeded: {self._usage.total_tokens:,} tokens "
+            f"> limit {max_total_tokens:,}."
+        )
+
+    async def _maybe_inject_context_pressure_reminder(self) -> None:
+        max_total_tokens = self.task.limits.max_total_tokens
+        if self._context_pressure_reminder_sent or max_total_tokens is None:
+            return
+        if not should_remind_context_pressure(
+            total_tokens=self._usage.total_tokens,
+            max_total_tokens=max_total_tokens,
+        ):
+            return
+        self._messages.append(
+            Message(
+                role="user",
+                content=build_context_pressure_reminder(
+                    total_tokens=self._usage.total_tokens,
+                    max_total_tokens=max_total_tokens,
+                ),
+            )
+        )
+        self._context_pressure_reminder_sent = True
+        await self._event(
+            "context_pressure.reminder_injected",
+            total_tokens=self._usage.total_tokens,
+            max_total_tokens=max_total_tokens,
+        )
+
+    async def _maybe_apply_history_summary_fallback(self) -> None:
+        max_total_tokens = self.task.limits.max_total_tokens
+        if not should_apply_history_summary_fallback(
+            total_tokens=self._usage.total_tokens,
+            max_total_tokens=max_total_tokens,
+            message_count=len(self._messages),
+            already_applied=self._history_summary_fallback_applied,
+        ):
+            return
+
+        span = history_summary_fallback_span(message_count=len(self._messages))
+        if span is None:
+            return
+        start, end = span
+        while end < len(self._messages) and isinstance(self._messages[end], ToolObservation):
+            end += 1
+        if end - start < 2:
+            return
+
+        summary = build_history_summary_fallback_message(
+            self._messages[start:end],
+            source_start_index=start,
+            source_end_index=end,
+            max_chars=max(512, min(self.task.limits.max_tool_output_bytes, 12_000)),
+        )
+        self._messages = [*self._messages[:start], summary, *self._messages[end:]]
+        self._history_summary_fallback_applied = True
+        await self._event(
+            "context_pressure.summary_fallback_applied",
+            source_start_index=start,
+            source_end_index=end,
+            retained_messages=len(self._messages),
+        )
+
     async def _verify_all(self, deadline: float) -> tuple[VerificationOutcome, ...]:
         assert self._executor is not None
         outcomes: list[VerificationOutcome] = []
         for command in self.task.verification:
             if self._cancel_requested.is_set():
                 raise asyncio.CancelledError("run cancellation requested")
-            decision = await self._approval(
+            decision, _request_id = await self._approval(
                 action_id=f"verification:{command.name}",
                 effect=ToolEffect.EXECUTE,
                 reason=ApprovalReason.FINAL_VERIFICATION,
@@ -672,6 +852,81 @@ class AgentRunner:
                 raise asyncio.CancelledError("run cancellation requested")
         await self._persist_verification(outcomes)
         return self._last_verification
+
+    async def _run_review_lane(
+        self,
+        *,
+        patch: str,
+        changed_files: tuple[str, ...],
+        verification: tuple[VerificationOutcome, ...],
+        deadline: float,
+    ) -> str | None:
+        if self._review_model is None or not patch.strip():
+            return None
+        await self._event(
+            "role_lane.requested",
+            role="reviewer",
+            provider=self._review_model.provider_name,
+            model=self._review_model.model_id,
+            changed_files=changed_files,
+        )
+        verification_summary = "\n".join(
+            f"- {outcome.name}: {'passed' if outcome.ok else 'failed'}"
+            f" (exit {outcome.exit_code})"
+            for outcome in verification
+        )
+        messages = (
+            Message(
+                role="system",
+                content=(
+                    "You are Rivumi's read-only reviewer lane. Review the verified patch for "
+                    "correctness risks, regressions, missed tests, and security concerns. Do not "
+                    "request tools or edits. Return a concise verdict with concrete findings."
+                ),
+            ),
+            Message(
+                role="user",
+                content=bounded_text(
+                    "Task:\n"
+                    f"{self.task.instruction}\n\n"
+                    "Changed files:\n"
+                    + "\n".join(f"- {path}" for path in changed_files)
+                    + "\n\nVerification:\n"
+                    + verification_summary
+                    + "\n\nPatch:\n"
+                    + patch,
+                    self.task.limits.max_tool_output_bytes,
+                ),
+            ),
+        )
+        try:
+            turn = await asyncio.wait_for(
+                self._review_model.complete(messages, ()),
+                timeout=self._remaining(deadline),
+            )
+            self._record_model_usage("reviewer", self._review_model, turn.usage)
+            review = bounded_text(turn.content or "", self.task.limits.max_tool_output_bytes)
+            (self.run_dir / "review.md").write_text(review, encoding="utf-8")
+            review_cost = self._model_usage[-1].cost
+            await self._event(
+                "role_lane.completed",
+                role="reviewer",
+                provider=self._review_model.provider_name,
+                model=self._review_model.model_id,
+                usage=turn.usage.model_dump(mode="json"),
+                cost=review_cost.model_dump(mode="json") if review_cost is not None else None,
+                preview=bounded_text(review, 2_000),
+            )
+            return review
+        except (TimeoutError, ProviderError, OSError, ValueError) as exc:
+            await self._event(
+                "role_lane.failed",
+                role="reviewer",
+                provider=self._review_model.provider_name,
+                model=self._review_model.model_id,
+                error=bounded_text(f"{type(exc).__name__}: {exc}", 2_000),
+            )
+            return None
 
     async def _persist_verification(
         self, outcomes: list[VerificationOutcome]
@@ -792,6 +1047,103 @@ class AgentRunner:
         (self.run_dir / "changes.patch").write_text(patch, encoding="utf-8")
         return patch, changed
 
+    async def _prepare_tool_call(
+        self, call: ToolCall
+    ) -> tuple[ApprovalDecision, ToolEffect, str | None]:
+        if self._record_fingerprint(call):
+            raise ToolExecutionError("repeated_action")
+        effect = effect_for_tool(call.name)
+        await self._event(
+            "tool.requested",
+            tool_call_id=call.tool_call_id,
+            name=call.name,
+            effect=effect.value,
+            arguments=self._event_arguments(call.arguments),
+        )
+        decision, request_id = await self._approval(
+            action_id=call.tool_call_id,
+            effect=effect,
+            reason=ApprovalReason.MODEL_TOOL,
+            preview=self._tool_preview(call),
+            tool_call=call,
+        )
+        return decision, effect, request_id
+
+    async def _execute_prepared_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        effect: ToolEffect,
+        request_id: str | None,
+        deadline: float,
+    ) -> ToolObservation:
+        assert self._executor is not None
+        await self._event(
+            "tool.started",
+            tool_call_id=call.tool_call_id,
+            name=call.name,
+            effect=effect.value,
+        )
+        if request_id is not None and self._manifest is not None:
+            pending = self._manifest.pending_action
+            if pending is not None and pending.request_id == request_id:
+                await self._mark_approved_action_started(request_id)
+        observation = await self._run_blocking_safely(
+            self._executor.execute,
+            call,
+            timeout_seconds=self._remaining(deadline),
+        )
+        await self._event(
+            "tool.completed",
+            tool_call_id=call.tool_call_id,
+            name=call.name,
+            ok=observation.ok,
+            error=observation.error,
+            preview=bounded_text(observation.content, 2_000),
+        )
+        return observation
+
+    async def _execute_read_only_batch(
+        self,
+        calls: Sequence[tuple[ToolCall, str | None]],
+        *,
+        deadline: float,
+    ) -> list[ToolObservation]:
+        if len(calls) > 1:
+            await self._event(
+                "tool.batch_started",
+                count=len(calls),
+                tool_call_ids=[call.tool_call_id for call, _request_id in calls],
+                mode="read_only_parallel",
+            )
+        tasks = [
+            asyncio.create_task(
+                self._execute_prepared_tool_call(
+                    call,
+                    effect=ToolEffect.READ,
+                    request_id=request_id,
+                    deadline=deadline,
+                )
+            )
+            for call, request_id in calls
+        ]
+        try:
+            observations = await asyncio.gather(*tasks)
+            return list(observations)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if len(calls) > 1:
+                await self._event(
+                    "tool.batch_completed",
+                    count=len(calls),
+                    tool_call_ids=[call.tool_call_id for call, _request_id in calls],
+                    mode="read_only_parallel",
+                )
+
     async def _finish(
         self,
         *,
@@ -804,7 +1156,7 @@ class AgentRunner:
     ) -> RunResult:
         verification = verification or self._last_verification
         try:
-            _, changed_files = await self._collect_patch(patch_timeout_seconds)
+            patch, changed_files = await self._collect_patch(patch_timeout_seconds)
         except (ToolExecutionError, TimeoutError) as exc:
             status = RunStatus.FAILED
             terminal_reason = "patch_artifact_failed"
@@ -821,6 +1173,8 @@ class AgentRunner:
             changed_files=changed_files,
             verification=verification,
             usage=self._usage,
+            model_usage=tuple(self._model_usage),
+            cost=self._aggregate_cost(),
             terminal_reason=terminal_reason,
             error=error,
             artifacts={
@@ -830,13 +1184,20 @@ class AgentRunner:
                 "patch": str(self.run_dir / "changes.patch"),
                 "test_log": str(self.run_dir / "test.log"),
                 "result": str(self.run_dir / "result.json"),
-            },
+            }
+            | (
+                {"review": str(self.run_dir / "review.md")}
+                if (self.run_dir / "review.md").is_file()
+                else {}
+            ),
         )
         await self._checkpoint(status, terminal_reason=terminal_reason)
         await self._event(
             f"run.{status.value}", terminal_reason=terminal_reason, changed_files=changed_files
         )
         await atomic_write_json(self.run_dir / "result.json", result)
+        if self._executor is not None:
+            self._executor.close()
         return result
 
     async def run(self) -> RunResult:
@@ -937,6 +1298,10 @@ class AgentRunner:
                     policy=policy,
                     verification_commands=self.task.verification,
                     limits=self.task.limits,
+                    mcp_servers=load_native_mcp_server_configs(self.task.repository),
+                    sandbox_checks=self._sandbox_checks,
+                    sandbox_profile=self._sandbox_profile,
+                    sandbox_read_roots=self._sandbox_read_roots,
                 )
                 await self._event("workspace.prepared", workspace="workspace", base_sha=base_sha)
 
@@ -960,6 +1325,8 @@ class AgentRunner:
                         summary=final_summary,
                         patch_timeout_seconds=1.0,
                     )
+                await self._maybe_apply_history_summary_fallback()
+                await self._maybe_inject_context_pressure_reminder()
                 self._step += 1
                 await self._event("model.requested", step=self._step)
                 turn = await self._complete_model_with_retry(deadline)
@@ -969,20 +1336,13 @@ class AgentRunner:
                         terminal_reason="user_cancelled",
                         summary="Run cancelled by user while waiting for the model.",
                     )
-                self._usage = self._add_usage(self._usage, turn.usage)
-                max_total_tokens = self.task.limits.max_total_tokens
-                if (
-                    max_total_tokens is not None
-                    and self._usage.total_tokens > max_total_tokens
-                ):
+                self._record_model_usage("primary", self.model, turn.usage)
+                if error := self._token_budget_error():
                     return await self._finish(
                         status=RunStatus.FAILED,
                         terminal_reason="token_budget_exceeded",
                         summary=final_summary,
-                        error=(
-                            f"Token budget exceeded: {self._usage.total_tokens:,} tokens "
-                            f"> limit {max_total_tokens:,}."
-                        ),
+                        error=error,
                         patch_timeout_seconds=1.0,
                     )
                 assistant = turn.as_message()
@@ -997,34 +1357,25 @@ class AgentRunner:
                 )
 
                 if turn.tool_calls:
-                    for call in turn.tool_calls:
+                    call_index = 0
+                    while call_index < len(turn.tool_calls):
+                        call = turn.tool_calls[call_index]
                         if self._cancel_requested.is_set():
                             return await self._finish(
                                 status=RunStatus.CANCELLED,
                                 terminal_reason="user_cancelled",
                                 summary="Run cancelled by user before executing the next tool.",
                             )
-                        if self._record_fingerprint(call):
-                            return await self._finish(
-                                status=RunStatus.FAILED,
-                                terminal_reason="repeated_action",
-                                summary=turn.content or final_summary,
-                            )
-                        effect = effect_for_tool(call.name)
-                        await self._event(
-                            "tool.requested",
-                            tool_call_id=call.tool_call_id,
-                            name=call.name,
-                            effect=effect.value,
-                            arguments=self._event_arguments(call.arguments),
-                        )
-                        decision = await self._approval(
-                            action_id=call.tool_call_id,
-                            effect=effect,
-                            reason=ApprovalReason.MODEL_TOOL,
-                            preview=self._tool_preview(call),
-                            tool_call=call,
-                        )
+                        try:
+                            decision, effect, request_id = await self._prepare_tool_call(call)
+                        except ToolExecutionError as exc:
+                            if str(exc) == "repeated_action":
+                                return await self._finish(
+                                    status=RunStatus.FAILED,
+                                    terminal_reason="repeated_action",
+                                    summary=turn.content or final_summary,
+                                )
+                            raise
                         if decision == ApprovalDecision.CANCEL:
                             return await self._finish(
                                 status=RunStatus.CANCELLED,
@@ -1057,31 +1408,103 @@ class AgentRunner:
                                 last_tool=call.name,
                                 approval="denied",
                             )
+                            call_index += 1
                             continue
-                        await self._event(
-                            "tool.started",
-                            tool_call_id=call.tool_call_id,
-                            name=call.name,
-                            effect=effect.value,
-                        )
-                        if self._manifest is not None and self._manifest.pending_action is not None:
-                            await self._mark_approved_action_started(
-                                self._manifest.pending_action.request_id
+
+                        if self._can_execute_concurrently(call):
+                            batch = [(call, request_id)]
+                            lookahead = call_index + 1
+                            deferred_denial: tuple[ToolCall, ToolObservation] | None = None
+                            while lookahead < len(turn.tool_calls):
+                                candidate = turn.tool_calls[lookahead]
+                                if not self._can_execute_concurrently(candidate):
+                                    break
+                                if self._cancel_requested.is_set():
+                                    return await self._finish(
+                                        status=RunStatus.CANCELLED,
+                                        terminal_reason="user_cancelled",
+                                        summary=(
+                                            "Run cancelled by user before executing the next tool."
+                                        ),
+                                    )
+                                try:
+                                    (
+                                        candidate_decision,
+                                        candidate_effect,
+                                        candidate_request_id,
+                                    ) = (
+                                        await self._prepare_tool_call(candidate)
+                                    )
+                                except ToolExecutionError as exc:
+                                    if str(exc) == "repeated_action":
+                                        break
+                                    raise
+                                if candidate_decision == ApprovalDecision.CANCEL:
+                                    return await self._finish(
+                                        status=RunStatus.CANCELLED,
+                                        terminal_reason="approval_cancelled",
+                                        summary="Run cancelled by user before executing a tool.",
+                                    )
+                                if candidate_decision == ApprovalDecision.DENY:
+                                    deferred_denial = (
+                                        candidate,
+                                        ToolObservation(
+                                            tool_call_id=candidate.tool_call_id,
+                                            name=candidate.name,
+                                            ok=False,
+                                            error="action denied by user",
+                                        ),
+                                    )
+                                    break
+                                if candidate_effect is not ToolEffect.READ:
+                                    break
+                                batch.append((candidate, candidate_request_id))
+                                lookahead += 1
+                            observations = await self._execute_read_only_batch(
+                                batch,
+                                deadline=deadline,
                             )
-                        observation = await self._run_blocking_safely(
-                            self._executor.execute,
+                            self._messages.extend(observations)
+                            for completed_call, _request_id in batch:
+                                await self._checkpoint(
+                                    RunStatus.IMPLEMENTING,
+                                    last_tool=completed_call.name,
+                                )
+                            processed = len(batch)
+                            if deferred_denial is not None:
+                                denied_call, denied_observation = deferred_denial
+                                self._messages.append(denied_observation)
+                                await self._event(
+                                    "tool.completed",
+                                    tool_call_id=denied_call.tool_call_id,
+                                    name=denied_call.name,
+                                    ok=False,
+                                    error=denied_observation.error,
+                                )
+                                await self._checkpoint(
+                                    RunStatus.IMPLEMENTING,
+                                    last_tool=denied_call.name,
+                                    approval="denied",
+                                )
+                                processed += 1
+                            call_index += processed
+                            if self._cancel_requested.is_set():
+                                return await self._finish(
+                                    status=RunStatus.CANCELLED,
+                                    terminal_reason="user_cancelled",
+                                    summary=(
+                                        "Run cancelled by user after the current tool completed."
+                                    ),
+                                )
+                            continue
+
+                        observation = await self._execute_prepared_tool_call(
                             call,
-                            timeout_seconds=self._remaining(deadline),
+                            effect=effect,
+                            request_id=request_id,
+                            deadline=deadline,
                         )
                         self._messages.append(observation)
-                        await self._event(
-                            "tool.completed",
-                            tool_call_id=call.tool_call_id,
-                            name=call.name,
-                            ok=observation.ok,
-                            error=observation.error,
-                            preview=bounded_text(observation.content, 2_000),
-                        )
                         if effect is ToolEffect.MODIFY and observation.ok:
                             self._made_changes = True
                         await self._checkpoint(RunStatus.IMPLEMENTING, last_tool=call.name)
@@ -1093,6 +1516,7 @@ class AgentRunner:
                                     "Run cancelled by user after the current tool completed."
                                 ),
                             )
+                        call_index += 1
                     continue
 
                 if turn.finish_reason == "length":
@@ -1130,6 +1554,26 @@ class AgentRunner:
                         summary=final_summary or "Final verification cancelled by user.",
                     )
                 if all(outcome.ok for outcome in outcomes):
+                    patch, changed_files = await self._collect_patch(self._remaining(deadline))
+                    review = await self._run_review_lane(
+                        patch=patch,
+                        changed_files=changed_files,
+                        verification=outcomes,
+                        deadline=deadline,
+                    )
+                    if review:
+                        final_summary = (
+                            f"{final_summary}\n\nReviewer lane:\n{review}".strip()
+                        )
+                    if error := self._token_budget_error():
+                        return await self._finish(
+                            status=RunStatus.FAILED,
+                            terminal_reason="token_budget_exceeded",
+                            summary=final_summary,
+                            error=error,
+                            verification=outcomes,
+                            patch_timeout_seconds=1.0,
+                        )
                     return await self._finish(
                         status=RunStatus.COMPLETED,
                         terminal_reason="verified",

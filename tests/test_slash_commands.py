@@ -34,6 +34,7 @@ def test_default_registry_exposes_discoverable_metadata() -> None:
         SlashCommand.COMPACT,
         SlashCommand.CONTEXT,
         SlashCommand.USAGE,
+        SlashCommand.REMEMBER,
         SlashCommand.PERMISSIONS,
         SlashCommand.EXIT,
     ]
@@ -58,6 +59,7 @@ def test_default_registry_exposes_discoverable_metadata() -> None:
         ("/help", SlashCommand.HELP, None),
         ("/compact retain the build logs", SlashCommand.COMPACT, "retain the build logs"),
         ("/context", SlashCommand.CONTEXT, None),
+        ("/remember user: concise replies", SlashCommand.REMEMBER, "user: concise replies"),
         ("/permissions", SlashCommand.PERMISSIONS, None),
         ("/permissions clear", SlashCommand.PERMISSIONS, "clear"),
         ("/exit", SlashCommand.EXIT, None),
@@ -90,6 +92,7 @@ def test_completion_requires_leading_slash_and_filters_names_and_aliases() -> No
         SlashCommand.COMPACT,
         SlashCommand.CONTEXT,
     ]
+    assert [item.command for item in complete_slash_commands("/rem")] == [SlashCommand.REMEMBER]
     assert complete_slash_commands("/resume abc") == (
         DEFAULT_SLASH_COMMAND_REGISTRY.resolve("resume"),
     )

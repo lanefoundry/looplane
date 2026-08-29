@@ -30,6 +30,7 @@ class SlashCommand(StrEnum):
     COMPACT = "compact"
     CONTEXT = "context"
     USAGE = "usage"
+    REMEMBER = "remember"
     PERMISSIONS = "permissions"
     EXIT = "exit"
 
@@ -258,6 +259,12 @@ DEFAULT_COMMANDS: Final[tuple[CommandMetadata, ...]] = (
     ),
     CommandMetadata(SlashCommand.CONTEXT, "Inspect conversation context usage."),
     CommandMetadata(SlashCommand.USAGE, "Show token usage for this session."),
+    CommandMetadata(
+        SlashCommand.REMEMBER,
+        "Persist a user or project memory for future prompt context.",
+        ArgumentExpectation.REQUIRED,
+        "[user|project|preference]: text",
+    ),
     CommandMetadata(
         SlashCommand.PERMISSIONS,
         "Inspect or change process-local tool permissions.",

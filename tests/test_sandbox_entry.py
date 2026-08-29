@@ -6,10 +6,13 @@ from pathlib import Path
 import pytest
 
 from rivumi.contracts import ModelTurn, ToolCall
+from rivumi.events import RunEvent
 from rivumi.models import ScriptedModel
 from rivumi.sandbox_entry import (
+    SandboxControlPlaneEventSink,
     SandboxEntrypointError,
     _main,
+    _read_and_remove_event_token,
     _read_and_remove_run_token,
     run_sandbox_request,
 )
@@ -135,6 +138,17 @@ def test_run_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> None:
         _read_and_remove_run_token(tmp_path)
 
 
+def test_event_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> None:
+    token_path = tmp_path / ".rivumi-event-token"
+    token_path.write_text("signed-event-capability", encoding="utf-8")
+    token_path.chmod(0o600)
+
+    assert _read_and_remove_event_token(tmp_path) == "signed-event-capability"
+    assert not token_path.exists()
+    with pytest.raises(SandboxEntrypointError, match="unavailable"):
+        _read_and_remove_event_token(tmp_path)
+
+
 def test_run_capability_rejects_loose_permissions(tmp_path: Path) -> None:
     token_path = tmp_path / ".rivumi-run-token"
     token_path.write_text("signed-run-capability", encoding="utf-8")
@@ -143,6 +157,67 @@ def test_run_capability_rejects_loose_permissions(tmp_path: Path) -> None:
     with pytest.raises(SandboxEntrypointError, match="unsafe metadata"):
         _read_and_remove_run_token(tmp_path)
     assert token_path.read_text(encoding="utf-8") == "signed-run-capability"
+
+
+def test_event_capability_rejects_loose_permissions(tmp_path: Path) -> None:
+    token_path = tmp_path / ".rivumi-event-token"
+    token_path.write_text("signed-event-capability", encoding="utf-8")
+    token_path.chmod(0o644)
+
+    with pytest.raises(SandboxEntrypointError, match="unsafe metadata"):
+        _read_and_remove_event_token(tmp_path)
+    assert token_path.read_text(encoding="utf-8") == "signed-event-capability"
+
+
+@pytest.mark.asyncio
+async def test_control_plane_event_sink_posts_jsonl_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc_info) -> None:
+            return None
+
+        async def post(self, url: str, *, headers: dict[str, str], json: dict[str, object]):
+            calls.append({"url": url, "headers": headers, "json": json, "timeout": self.timeout})
+            return FakeResponse()
+
+    monkeypatch.setattr("rivumi.sandbox_entry.httpx.AsyncClient", FakeAsyncClient)
+    sink = SandboxControlPlaneEventSink(
+        base_url="https://control.example/internal/v1",
+        run_id="task-1",
+        token="run-token",
+    )
+
+    await sink.emit(
+        RunEvent(event_type="run.created", run_id="agent-run", task_id="task-1", sequence=0)
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["url"] == "https://control.example/internal/v1/runs/task-1/events"
+    assert calls[0]["headers"] == {
+        "authorization": "Bearer run-token",
+        "content-type": "application/json",
+    }
+    assert calls[0]["timeout"] == 10.0
+    body = calls[0]["json"]
+    assert isinstance(body, dict)
+    lines = body["lines"]
+    assert isinstance(lines, list)
+    line = lines[0]
+    assert isinstance(line, str)
+    assert line.endswith("\n")
+    event = json.loads(line)
+    assert event["task_id"] == "task-1"
+    assert event["run_id"] == "agent-run"
 
 
 @pytest.mark.asyncio

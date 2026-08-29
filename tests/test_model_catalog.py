@@ -139,6 +139,12 @@ def test_default_model_skips_free_variants() -> None:
     assert model_catalog.default_model(models) == "m/b"
 
 
+def test_default_model_skips_role_aliases() -> None:
+    models = ("@cheap", "m/a:free", "anthropic/claude-sonnet-4")
+
+    assert model_catalog.default_model(models) == "anthropic/claude-sonnet-4"
+
+
 def test_default_model_all_free_returns_none() -> None:
     assert model_catalog.default_model(("m/a:free", ":free")) is None
 
