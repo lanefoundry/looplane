@@ -1132,10 +1132,6 @@ class ToolActionBlock(Vertical):
             detail_widget = self.query_one(".tool-detail", Static)
             detail_widget.update(self._render_detail(detail))
             detail_widget.display = bool(detail)
-        for ancestor in self.ancestors:
-            if isinstance(ancestor, ToolGroupBlock):
-                ancestor.action_updated()
-                break
 
     def _render_detail(self, detail: str) -> str | Syntax:
         if self.detail_kind == "diff" and detail:
@@ -2074,7 +2070,6 @@ class looplaneApp(App[RunResult | None]):
         self._ask_history: list[tuple[str, str]] = []
         self._external_message_generations: set[int] = set()
         self._tool_actions: dict[str, ToolActionBlock] = {}
-        self._active_tool_group: ToolGroupBlock | None = None
         self._approval_actions: dict[str, str] = {}
         self._runtime_text_blocks: dict[str, MessageBlock] = {}
         self._runtime_stream_text: dict[str, str] = {}
@@ -2448,8 +2443,6 @@ class looplaneApp(App[RunResult | None]):
     def action_toggle_tool_verbose(self) -> None:
         """Global tool-detail verbosity, like Claude Code's ctrl+o / opencode tool_details."""
         self._tool_verbose = not self._tool_verbose
-        for group in self.query(ToolGroupBlock):
-            group.set_verbose(self._tool_verbose)
         for action in self.query(ToolActionBlock):
             action.set_class(self._tool_verbose, "verbose")
 
@@ -2963,6 +2956,19 @@ class looplaneApp(App[RunResult | None]):
         transcript = self.query_one("#transcript", TranscriptScroll)
         if transcript.is_vertical_scroll_end:
             self._clear_unseen_items()
+
+    @on(Collapsible.Toggled)
+    def _collapsible_toggled(self, _event: Collapsible.Toggled) -> None:
+        """Re-engage auto-scroll when a collapsible is toggled near the bottom."""
+        if not self.query("#transcript"):
+            return
+        transcript = self.query_one("#transcript", TranscriptScroll)
+        # After toggle the layout hasn't reflowed yet; schedule for after refresh.
+        self.call_after_refresh(
+            lambda: transcript.scroll_end(animate=False)
+            if transcript.is_vertical_scroll_end
+            else None
+        )
 
     def _submit_current_task(self) -> None:
         composer = self.query_one("#task", MessageComposer)
@@ -3997,7 +4003,6 @@ class looplaneApp(App[RunResult | None]):
         for child in tuple(messages.children):
             child.remove()
         self._tool_actions.clear()
-        self._active_tool_group = None
         self._approval_actions.clear()
         self._runtime_text_blocks.clear()
         self._runtime_stream_text.clear()
@@ -4061,7 +4066,6 @@ class looplaneApp(App[RunResult | None]):
         for empty_state in self.query("#empty-state"):
             empty_state.remove()
         self._track_transcript_item(f"message:{uuid4().hex}")
-        self._active_tool_group = None
         block = MessageBlock(role, content)
         self.query_one("#messages", Vertical).mount(block)
         return block
@@ -4084,7 +4088,6 @@ class looplaneApp(App[RunResult | None]):
         for empty_state in self.query("#empty-state"):
             empty_state.remove()
         self._track_transcript_item(f"timeline:{uuid4().hex}")
-        self._active_tool_group = None
         self.query_one("#messages", Vertical).mount(TimelineEntry(title, detail, severity=severity))
 
     def _track_transcript_item(self, item_id: str) -> None:
@@ -4163,18 +4166,7 @@ class looplaneApp(App[RunResult | None]):
         action.set_class(self._tool_verbose, "verbose")
         self._tool_actions[action_id] = action
         self._track_transcript_item(f"tool:{action_id}")
-        if detail_kind in {"read", "search"}:
-            if self._active_tool_group is None:
-                group = ToolGroupBlock(action)
-                self._active_tool_group = group
-                self.query_one("#messages", Vertical).mount(group)
-            else:
-                self._active_tool_group.add_action(action)
-            group = self._active_tool_group
-            self.call_after_refresh(group.action_updated)
-        else:
-            self._active_tool_group = None
-            self.query_one("#messages", Vertical).mount(action)
+        self.query_one("#messages", Vertical).mount(action)
         return action
 
     @staticmethod
@@ -4568,12 +4560,7 @@ class looplaneApp(App[RunResult | None]):
                 detail_kind=self._tool_detail_kind(request.tool_call.name),
             )
             action.set_state("waiting", detail="Waiting for permission")
-        reference: ToolActionBlock | ToolGroupBlock | None = action
-        if action is not None:
-            for ancestor in action.ancestors:
-                if isinstance(ancestor, ToolGroupBlock):
-                    reference = ancestor
-                    break
+        reference: ToolActionBlock | None = action
         self._track_transcript_item(f"approval:{request.request_id}")
         if reference is not None and reference.parent is messages:
             await messages.mount(block, after=reference)

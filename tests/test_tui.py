@@ -2592,7 +2592,7 @@ async def test_escape_cancels_native_startup_before_runner_exists(tmp_path: Path
         assert factory_calls == 0
 
 
-async def test_read_search_actions_collapse_into_one_keyboard_group(tmp_path: Path) -> None:
+async def test_read_search_actions_mount_individually(tmp_path: Path) -> None:
     app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
@@ -2607,48 +2607,13 @@ async def test_read_search_actions_collapse_into_one_keyboard_group(tmp_path: Pa
         second.set_state("completed", detail="6 matches")
         await pilot.pause()
 
+        # Each tool action is mounted directly in #messages — no ToolGroupBlock.
         groups = list(app.query(ToolGroupBlock))
-        assert len(groups) == 1
-        assert len(groups[0].actions) == 2
-        assert groups[0].collapsed is True
-        groups[0].query_one("CollapsibleTitle").focus()
-        await pilot.press("enter")
-        assert groups[0].collapsed is False
-
-
-async def test_tool_group_respects_manual_toggle_over_auto_state(tmp_path: Path) -> None:
-    app = looplaneApp(
-        repository=tmp_path,
-        config=CliConfig(provider="ollama", model="qwen3:4b"),
-        runner_factory=lambda *_: (FakeRunner(), None),
-        providers=(("ollama", "Ollama local"),),
-    )
-
-    async with app.run_test(size=(100, 30)) as pilot:
-        first = app._ensure_tool_action("read", "Read src/app.py", detail_kind="read")
-        first.set_state("completed", detail="84 lines")
-        await pilot.pause()
-
-        group = app.query_one(ToolGroupBlock)
-        assert group.collapsed is True  # auto-collapse on completion still applies
-
-        group.query_one("CollapsibleTitle").focus()
-        await pilot.press("enter")
-        assert group.collapsed is False
-
-        second = app._ensure_tool_action("search", 'Search "runner"', detail_kind="search")
-        second.set_state("completed", detail="6 matches")
-        await pilot.pause()
-        assert group.collapsed is False  # user intent wins over auto-collapse
-
-        group.query_one("CollapsibleTitle").focus()
-        await pilot.press("enter")
-        assert group.collapsed is True
-
-        third = app._ensure_tool_action("read", "Read src/main.py", detail_kind="read")
-        third.set_state("completed", detail="12 lines")
-        await pilot.pause()
-        assert group.collapsed is True  # user intent wins over auto-expand
+        assert len(groups) == 0
+        actions = list(app.query(ToolActionBlock))
+        assert len(actions) == 2
+        assert actions[0].title == "Read src/app.py"
+        assert actions[1].title == 'Search "runner"'
 
 
 async def test_ctrl_o_toggles_global_tool_verbose(tmp_path: Path) -> None:
@@ -2664,28 +2629,23 @@ async def test_ctrl_o_toggles_global_tool_verbose(tmp_path: Path) -> None:
         first.set_state("completed", detail="84 lines")
         await pilot.pause()
 
-        group = app.query_one(ToolGroupBlock)
-        assert group.collapsed is True
+        assert not first.has_class("verbose")
 
         await pilot.press("ctrl+o")
         assert app._tool_verbose is True
-        assert group.collapsed is False
         assert first.has_class("verbose")
 
-        # New actions inherit verbose mode and survive completion without collapsing.
+        # New actions inherit verbose mode.
         second = app._ensure_tool_action("search", 'Search "runner"', detail_kind="search")
         second.set_state("completed", detail="6 matches")
         await pilot.pause()
-        assert group.collapsed is False
         assert second.has_class("verbose")
 
         await pilot.press("ctrl+o")
         assert app._tool_verbose is False
-        assert group.collapsed is True
         assert not first.has_class("verbose")
         detail = first.query_one(".tool-detail")
         assert detail.styles.max_height is not None
-
 
 async def test_scrolled_transcript_reports_deduplicated_new_items(tmp_path: Path) -> None:
     app = looplaneApp(
