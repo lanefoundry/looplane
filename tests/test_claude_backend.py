@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.backends import ExternalAgentEvent, ExternalAgentTask, ExternalRunStatus
-from rivumi.claude_backend import ClaudeCodeBackend
+from looplane.backends import ExternalAgentEvent, ExternalAgentTask, ExternalRunStatus
+from looplane.claude_backend import ClaudeCodeBackend
 
 
 def _fake_claude(tmp_path: Path, body: str) -> Path:
@@ -79,7 +79,7 @@ assert "--tools=" in sys.argv
 request = json.loads(sys.stdin.readline())
 assert request["type"] == "user"
 assert request["message"]["content"] == "inspect the fixture"
-assert os.path.basename(os.getcwd()).startswith("rivumi-claude-")
+assert os.path.basename(os.getcwd()).startswith("looplane-claude-")
 print(json.dumps({"type": "system", "subtype": "init", "session_id": "private"}))
 print(json.dumps({"type": "assistant", "message": {"content": [
     {"type": "text", "text": "inspection complete"}

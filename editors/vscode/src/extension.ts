@@ -2,33 +2,33 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-type RivumiPosition = {
+type looplanePosition = {
   line: number;
   character: number;
 };
 
-type RivumiRange = {
-  start: RivumiPosition;
-  end: RivumiPosition;
+type looplaneRange = {
+  start: looplanePosition;
+  end: looplanePosition;
 };
 
-type RivumiDiagnostic = {
+type looplaneDiagnostic = {
   uri: string;
-  range: RivumiRange;
+  range: looplaneRange;
   severity: number;
   source: string;
   code?: string | number;
   message: string;
 };
 
-type RivumiOpenFile = {
+type looplaneOpenFile = {
   uri: string;
   active: boolean;
-  cursor?: RivumiPosition;
-  selection?: RivumiRange;
+  cursor?: looplanePosition;
+  selection?: looplaneRange;
 };
 
-const OUTPUT_DIR = path.join(".rivumi", "ide");
+const OUTPUT_DIR = path.join(".looplane", "ide");
 const DIAGNOSTICS_FILE = "diagnostics.json";
 const OPEN_FILES_FILE = "open-files.json";
 
@@ -39,7 +39,7 @@ export function activate(context: vscode.ExtensionContext): void {
     void pushIdeContext();
   };
   context.subscriptions.push(
-    vscode.commands.registerCommand("rivumi.pushIdeContext", pushNow),
+    vscode.commands.registerCommand("looplane.pushIdeContext", pushNow),
     vscode.languages.onDidChangeDiagnostics(() => schedulePush()),
     vscode.window.onDidChangeVisibleTextEditors(() => schedulePush()),
     vscode.window.onDidChangeActiveTextEditor(() => schedulePush()),
@@ -88,8 +88,8 @@ async function pushIdeContext(): Promise<void> {
   ]);
 }
 
-function diagnosticsSnapshot(folder: vscode.WorkspaceFolder): RivumiDiagnostic[] {
-  const items: RivumiDiagnostic[] = [];
+function diagnosticsSnapshot(folder: vscode.WorkspaceFolder): looplaneDiagnostic[] {
+  const items: looplaneDiagnostic[] = [];
   for (const [uri, diagnostics] of vscode.languages.getDiagnostics()) {
     if (!withinFolder(folder, uri)) {
       continue;
@@ -111,7 +111,7 @@ function diagnosticsSnapshot(folder: vscode.WorkspaceFolder): RivumiDiagnostic[]
   return items;
 }
 
-function openFilesSnapshot(folder: vscode.WorkspaceFolder): RivumiOpenFile[] {
+function openFilesSnapshot(folder: vscode.WorkspaceFolder): looplaneOpenFile[] {
   const active = vscode.window.activeTextEditor?.document.uri.toString();
   return vscode.window.visibleTextEditors
     .filter((editor) => withinFolder(folder, editor.document.uri))
@@ -134,23 +134,23 @@ function diagnosticCode(code: vscode.Diagnostic["code"]): string | number | unde
   return undefined;
 }
 
-function position(value: vscode.Position): RivumiPosition {
+function position(value: vscode.Position): looplanePosition {
   return { line: value.line, character: value.character };
 }
 
-function range(value: vscode.Range): RivumiRange {
+function range(value: vscode.Range): looplaneRange {
   return { start: position(value.start), end: position(value.end) };
 }
 
 function enabled(): boolean {
   return vscode.workspace
-    .getConfiguration("rivumi")
+    .getConfiguration("looplane")
     .get<boolean>("ideContext.enabled", true);
 }
 
 function webSocketUrl(): string {
   return vscode.workspace
-    .getConfiguration("rivumi")
+    .getConfiguration("looplane")
     .get<string>("ideContext.webSocketUrl", "")
     .trim();
 }
@@ -170,8 +170,8 @@ async function atomicWriteJson(file: string, value: unknown): Promise<void> {
 }
 
 async function pushIdeContextToWebSocket(
-  diagnostics: { diagnostics: RivumiDiagnostic[] },
-  openFiles: { files: RivumiOpenFile[] },
+  diagnostics: { diagnostics: looplaneDiagnostic[] },
+  openFiles: { files: looplaneOpenFile[] },
 ): Promise<void> {
   const url = webSocketUrl();
   if (!url) {

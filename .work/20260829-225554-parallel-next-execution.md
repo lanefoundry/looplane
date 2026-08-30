@@ -13,13 +13,13 @@ Source: follow-up after A2 visibility, B9 context pressure reminder, and B4 repl
 
 - Dirty worktree is expected; do not revert unrelated changes.
 - Keep write scopes disjoint:
-  - B4 owns `src/rivumi/cli.py`, `src/rivumi/session_replay.py`, and CLI/replay tests.
+  - B4 owns `src/looplane/cli.py`, `src/looplane/session_replay.py`, and CLI/replay tests.
   - A2 owns policy/config modules and tests; avoid `loop.py` unless required.
   - B9 owns `runtime_semantics.py`, `prompts.py`, `loop.py`, and focused tests.
 
 ## Results
 
-- B4 added `rivumi sessions --replay <run-id-or-prefix>` with deterministic reducer output,
+- B4 added `looplane sessions --replay <run-id-or-prefix>` with deterministic reducer output,
   invalid-log rejection, and `--show` mutual exclusion.
 - A2 added `AllowRule`, `PermissionRuleSet`, `merge_permission_rule_sources()`, config-backed
   `allow_rules`, and deny/critical-floor-before-allow tests.

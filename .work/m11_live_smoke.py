@@ -12,9 +12,7 @@ from coding_agent.conversation_runtime import ApprovalRequestedEvent, TurnComple
 
 async def main() -> None:
     source = (
-        Path(sys.argv[1]).resolve()
-        if len(sys.argv) > 1
-        else Path(__file__).resolve().parents[1]
+        Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
     )
     session = IsolatedCodexConversation(source)
     await session.start()
@@ -30,9 +28,7 @@ async def main() -> None:
             if event.event_type == "text_delta":
                 text.append(event.text)
             elif isinstance(event, ApprovalRequestedEvent):
-                await session.respond_approval(
-                    event.approval.request_id, ApprovalDecision.DENY
-                )
+                await session.respond_approval(event.approval.request_id, ApprovalDecision.DENY)
             elif isinstance(event, TurnCompletedEvent):
                 terminal = event
                 break

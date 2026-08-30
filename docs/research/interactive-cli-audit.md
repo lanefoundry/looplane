@@ -142,6 +142,7 @@ class ToolEffect(StrEnum):
     MODIFY = "modify"
     EXECUTE = "execute"
 
+
 class ApprovalRequest(ContractModel):
     request_id: str
     run_id: str
@@ -151,6 +152,7 @@ class ApprovalRequest(ContractModel):
     command: VerificationCommand | None
     reason: Literal["model_tool", "final_verification"]
     preview: str
+
 
 class ApprovalDecision(StrEnum):
     ALLOW_ONCE = "allow_once"
@@ -191,7 +193,7 @@ Headless `run` uses a non-prompting policy:
 Keep `RunEvent` and `EventWriter`, but inject a sink into the runner:
 
 ```python
-JsonlEventSink(path)                 # wraps current EventWriter
+JsonlEventSink(path)  # wraps current EventWriter
 ConsoleEventSink(renderer, stream)  # interactive, stderr by default
 CompositeEventSink((jsonl, console))
 ```

@@ -4,13 +4,13 @@
 
 Document the exact Claude Code flow for interrupting a turn, rewinding to a prior submitted prompt,
 restoring that prompt into the composer, editing it, and resubmitting. Separate prompt history recall,
-conversation rewind, and code rollback, then map the safe Rivumi implementation boundary.
+conversation rewind, and code rollback, then map the safe looplane implementation boundary.
 
 ## Tasks
 
 - [x] Inspect installed Claude Code version and local reference evidence.
 - [x] Verify current official interactive-mode and checkpointing documentation via Groundlane.
-- [x] Audit Rivumi storage/runtime gaps and cancellation semantics.
+- [x] Audit looplane storage/runtime gaps and cancellation semantics.
 - [x] Produce a concrete interaction contract and recommended implementation sequence.
 
 ## Status
@@ -30,17 +30,17 @@ Complete. No product code was changed during this audit.
 - Code restoration is independent from conversation restoration and is offered only when tracked file
   history exists. Bash/manual changes are not covered.
 
-## Rivumi gaps
+## looplane gaps
 
-- Idle `Esc` exits the app (`src/rivumi/tui.py:1151-1161`), so it cannot open rewind.
-- `Ctrl+C` exits immediately when idle (`src/rivumi/tui.py:3002-3021`), unlike Claude Code's
+- Idle `Esc` exits the app (`src/looplane/tui.py:1151-1161`), so it cannot open rewind.
+- `Ctrl+C` exits immediately when idle (`src/looplane/tui.py:3002-3021`), unlike Claude Code's
   clear-then-double-press exit behavior.
-- `_prompt_history` is process-local text recall only (`src/rivumi/tui.py:1326-1328`,
+- `_prompt_history` is process-local text recall only (`src/looplane/tui.py:1326-1328`,
   `1689-1703`); it cannot fork or truncate a persisted conversation.
 - The append-only conversation schema has no rewind/branch marker and `completed_turns()` replays all
-  completed turns (`src/rivumi/conversation.py:46-54`, `765-815`).
+  completed turns (`src/looplane/conversation.py:46-54`, `765-815`).
 - The disposable conversation workspace has one committed-HEAD base and no per-prompt file checkpoint
-  API (`src/rivumi/conversation_workspace.py:33-89`).
+  API (`src/looplane/conversation_workspace.py:33-89`).
 
 ## Recommended implementation contract
 

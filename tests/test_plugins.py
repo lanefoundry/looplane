@@ -5,13 +5,13 @@ import sys
 
 import pytest
 
-from rivumi.hooks import load_project_hook_config
-from rivumi.plugins import PluginError, install_project_plugin_manifest, load_project_plugins
-from rivumi.skills import load_project_skills
+from looplane.hooks import load_project_hook_config
+from looplane.plugins import PluginError, install_project_plugin_manifest, load_project_plugins
+from looplane.skills import load_project_skills
 
 
 def test_project_plugin_manifest_packages_skills_and_hooks(tmp_path) -> None:
-    plugins = tmp_path / ".rivumi" / "plugins"
+    plugins = tmp_path / ".looplane" / "plugins"
     plugins.mkdir(parents=True)
     (plugins / "review.md").write_text(
         "---\nname: review\ndescription: Packaged review\n---\nCheck packaged risks.",
@@ -24,10 +24,10 @@ def test_project_plugin_manifest_packages_skills_and_hooks(tmp_path) -> None:
                 "description": "Local plugin package",
                 "discovery": {
                     "keywords": ["review", "risk"],
-                    "homepage": "https://example.com/rivumi/review",
-                    "repository": "https://example.com/rivumi/review.git",
+                    "homepage": "https://example.com/looplane/review",
+                    "repository": "https://example.com/looplane/review.git",
                     "license": "MIT",
-                    "author": "Rivumi",
+                    "author": "looplane",
                 },
                 "skills": [{"path": "review.md"}],
                 "hooks": {
@@ -49,10 +49,10 @@ def test_project_plugin_manifest_packages_skills_and_hooks(tmp_path) -> None:
 
     assert loaded[0].name == "local"
     assert loaded[0].discovery.keywords == ("review", "risk")
-    assert loaded[0].discovery.homepage == "https://example.com/rivumi/review"
-    assert loaded[0].discovery.repository == "https://example.com/rivumi/review.git"
+    assert loaded[0].discovery.homepage == "https://example.com/looplane/review"
+    assert loaded[0].discovery.repository == "https://example.com/looplane/review.git"
     assert loaded[0].discovery.license == "MIT"
-    assert loaded[0].discovery.author == "Rivumi"
+    assert loaded[0].discovery.author == "looplane"
     assert skills[0].name == "local.review"
     assert "Check packaged risks." in skills[0].body
     assert hooks.pre_tool_use[0].command == (sys.executable, "hook.py")
@@ -60,7 +60,7 @@ def test_project_plugin_manifest_packages_skills_and_hooks(tmp_path) -> None:
 
 
 def test_project_plugin_rejects_skill_path_escape(tmp_path) -> None:
-    plugins = tmp_path / ".rivumi" / "plugins"
+    plugins = tmp_path / ".looplane" / "plugins"
     plugins.mkdir(parents=True)
     (plugins / "bad.json").write_text(
         json.dumps({"name": "bad", "skills": [{"path": "../outside.md"}]}),
@@ -72,7 +72,7 @@ def test_project_plugin_rejects_skill_path_escape(tmp_path) -> None:
 
 
 def test_project_plugin_rejects_unsafe_discovery_metadata(tmp_path) -> None:
-    plugins = tmp_path / ".rivumi" / "plugins"
+    plugins = tmp_path / ".looplane" / "plugins"
     plugins.mkdir(parents=True)
     (plugins / "bad.json").write_text(
         json.dumps(
@@ -121,17 +121,17 @@ def test_install_project_plugin_manifest_copies_local_package(tmp_path) -> None:
 
     assert plugin.name == "review-pack"
     assert plugin.discovery.homepage == "https://example.com/review-pack"
-    assert (project / ".rivumi" / "plugins" / "review-pack.json").is_file()
+    assert (project / ".looplane" / "plugins" / "review-pack.json").is_file()
     manifest_payload = json.loads(
-        (project / ".rivumi" / "plugins" / "review-pack.json").read_text(
-            encoding="utf-8"
-        )
+        (project / ".looplane" / "plugins" / "review-pack.json").read_text(encoding="utf-8")
     )
     assert manifest_payload["discovery"]["keywords"] == ["review"]
     assert manifest_payload["discovery"]["license"] == "Apache-2.0"
-    assert (project / ".rivumi" / "plugins" / "review.md").read_text(
-        encoding="utf-8"
-    ).endswith("Installed skill body.")
+    assert (
+        (project / ".looplane" / "plugins" / "review.md")
+        .read_text(encoding="utf-8")
+        .endswith("Installed skill body.")
+    )
     loaded_skills = load_project_skills(project)
     assert loaded_skills[0].name == "review-pack.review"
 

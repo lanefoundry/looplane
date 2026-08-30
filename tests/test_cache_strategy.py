@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rivumi.cache_strategy import (
+from looplane.cache_strategy import (
     CacheAwarePromptOrderingMode,
     ProviderCacheTrace,
     anthropic_system_with_cache_control,
@@ -11,11 +11,11 @@ from rivumi.cache_strategy import (
     provider_cache_mapping,
     provider_cache_trace,
 )
-from rivumi.contracts import Message, ToolDefinition
-from rivumi.prompts import PromptSection, render_prompt_sections
+from looplane.contracts import Message, ToolDefinition
+from looplane.prompts import PromptSection, render_prompt_sections
 
 
-def test_prompt_sections_from_rendered_parses_rivumi_boundaries() -> None:
+def test_prompt_sections_from_rendered_parses_looplane_boundaries() -> None:
     prompt = render_prompt_sections(
         (
             PromptSection("core", "Stable rules", cache_stable=True),
@@ -93,7 +93,7 @@ def test_apply_provider_cache_defaults_preserves_existing_openai_hint() -> None:
         request,
         (Message(role="system", content="Stable rules"),),
         (),
-        namespace="rivumi-openai",
+        namespace="looplane-openai",
     )
 
     assert updated["extra_body"] == {"prompt_cache_key": "caller:key", "think": False}
@@ -108,10 +108,10 @@ def test_apply_provider_cache_defaults_adds_responses_hint() -> None:
         request,
         (Message(role="system", content="Stable rules"),),
         (),
-        namespace="rivumi-responses",
+        namespace="looplane-responses",
     )
 
-    assert updated["prompt_cache_key"].startswith("rivumi-responses:")
+    assert updated["prompt_cache_key"].startswith("looplane-responses:")
     assert "prompt_cache_key" not in request
 
 
@@ -128,7 +128,7 @@ def test_apply_provider_cache_defaults_adds_anthropic_cache_control() -> None:
         {"system": system},
         (Message(role="system", content=system),),
         (),
-        namespace="rivumi-anthropic",
+        namespace="looplane-anthropic",
     )
 
     assert updated["system"][0]["cache_control"] == {"type": "ephemeral"}
@@ -138,13 +138,13 @@ def test_provider_cache_trace_validates_openai_compatible_request_metadata() -> 
     trace = provider_cache_trace(
         "openai-compatible",
         {
-            "extra_body": {"prompt_cache_key": "rivumi-openai:abc"},
+            "extra_body": {"prompt_cache_key": "looplane-openai:abc"},
             "tools": [{"type": "function", "function": {"name": "read_file"}}],
         },
     )
 
     assert trace.cache_ready is True
-    assert trace.prompt_cache_key == "rivumi-openai:abc"
+    assert trace.prompt_cache_key == "looplane-openai:abc"
     assert trace.tool_schema_fingerprint is not None
     assert trace.warnings == ()
 
@@ -153,13 +153,13 @@ def test_provider_cache_trace_validates_responses_request_metadata() -> None:
     trace = provider_cache_trace(
         "openai-responses",
         {
-            "prompt_cache_key": "rivumi-responses:abc",
+            "prompt_cache_key": "looplane-responses:abc",
             "tools": [{"type": "function", "name": "read_file"}],
         },
     )
 
     assert trace.cache_ready is True
-    assert trace.prompt_cache_key == "rivumi-responses:abc"
+    assert trace.prompt_cache_key == "looplane-responses:abc"
     assert trace.tool_schema_fingerprint is not None
 
 
@@ -212,7 +212,7 @@ def test_cache_aware_prompt_ordering_can_be_disabled_by_call_site() -> None:
     )
     trace = ProviderCacheTrace(
         provider="openai-responses",
-        prompt_cache_key="rivumi-responses:abc",
+        prompt_cache_key="looplane-responses:abc",
         tool_schema_fingerprint="tools",
         cache_control_blocks=0,
     )
@@ -253,7 +253,7 @@ def test_cache_aware_prompt_ordering_moves_stable_sections_to_prefix() -> None:
     )
     trace = ProviderCacheTrace(
         provider="openai-responses",
-        prompt_cache_key="rivumi-responses:abc",
+        prompt_cache_key="looplane-responses:abc",
         tool_schema_fingerprint="tools",
         cache_control_blocks=0,
     )

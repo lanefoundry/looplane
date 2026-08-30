@@ -28,7 +28,7 @@ print(json.dumps({
 PY
 )"
 
-uv run python src/rivumi/landlock_run.py --policy-json "$policy" -- \
+uv run python src/looplane/landlock_run.py --policy-json "$policy" -- \
   python - "$task_home" <<'PY'
 from pathlib import Path
 import sys
@@ -37,7 +37,7 @@ Path("input.txt").read_text()
 Path(sys.argv[1], "ok.txt").write_text("ok")
 PY
 
-if uv run python src/rivumi/landlock_run.py --policy-json "$policy" -- \
+if uv run python src/looplane/landlock_run.py --policy-json "$policy" -- \
   python - "$outside/should-not-exist" <<'PY'
 from pathlib import Path
 import sys

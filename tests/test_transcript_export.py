@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rivumi.transcript_export import (
+from looplane.transcript_export import (
     MAX_EXPORT_CHARS,
     TranscriptReducer,
 )
@@ -17,7 +17,7 @@ def test_reducer_skips_empty_rows_and_preserves_order() -> None:
 
     exported = reducer.render(conversation_id="abc", resume_command="/resume abc")
     lines = exported.splitlines()
-    assert lines[0] == "Rivumi session · conversation abc"
+    assert lines[0] == "looplane session · conversation abc"
     assert lines[1] == "Resume with: /resume abc"
     assert "You › first question" in lines
     assert "Assistant › final answer" in lines

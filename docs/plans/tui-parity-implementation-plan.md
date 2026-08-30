@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Make Rivumi's conversation surface feel like a complete coding-agent REPL: discoverable slash
+Make looplane's conversation surface feel like a complete coding-agent REPL: discoverable slash
 commands, a multiline composer usable during work, semantic tool/diff rendering, collapsible noise,
 and predictable scroll-follow behavior. Preserve approval and isolated-workspace safeguards.
 

@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from rivumi.context_providers import (
+from looplane.context_providers import (
     ContextProviderCommand,
     ContextProviderConfig,
     ContextProviderError,
@@ -15,7 +15,7 @@ from rivumi.context_providers import (
 
 
 def test_load_project_context_provider_config_is_strict(tmp_path) -> None:
-    directory = tmp_path / ".rivumi"
+    directory = tmp_path / ".looplane"
     directory.mkdir()
     (directory / "context-providers.json").write_text(
         json.dumps(

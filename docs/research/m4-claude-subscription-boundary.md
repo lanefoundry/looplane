@@ -72,6 +72,7 @@ Therefore PCA should not add `ANTHROPIC_OAUTH_TOKEN`, a `login with Claude` comm
 class ModelProvider(Protocol):
     async def complete(self, request: ModelRequest) -> ModelResponse: ...
 
+
 class AnthropicApiProvider(ModelProvider):
     """Anthropic Messages API using a commercial API credential."""
 ```

@@ -7,7 +7,7 @@ keyboard-first inline transcript selectors matching Claude Code's interaction pa
 
 ## Tasks
 
-- [x] Audit current Rivumi option-control entry points and Claude Code reference components.
+- [x] Audit current looplane option-control entry points and Claude Code reference components.
 - [x] Define a reusable inline selector contract and narrow-terminal layout.
 - [x] Implement model/runtime and permissions selectors without unrelated TUI chrome.
 - [x] Add focused keyboard, cancellation, selection, and viewport tests.
@@ -41,7 +41,7 @@ Complete.
 
 - `uv run pytest -q`: passed.
 - `uv run pytest -q tests/test_tui.py`: 54 passed.
-- `uv run ruff check src/rivumi/tui.py tests/test_tui.py`: passed.
-- `uv run ruff format src/rivumi/tui.py tests/test_tui.py`: no changes after formatting.
+- `uv run ruff check src/looplane/tui.py tests/test_tui.py`: passed.
+- `uv run ruff format src/looplane/tui.py tests/test_tui.py`: no changes after formatting.
 - Repository-wide `ruff format --check .` remains red on 24 unrelated pre-existing files; the two
   touched product/test files pass their focused format check.

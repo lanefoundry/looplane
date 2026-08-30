@@ -2,7 +2,7 @@
 
 ## Subject and job
 
-Rivumi is a full-screen coding-agent terminal for developers. Its single layout job is to keep the
+looplane is a full-screen coding-agent terminal for developers. Its single layout job is to keep the
 conversation readable while the next-input composer remains predictably available at the bottom.
 
 ## Design plan

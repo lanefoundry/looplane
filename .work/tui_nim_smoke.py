@@ -1,4 +1,4 @@
-"""One-off live smoke: drive the real RivumiApp (Textual) against nvidia-nim.
+"""One-off live smoke: drive the real looplaneApp (Textual) against nvidia-nim.
 
 Usage: uv run python .work/tui_nim_smoke.py
 """
@@ -15,18 +15,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import rivumi.runtime_registry as runtime_registry  # noqa: E402
-from rivumi.cli import (  # noqa: E402
+import looplane.runtime_registry as runtime_registry  # noqa: E402
+from looplane.cli import (  # noqa: E402
     DEFAULT_RUN_ROOT,
     ONBOARDING_PROVIDERS,
     _credential_hint,
     _model_from_env,
 )
-from rivumi.cli_config import CliConfig  # noqa: E402
-from rivumi.contracts import Limits, TaskContract, VerificationCommand  # noqa: E402
-from rivumi.conversation import ConversationStore  # noqa: E402
-from rivumi.loop import AgentRunner  # noqa: E402
-from rivumi.tui import InlineApprovalBlock, RivumiApp  # noqa: E402
+from looplane.cli_config import CliConfig  # noqa: E402
+from looplane.contracts import Limits, TaskContract, VerificationCommand  # noqa: E402
+from looplane.conversation import ConversationStore  # noqa: E402
+from looplane.loop import AgentRunner  # noqa: E402
+from looplane.tui import InlineApprovalBlock, looplaneApp  # noqa: E402
 
 PROVIDER = "nvidia-nim"
 MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
@@ -34,7 +34,7 @@ PROMPT = "嗨"
 
 
 def make_runner(request, approval_policy, event_sink):
-    """Mirror cli.chat make_runner's plain rivumi-agent path."""
+    """Mirror cli.chat make_runner's plain looplane-agent path."""
     adapter = runtime_registry.RUNTIME_REGISTRY.get(request.runtime)
     if adapter is None:
         raise ValueError(f"Unknown runtime: {request.runtime}")
@@ -86,10 +86,10 @@ async def wait_until(app, pilot, pred, timeout: float, interval: float = 0.5) ->
 
 async def main() -> None:
     runs_before = {p.stat().st_mtime for p in DEFAULT_RUN_ROOT.glob("*/events.jsonl")}
-    app = RivumiApp(
+    app = looplaneApp(
         repository=ROOT,
         config=CliConfig(
-            runtime="rivumi-agent",
+            runtime="looplane-agent",
             provider=PROVIDER,
             model=MODEL,
             api_url=None,
@@ -125,9 +125,7 @@ async def main() -> None:
             (ROOT / ".work" / "tui_nim_smoke.svg").write_text(svg, encoding="utf-8")
             screen_text = "(screenshot saved to .work/tui_nim_smoke.svg)"
         else:
-            (ROOT / ".work" / "tui_nim_smoke_screen.txt").write_text(
-                screen_text, encoding="utf-8"
-            )
+            (ROOT / ".work" / "tui_nim_smoke_screen.txt").write_text(screen_text, encoding="utf-8")
 
         result = app._result
         print("=== SCREEN ===", flush=True)

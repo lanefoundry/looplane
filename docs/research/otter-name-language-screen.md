@@ -34,7 +34,7 @@ Ratings are linguistic only: **A** = strongest to carry into collision checks, *
 | **Otriva** | oh-TREE-vah | otter + river echo | Adult and fluid; relation to otter requires explanation | `歐翠瓦` is neutral; no obvious Japanese negative near-sound | **B** |
 | **Pebumi** | peh-BOO-mee | pebble + Japanese *umi* | Cute without being babyish, but pronunciation may split as PEB-you-me | `佩布米` is neutral; Japanese-root blend needs an honest rather than pseudo-Japanese story | **B** |
 | **Rillumi** | ril-OO-mee | rill + Japanese *umi* | Lyrical; “rill” is uncommon vocabulary and may sound fantasy-like | `里露米` is neutral; cross-language blend has the same authenticity caution | **B** |
-| **Rivumi** | riv-OO-mee | river + Japanese *umi* | Smooth but constructed; water link is clear only to English/Japanese bilinguals | `里芙米／里烏米` is neutral; avoid claiming it is a Japanese word | **B** |
+| **looplane** | riv-OO-mee | river + Japanese *umi* | Smooth but constructed; water link is clear only to English/Japanese bilinguals | `里芙米／里烏米` is neutral; avoid claiming it is a Japanese word | **B** |
 | **Tideri** | TIDE-er-ee | tide | Strong water cue; stress and syllable split vary | `泰德里` is neutral; Japanese rendering `タイデリ` does not preserve a native water cue | **B−** |
 | **Covelo** | koh-VEH-lo | cove | Warm and mature; may be heard as “co-velo” | `科維洛` is neutral; weak otter recognition | **B−** |
 | **Lutumi** | loo-TOO-mee | *Lutra* | Soft and memorable | It is already attested as a real personal/place name in South Asia/China; do not market it as a wholly invented exotic name | **C+** |

@@ -3,8 +3,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from rivumi.native_credentials import NATIVE_CREDENTIAL_FIELDS
-from rivumi.provider_verification import (
+from looplane.native_credentials import NATIVE_CREDENTIAL_FIELDS
+from looplane.provider_verification import (
     VerificationResult,
     fetch_models_result,
     verify_native_credential,
@@ -222,14 +222,13 @@ async def test_verify_workers_ai_result_shape_mismatch_degrades_to_empty_models(
     assert result.ok is True
     assert result.models == ()
 
+
 @pytest.mark.asyncio
 async def test_fetch_models_result_reports_models_and_reasons() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": [{"id": "model-a"}]}, request=request)
 
-    result = await fetch_models_result(
-        "deepseek", {"api_key": "sk-test"}, client=_client(handler)
-    )
+    result = await fetch_models_result("deepseek", {"api_key": "sk-test"}, client=_client(handler))
 
     assert result.ok is True
     assert result.models == ("model-a",)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a deterministic Rivumi transcript screenshot for UI review."""
+"""Render a deterministic looplane transcript screenshot for UI review."""
 
 from __future__ import annotations
 
@@ -11,15 +11,15 @@ import tempfile
 from pathlib import Path
 from time import monotonic
 
-from rivumi.approvals import (
+from looplane.approvals import (
     ApprovalDecision,
     ApprovalReason,
     ApprovalRequest,
     ToolEffect,
 )
-from rivumi.cli_config import CliConfig
-from rivumi.contracts import RunResult, RunStatus, ToolCall
-from rivumi.conversation_runtime import (
+from looplane.cli_config import CliConfig
+from looplane.contracts import RunResult, RunStatus, ToolCall
+from looplane.conversation_runtime import (
     ApprovalRequestedEvent,
     RuntimeApprovalKind,
     RuntimeApprovalRequest,
@@ -28,13 +28,13 @@ from rivumi.conversation_runtime import (
     ToolStartedEvent,
     TurnStartedEvent,
 )
-from rivumi.tui import (
+from looplane.tui import (
     ConversationRuntimeEventMessage,
     InlineApprovalBlock,
     MessageComposer,
-    RivumiApp,
     RuntimeLoadingIndicator,
     RuntimeStatus,
+    looplaneApp,
 )
 
 
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--width", type=int, default=120)
     parser.add_argument("--height", type=int, default=36)
-    parser.add_argument("--name", default="rivumi-transcript")
+    parser.add_argument("--name", default="looplane-transcript")
     parser.add_argument(
         "--state",
         choices=(
@@ -88,7 +88,7 @@ async def render(args: argparse.Namespace) -> tuple[Path, Path | None]:
     output_dir = (project_root / args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=project_root,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_args: (ScreenshotRunner(), None),
@@ -221,7 +221,7 @@ async def render(args: argparse.Namespace) -> tuple[Path, Path | None]:
     qlmanage = shutil.which("qlmanage")
     magick = shutil.which("magick")
     if qlmanage is not None:
-        with tempfile.TemporaryDirectory(prefix="rivumi-tui-screenshot-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="looplane-tui-screenshot-") as temporary:
             subprocess.run(
                 [qlmanage, "-t", "-s", "1600", "-o", temporary, str(svg_path)],
                 check=True,

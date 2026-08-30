@@ -6,7 +6,7 @@ Match Claude Code's terminal lifecycle without conflating four different operati
 
 1. interrupting an active turn;
 2. rewinding a conversation;
-3. exiting Rivumi;
+3. exiting looplane;
 4. preserving finalized transcript output in terminal scrollback.
 
 Conversation persistence on disk and visible terminal scrollback are separate guarantees and must be
@@ -14,9 +14,9 @@ tested separately.
 
 ## Current defects
 
-### 1. Second Escape can exit Rivumi
+### 1. Second Escape can exit looplane
 
-`RivumiApp.action_handle_escape()` interrupts while `_agent_running` is true, but its idle fallback
+`looplaneApp.action_handle_escape()` interrupts while `_agent_running` is true, but its idle fallback
 immediately calls `exit()`. If the first Escape finishes cancellation quickly, the second Escape lands
 on the idle fallback and closes the coding agent.
 
@@ -24,16 +24,16 @@ This behavior is currently encoded in TUI tests, so both implementation and test
 
 ### 2. Empty double Escape does not open rewind
 
-Rivumi has prompt-history text recall, but no idle 800 ms double-Escape detector and no durable
+looplane has prompt-history text recall, but no idle 800 ms double-Escape detector and no durable
 conversation rewind/fork workflow. Prompt history must not be presented as conversation rewind.
 
 ### 3. Exit restores an empty primary terminal buffer
 
 The CLI calls `tui_app.run()` with Textual's default `inline=False`. Textual enters DEC alternate
-screen (`1049h`) and leaves it on exit (`1049l`), so everything drawn by Rivumi disappears from the
+screen (`1049h`) and leaves it on exit (`1049l`), so everything drawn by looplane disappears from the
 terminal's main-buffer scrollback.
 
-Conversation events may still exist under `~/.local/state/rivumi/conversations/`; that does not make
+Conversation events may still exist under `~/.local/state/looplane/conversations/`; that does not make
 the transcript visible after exit.
 
 ## Required interaction contract
@@ -47,12 +47,12 @@ the transcript visible after exit.
   rewind when rewindable prompts exist.
 - The Escape used to cancel an active turn must not count as the first press of the later idle
   double-Escape sequence.
-- Idle Escape must never close Rivumi.
+- Idle Escape must never close looplane.
 
 ### Ctrl+C and Ctrl+D
 
 - Active turn: Ctrl+C interrupts the turn.
-- Idle with draft text: first Ctrl+C clears the draft and keeps Rivumi open.
+- Idle with draft text: first Ctrl+C clears the draft and keeps looplane open.
 - Idle with an empty composer: first Ctrl+C shows `Press Ctrl-C again to exit`; the second press within
   800 ms exits.
 - Ctrl+D follows the same double-press exit confirmation when the composer is empty.
@@ -70,7 +70,7 @@ the transcript visible after exit.
 
 ### Preferred first implementation
 
-Keep the full-screen alternate-screen UI while Rivumi is running. After `RivumiApp.run()` returns,
+Keep the full-screen alternate-screen UI while looplane is running. After `looplaneApp.run()` returns,
 render an app-owned, bounded semantic transcript into the primary terminal buffer.
 
 The export must include finalized:
@@ -153,11 +153,11 @@ Treat this as a larger renderer architecture change, not a driver flag.
 
 ## Evidence
 
-- Rivumi launch: `src/rivumi/cli.py` constructs `RivumiApp` and calls `tui_app.run()` with default
+- looplane launch: `src/looplane/cli.py` constructs `looplaneApp` and calls `tui_app.run()` with default
   driver settings.
-- Escape behavior: `src/rivumi/tui.py` currently exits from the idle branch of
+- Escape behavior: `src/looplane/tui.py` currently exits from the idle branch of
   `action_handle_escape()`.
-- Durable storage: `src/rivumi/conversation.py` stores conversation artifacts under the XDG state
+- Durable storage: `src/looplane/conversation.py` stores conversation artifacts under the XDG state
   directory by default.
 - Existing headless Textual tests cannot observe terminal escape sequences; a real PTY test is
   required.
@@ -166,7 +166,7 @@ Treat this as a larger renderer architecture change, not a driver flag.
 
 Implemented (2026-08-23):
 
-- Input state machine in `RivumiApp`: Escape never exits; idle Escape arms an
+- Input state machine in `looplaneApp`: Escape never exits; idle Escape arms an
   800 ms double-press rewind detector; Ctrl+C/Ctrl+D/Ctrl+Q require a confirmed
   second press when idle and clear a draft first. Detectors reset across
   active-turn cancellation, foreground dialogs, and turn boundaries.
@@ -175,7 +175,7 @@ Implemented (2026-08-23):
   the TUI opens a keyboard-first selector via `/rewind` or idle double-Escape,
   restores the prompt into the composer without submitting, and recreates the
   provider session from the branch prefix (`_native_session_has_context=False`).
-- `rivumi/transcript_export.py` adds the app-owned semantic transcript reducer.
+- `looplane/transcript_export.py` adds the app-owned semantic transcript reducer.
   It is fed by `_write_turn`, `_write_timeline`, runtime tool/turn-completion
   handlers, external message events, and cancelled-turn notices, resets with
   `_reset_transcript`, snapshots at `exit()` (`final_transcript_text`), and the

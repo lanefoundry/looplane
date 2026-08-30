@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+workspace=/workspace
+token_file=/workspace/.looplane-run-token
+event_token_file=/workspace/.looplane-event-token
+
+test "$(id -u)" -eq 0
+test -d "$workspace/source"
+test -f "$workspace/request.json"
+test -f "$token_file"
+test ! -L "$token_file"
+test -f "$event_token_file"
+test ! -L "$event_token_file"
+
+chown -R looplane:looplane "$workspace"
+chmod 0700 "$workspace"
+chmod 0600 "$token_file"
+chmod 0600 "$event_token_file"
+
+exec setpriv \
+  --reuid=looplane \
+  --regid=looplane \
+  --init-groups \
+  --no-new-privs \
+  env \
+    HOME=/home/looplane \
+    PATH=/usr/local/bin:/usr/bin:/bin \
+    LOOPLANE_MODEL_ID="$LOOPLANE_MODEL_ID" \
+    LOOPLANE_MODEL_GATEWAY_URL="$LOOPLANE_MODEL_GATEWAY_URL" \
+    LOOPLANE_MAX_BUNDLE_BYTES="$LOOPLANE_MAX_BUNDLE_BYTES" \
+    python3 -m looplane.sandbox_entry /workspace/request.json

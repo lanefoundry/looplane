@@ -1,6 +1,6 @@
 # M11: Claude Code-style conversation TUI
 
-- [x] Add a strict Rivumi-owned conversation store outside agent run artifacts.
+- [x] Add a strict looplane-owned conversation store outside agent run artifacts.
 - [x] Render durable You/Assistant turns without raw protocol or duplicate summaries.
 - [x] Deliver normalized external events incrementally with bounded subprocess handling.
 - [x] Add `/new`, `/resume`, `/clear`, `/help`, and `/status` conversation commands.

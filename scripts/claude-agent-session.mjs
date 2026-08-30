@@ -86,8 +86,8 @@ let emittedRuntimeModelTurn = null;
 let emittedRuntimeModel = null;
 const input = new AsyncInput();
 const abortController = new AbortController();
-const actions = new Map(); // vendor toolUseID -> Rivumi-local action record
-const pendingApprovals = new Map(); // Rivumi request ID -> resolver
+const actions = new Map(); // vendor toolUseID -> looplane-local action record
+const pendingApprovals = new Map(); // looplane request ID -> resolver
 
 function classify(toolName, toolInput) {
   if (!KNOWN_TOOLS.has(toolName) || toolName.startsWith("mcp__") || toolName === "Agent") {
@@ -370,7 +370,7 @@ async function canUseTool(toolName, toolInput, options) {
   } catch (error) {
     return {
       behavior: "deny",
-      message: bounded(error?.message || "Rivumi denied an unknown or forbidden tool"),
+      message: bounded(error?.message || "looplane denied an unknown or forbidden tool"),
       interrupt: true,
     };
   }

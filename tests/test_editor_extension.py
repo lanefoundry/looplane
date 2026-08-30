@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 
-def test_vscode_extension_manifest_packages_rivumi_ide_bridge() -> None:
+def test_vscode_extension_manifest_packages_looplane_ide_bridge() -> None:
     root = Path(__file__).resolve().parents[1] / "editors" / "vscode"
     manifest = json.loads((root / "package.json").read_text(encoding="utf-8"))
     lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
@@ -12,24 +12,23 @@ def test_vscode_extension_manifest_packages_rivumi_ide_bridge() -> None:
     source = (root / "src" / "extension.ts").read_text(encoding="utf-8")
     vscodeignore = (root / ".vscodeignore").read_text(encoding="utf-8").splitlines()
 
-    assert manifest["name"] == "rivumi-vscode"
+    assert manifest["name"] == "looplane-vscode"
     assert manifest["main"] == "./dist/extension.js"
     assert manifest["repository"] == {
         "type": "git",
-        "url": "https://github.com/vincentxuu/rivumi.git",
+        "url": "https://github.com/vincentxuu/looplane.git",
         "directory": "editors/vscode",
     }
     assert "onStartupFinished" in manifest["activationEvents"]
-    assert "onCommand:rivumi.pushIdeContext" in manifest["activationEvents"]
+    assert "onCommand:looplane.pushIdeContext" in manifest["activationEvents"]
     assert manifest["scripts"]["compile"] == "tsc -p ./"
     assert manifest["scripts"]["package"] == "vsce package"
-    assert {
-        command["command"] for command in manifest["contributes"]["commands"]
-    } == {"rivumi.pushIdeContext"}
-    assert "rivumi.ideContext.enabled" in manifest["contributes"]["configuration"]["properties"]
+    assert {command["command"] for command in manifest["contributes"]["commands"]} == {
+        "looplane.pushIdeContext"
+    }
+    assert "looplane.ideContext.enabled" in manifest["contributes"]["configuration"]["properties"]
     assert (
-        "rivumi.ideContext.webSocketUrl"
-        in manifest["contributes"]["configuration"]["properties"]
+        "looplane.ideContext.webSocketUrl" in manifest["contributes"]["configuration"]["properties"]
     )
     assert "DOM" in tsconfig["compilerOptions"]["lib"]
     assert "@types/vscode" in manifest["devDependencies"]
@@ -41,7 +40,7 @@ def test_vscode_extension_manifest_packages_rivumi_ide_bridge() -> None:
     assert ".gitignore" in vscodeignore
     assert "*.vsix" in vscodeignore
 
-    assert 'path.join(".rivumi", "ide")' in source
+    assert 'path.join(".looplane", "ide")' in source
     assert '"diagnostics.json"' in source
     assert '"open-files.json"' in source
     assert "vscode.languages.onDidChangeDiagnostics" in source

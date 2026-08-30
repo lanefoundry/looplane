@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import rivumi.sdk as sdk
+import looplane.sdk as sdk
 
 
 def test_sdk_facade_exports_stable_replay_and_role_helpers() -> None:
@@ -46,9 +46,7 @@ def test_sdk_facade_exports_stable_replay_and_role_helpers() -> None:
     assert sdk.render_prompt_sections((sdk.PromptSection("core", "rules"),))
     assert sdk.A10_SUBAGENT_PLANNER_POLICY_VERSION == "a10-subagent-planner-policy-v1"
     assert "proposed_transaction" in sdk.render_subagent_planner_policy()
-    assert sdk.render_tool_prompt_context(
-        (sdk.ToolDefinition(name="read_file", read_only=True),)
-    )
+    assert sdk.render_tool_prompt_context((sdk.ToolDefinition(name="read_file", read_only=True),))
     assert sdk.render_workspace_prompt_context(
         base_sha="a" * 40,
         allowed_paths=("src/**",),
@@ -68,9 +66,12 @@ def test_sdk_facade_exports_stable_replay_and_role_helpers() -> None:
     assert sdk.ProjectPlugin is not None
     assert sdk.BackendTurnLimiter(max_active_turns=1).max_active_turns == 1
     assert sdk.SubagentRole.REVIEWER.value == "reviewer"
-    assert sdk.normalize_subagent_schedule(
-        [{"id": "scout", "role": "scout", "instruction": "Inspect."}]
-    )[0].wave == 0
+    assert (
+        sdk.normalize_subagent_schedule(
+            [{"id": "scout", "role": "scout", "instruction": "Inspect."}]
+        )[0].wave
+        == 0
+    )
     assert sdk.ScheduledSubagent is not None
     assert sdk.SubagentScheduleTraceAnalysis is not None
     assert callable(sdk.analyze_subagent_schedule_events)

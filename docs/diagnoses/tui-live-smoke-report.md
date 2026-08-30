@@ -4,9 +4,9 @@
 
 ## 做法
 
-採用建議做法 1：Textual `App.run_test()` pilot 以程式驅動**真實的 `RivumiApp`**（`src/rivumi/tui.py`），在輸入框輸入「嗨」並按 Enter 送出。`make_runner` 完整比照 `cli.py chat` 的 rivumi-agent 路徑（`_credential_hint` 檢查 native credentials → `_model_from_env` 建構 `OpenAICompatibleModel` → 真實 `AgentRunner`），API key 取自 `~/.local/state/rivumi/auth/native-nvidia-nim.json`，base URL 用 provider_catalog 內建之 `https://integrate.api.nvidia.com/v1`。
+採用建議做法 1：Textual `App.run_test()` pilot 以程式驅動**真實的 `looplaneApp`**（`src/looplane/tui.py`），在輸入框輸入「嗨」並按 Enter 送出。`make_runner` 完整比照 `cli.py chat` 的 looplane-agent 路徑（`_credential_hint` 檢查 native credentials → `_model_from_env` 建構 `OpenAICompatibleModel` → 真實 `AgentRunner`），API key 取自 `~/.local/state/looplane/auth/native-nvidia-nim.json`，base URL 用 provider_catalog 內建之 `https://integrate.api.nvidia.com/v1`。
 
-註：`~/.config/rivumi/config.json` 目前實際是 `provider=anthropic`，因此腳本以 `CliConfig(provider="nvidia-nim", model="nvidia/nemotron-3-ultra-550b-a55b")` 覆寫（等同 CLI 帶 `--provider nvidia-nim --model …`）。未動 src/ 任何程式碼。
+註：`~/.config/looplane/config.json` 目前實際是 `provider=anthropic`，因此腳本以 `CliConfig(provider="nvidia-nim", model="nvidia/nemotron-3-ultra-550b-a55b")` 覆寫（等同 CLI 帶 `--provider nvidia-nim --model …`）。未動 src/ 任何程式碼。
 
 一次性腳本保留在 `.work/`：
 - `tui_nim_smoke.py` — 真 TUI 對真 NIM 送「嗨」
@@ -66,7 +66,7 @@ result.json：
 ## TUI 畫面文字（由截圖 SVG `.work/tui_nim_smoke.svg` 轉錄，Run 1）
 
 ```
-Rivumi · nvidia-nim · nvidia/nemotron-3-ultra-550b-a55b · rivumi
+looplane · nvidia-nim · nvidia/nemotron-3-ultra-550b-a55b · looplane
 ──────────────────────────────────────────────────────────────
 █嗨
 ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
@@ -86,7 +86,7 @@ Enter send · Shift+Enter newline · / commands · Ctrl+L model
 
 | 標準 | 結果 |
 |---|---|
-| TUI 對 nvidia-nim 送訊並收到模型回覆 | ✅ Run 1（pilot 驅動真 RivumiApp，畫面見上） |
+| TUI 對 nvidia-nim 送訊並收到模型回覆 | ✅ Run 1（pilot 驅動真 looplaneApp，畫面見上） |
 | events.jsonl 列出 model.* 序列 | ✅ Run 1 全序列如上 |
 | model.retry 證明 retry 生效 | ✅ Run 2（2 次 retry + backoff 後成功） |
 | 失敗時 result.json error 人類可讀 | ✅ Run 3 |

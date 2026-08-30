@@ -1,7 +1,7 @@
 # Dangerous Mode 與禁止操作（Deny）機制研究
 
-> 日期：2026-08-25　主題：rivumi 增加 dangerous 模式時如何保留「禁止操作」能力
-> 後續：已實作（`src/rivumi/permissions.py`）；AI classifier「auto」模式設計見 `docs/plans/auto-classifier-mode-plan.md`；完整 mode 光譜比較見 `docs/research/approval-mode-comparison.md`
+> 日期：2026-08-25　主題：looplane 增加 dangerous 模式時如何保留「禁止操作」能力
+> 後續：已實作（`src/looplane/permissions.py`）；AI classifier「auto」模式設計見 `docs/plans/auto-classifier-mode-plan.md`；完整 mode 光譜比較見 `docs/research/approval-mode-comparison.md`
 
 ## 四個參考專案的做法
 
@@ -9,7 +9,7 @@
 - 工具永遠直接執行，無任何 approval gate（grep `yolo|dangerous|skipPermissions` 為 0 命中）
 - 唯一防線是 project trust：headless / 使用者取消一律 fail-closed 回 false（`pi-mono/packages/coding-agent/src/core/project-trust.ts:86-95`）
 - 唯一 denylist 是精確名稱的 `--exclude-tools`（Set 比對，`core/sdk.ts:258-263`）
-- 啟示：**不採用**——rivumi 需要 per-call 防護
+- 啟示：**不採用**——looplane 需要 per-call 防護
 
 ### 2. oh-my-pi（pi fork）— 三層 approval + deny 壓過 yolo ⭐ 主要參考
 - 旗標：`--auto-approve` / `--yolo`、`--approval-mode always-ask|write|yolo`（`cli/args.ts:279-280`、`commands/launch-help.ts:100-106`）
@@ -73,14 +73,14 @@
 4. **bash 比對必須先切複合命令**，且 allow 語義要比 deny 嚴格
 5. **硬編碼 critical pattern 當最後底線**，連使用者設定都蓋不掉
 
-## rivumi 現況對照
+## looplane 現況對照
 
 已有：
-- `ToolEffect` READ/MODIFY/EXECUTE 三層 tier（`src/rivumi/approvals.py:16-21`）≈ omp 的 tier
+- `ToolEffect` READ/MODIFY/EXECUTE 三層 tier（`src/looplane/approvals.py:16-21`）≈ omp 的 tier
 - `effect_for_tool` 未分類即 raise（fail-closed，`approvals.py:146-152`）
 - `HeadlessApprovalPolicy` 按 tier 決定 allow（`approvals.py:80-93`）——已經是 proto-yolo
 - `TTYApprovalPolicy` session-scoped grants（`approvals.py:96-132`）
-- `SafePathPolicy` 硬擋 .git / traversal / symlink escape（`src/rivumi/policy.py:55-56,101-105`）——路徑維度的硬禁令已存在
+- `SafePathPolicy` 硬擋 .git / traversal / symlink escape（`src/looplane/policy.py:55-56,101-105`）——路徑維度的硬禁令已存在
 - 弱點：prompt 層面的操作禁令（`prompts.py:9`），僅靠模型自律
 
 缺什麼：

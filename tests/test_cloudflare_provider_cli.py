@@ -4,8 +4,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from rivumi import cli
-from rivumi.cloudflare_provider_setup import ProviderSetupError, ProviderSetupResult
+from looplane import cli
+from looplane.cloudflare_provider_setup import ProviderSetupError, ProviderSetupResult
 
 
 def test_cloudflare_provider_apply_wires_one_batch_command(tmp_path: Path, monkeypatch) -> None:
@@ -20,7 +20,7 @@ def test_cloudflare_provider_apply_wires_one_batch_command(tmp_path: Path, monke
         return ProviderSetupResult(catalog_json="{}", profile_count=2, dry_run=False)
 
     monkeypatch.setattr(
-        "rivumi.cloudflare_provider_setup.setup_cloudflare_providers",
+        "looplane.cloudflare_provider_setup.setup_cloudflare_providers",
         fake_setup,
     )
 
@@ -61,7 +61,7 @@ def test_cloudflare_provider_apply_dry_run_and_custom_endpoint_opt_in(
         return ProviderSetupResult(catalog_json="{}", profile_count=1, dry_run=True)
 
     monkeypatch.setattr(
-        "rivumi.cloudflare_provider_setup.setup_cloudflare_providers",
+        "looplane.cloudflare_provider_setup.setup_cloudflare_providers",
         fake_setup,
     )
 
@@ -86,7 +86,7 @@ def test_cloudflare_provider_apply_reports_safe_error(monkeypatch) -> None:
         raise ProviderSetupError("missing provider API key environment variables: GROQ_API_KEY")
 
     monkeypatch.setattr(
-        "rivumi.cloudflare_provider_setup.setup_cloudflare_providers",
+        "looplane.cloudflare_provider_setup.setup_cloudflare_providers",
         fail,
     )
 

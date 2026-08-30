@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.codex_conversation import IsolatedCodexConversation
-from rivumi.conversation_runtime import (
+from looplane.codex_conversation import IsolatedCodexConversation
+from looplane.conversation_runtime import (
     RuntimeToolKind,
     RuntimeToolStatus,
     RuntimeTurnStatus,
@@ -13,7 +13,7 @@ from rivumi.conversation_runtime import (
     ToolStartedEvent,
     TurnCompletedEvent,
 )
-from rivumi.tools import ReviewablePatch
+from looplane.tools import ReviewablePatch
 
 
 class FakeWorkspace:
@@ -87,11 +87,11 @@ async def test_completed_turn_is_audited_against_actual_patch(tmp_path: Path, mo
         ),
     )
     monkeypatch.setattr(
-        "rivumi.codex_conversation.ConversationWorkspace.create",
+        "looplane.codex_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.codex_conversation.CodexAppServerSession",
+        "looplane.codex_conversation.CodexAppServerSession",
         lambda **_kwargs: FakeSession(events),
     )
     host = IsolatedCodexConversation(tmp_path)
@@ -130,11 +130,11 @@ async def test_multi_file_change_accounts_for_every_audited_path(
         TurnCompletedEvent(sequence=2, turn_id="turn", status=RuntimeTurnStatus.COMPLETED),
     )
     monkeypatch.setattr(
-        "rivumi.codex_conversation.ConversationWorkspace.create",
+        "looplane.codex_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.codex_conversation.CodexAppServerSession",
+        "looplane.codex_conversation.CodexAppServerSession",
         lambda **_kwargs: FakeSession(events),
     )
     host = IsolatedCodexConversation(tmp_path)
@@ -171,11 +171,11 @@ async def test_command_workspace_cwd_is_not_treated_as_a_changed_path(
         TurnCompletedEvent(sequence=2, turn_id="turn", status=RuntimeTurnStatus.COMPLETED),
     )
     monkeypatch.setattr(
-        "rivumi.codex_conversation.ConversationWorkspace.create",
+        "looplane.codex_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.codex_conversation.CodexAppServerSession",
+        "looplane.codex_conversation.CodexAppServerSession",
         lambda **_kwargs: FakeSession(events),
     )
     host = IsolatedCodexConversation(tmp_path)
@@ -198,11 +198,11 @@ async def test_unreported_patch_fails_terminal_audit(tmp_path: Path, monkeypatch
         ),
     )
     monkeypatch.setattr(
-        "rivumi.codex_conversation.ConversationWorkspace.create",
+        "looplane.codex_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.codex_conversation.CodexAppServerSession",
+        "looplane.codex_conversation.CodexAppServerSession",
         lambda **_kwargs: FakeSession(events),
     )
     host = IsolatedCodexConversation(tmp_path)
@@ -215,11 +215,11 @@ async def test_unreported_patch_fails_terminal_audit(tmp_path: Path, monkeypatch
 async def test_session_constructor_failure_closes_workspace(tmp_path: Path, monkeypatch) -> None:
     workspace = FakeWorkspace(tmp_path)
     monkeypatch.setattr(
-        "rivumi.codex_conversation.ConversationWorkspace.create",
+        "looplane.codex_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.codex_conversation.CodexAppServerSession",
+        "looplane.codex_conversation.CodexAppServerSession",
         lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad session")),
     )
 

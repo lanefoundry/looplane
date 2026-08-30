@@ -101,7 +101,7 @@ cx   unless-trusted/on-request       →   not-so-yolo      →  yolo(policy=nev
 4. Session 中可切換 mode，且 plan 退出都有正式協議（ExitPlanMode / plan_exit tool），不是靠模型自律
 5. 危險端入口全部有閘門（root 拒絕、條款確認、org kill-switch）
 
-## 三、rivumi 對照
+## 三、looplane 對照
 
 現況：
 - 無 mode enum；`HeadlessApprovalPolicy` 的 tier 開關 ≈ omp 的天花板概念（`approvals.py:80-93`）
@@ -111,7 +111,7 @@ cx   unless-trusted/on-request       →   not-so-yolo      →  yolo(policy=nev
 
 建議 ladder（若要補齊）：
 
-| rivumi mode | 對標 | 語義 |
+| looplane mode | 對標 | 語義 |
 |---|---|---|
 | （現有 default） | CC default | 全部走 policy |
 | `--dangerous`（已做） | CC acceptEdits+ / omp write | read+modify 自動，execute 過閘 |
@@ -120,4 +120,4 @@ cx   unless-trusted/on-request       →   not-so-yolo      →  yolo(policy=nev
 | plan / read-only | CC plan / oc explore agent | 唯讀工具集 + 提示層約束 |
 | headless dontAsk | CC dontAsk / oc auto-reject | 問不了的場合 deny 而非掛住 |
 
-最小改動順序建議：dontAsk 語義最便宜（headless 已接近，只差命名與文件）→ plan/read-only（工具集過濾，rivumi 的 TOOL_EFFECTS 已有分類基礎）→ classifier AUTO（見草案）→ 真 yolo。
+最小改動順序建議：dontAsk 語義最便宜（headless 已接近，只差命名與文件）→ plan/read-only（工具集過濾，looplane 的 TOOL_EFFECTS 已有分類基礎）→ classifier AUTO（見草案）→ 真 yolo。

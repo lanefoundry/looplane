@@ -510,7 +510,7 @@ wheels = [
 ]
 
 [[package]]
-name = "rivumi"
+name = "looplane"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

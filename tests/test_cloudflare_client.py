@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from rivumi.cloudflare_client import CloudflareRunClient, CloudflareRunClientError
+from looplane.cloudflare_client import CloudflareRunClient, CloudflareRunClientError
 
 
 @pytest.mark.asyncio

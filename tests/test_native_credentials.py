@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.native_credentials import (
+from looplane.native_credentials import (
     NATIVE_CREDENTIAL_FIELDS,
     NativeCredentialStore,
     clear_native_credential,
@@ -18,7 +18,7 @@ from rivumi.native_credentials import (
 
 def test_native_credential_path_uses_xdg_state_home(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    expected = tmp_path / "rivumi" / "auth" / "native-anthropic.json"
+    expected = tmp_path / "looplane" / "auth" / "native-anthropic.json"
     assert native_credential_path("anthropic") == expected
 
 

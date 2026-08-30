@@ -9,9 +9,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from rivumi.approvals import ToolEffect, effect_for_tool, effect_for_tool_definition
-from rivumi.contracts import ToolCall, ToolDefinition, VerificationCommand
-from rivumi.mcp_client import (
+from looplane.approvals import ToolEffect, effect_for_tool, effect_for_tool_definition
+from looplane.contracts import ToolCall, ToolDefinition, VerificationCommand
+from looplane.mcp_client import (
     McpError,
     McpOAuthClient,
     McpOAuthCredential,
@@ -22,9 +22,9 @@ from rivumi.mcp_client import (
     mcp_oauth_credential_path,
     parse_mcp_oauth_callback,
 )
-from rivumi.policy import SafePathPolicy
-from rivumi.runtime_registry import RUNTIME_REGISTRY, RuntimeCapability
-from rivumi.tools import ToolExecutor
+from looplane.policy import SafePathPolicy
+from looplane.runtime_registry import RUNTIME_REGISTRY, RuntimeCapability
+from looplane.tools import ToolExecutor
 
 
 def _write_fake_mcp_server(path: Path) -> None:
@@ -209,7 +209,7 @@ def test_mcp_config_loads_allowlisted_http_server(tmp_path: Path) -> None:
                 "mcpServers": {
                     "remote": {
                         "url": "https://mcp.example.test/mcp",
-                        "headers": {"x-client": "rivumi"},
+                        "headers": {"x-client": "looplane"},
                         "bearerTokenEnvVar": "REMOTE_MCP_TOKEN",
                     }
                 }
@@ -222,7 +222,7 @@ def test_mcp_config_loads_allowlisted_http_server(tmp_path: Path) -> None:
 
     assert len(configs) == 1
     assert configs[0].url == "https://mcp.example.test/mcp"
-    assert configs[0].headers == {"x-client": "rivumi"}
+    assert configs[0].headers == {"x-client": "looplane"}
     assert configs[0].bearer_token_env_var == "REMOTE_MCP_TOKEN"
 
 
@@ -238,7 +238,7 @@ def test_mcp_config_loads_authorization_code_oauth_metadata(tmp_path: Path) -> N
                             "issuer": "https://auth.example.test",
                             "authorizationEndpoint": "https://auth.example.test/authorize",
                             "tokenEndpoint": "https://auth.example.test/token",
-                            "clientId": "rivumi",
+                            "clientId": "looplane",
                             "redirectUri": "https://client.example.test/callback",
                             "scopes": ["mcp:tools", "mcp:tools"],
                             "accessTokenEnvVar": "REMOTE_MCP_ACCESS_TOKEN",
@@ -381,7 +381,7 @@ def test_tool_executor_exposes_and_calls_allowlisted_http_mcp_tool(
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(**kwargs)
 
-    monkeypatch.setattr("rivumi.mcp_client.httpx.Client", client_factory)
+    monkeypatch.setattr("looplane.mcp_client.httpx.Client", client_factory)
     monkeypatch.setenv("REMOTE_MCP_TOKEN", "secret-token")
     (tmp_path / ".mcp.json").write_text(
         json.dumps(
@@ -389,7 +389,7 @@ def test_tool_executor_exposes_and_calls_allowlisted_http_mcp_tool(
                 "mcpServers": {
                     "remote": {
                         "url": "https://mcp.example.test/mcp",
-                        "headers": {"x-client": "rivumi"},
+                        "headers": {"x-client": "looplane"},
                         "bearerTokenEnvVar": "REMOTE_MCP_TOKEN",
                     }
                 }
@@ -424,7 +424,7 @@ def test_tool_executor_exposes_and_calls_allowlisted_http_mcp_tool(
         assert requests[1]["session"] == "session-1"
         assert requests[2]["session"] == "session-1"
         assert requests[2]["protocol"] == "2026-07-28"
-        assert requests[2]["client"] == "rivumi"
+        assert requests[2]["client"] == "looplane"
     finally:
         executor.close()
 
@@ -466,7 +466,7 @@ def test_tool_executor_uses_oauth_access_token_for_http_mcp(
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(**kwargs)
 
-    monkeypatch.setattr("rivumi.mcp_client.httpx.Client", client_factory)
+    monkeypatch.setattr("looplane.mcp_client.httpx.Client", client_factory)
     monkeypatch.setenv("REMOTE_MCP_ACCESS_TOKEN", "oauth-access-token")
     (tmp_path / ".mcp.json").write_text(
         json.dumps(
@@ -477,7 +477,7 @@ def test_tool_executor_uses_oauth_access_token_for_http_mcp(
                         "oauth": {
                             "authorizationEndpoint": "https://auth.example.test/authorize",
                             "tokenEndpoint": "https://auth.example.test/token",
-                            "clientId": "rivumi",
+                            "clientId": "looplane",
                             "redirectUri": "https://client.example.test/callback",
                             "accessTokenEnvVar": "REMOTE_MCP_ACCESS_TOKEN",
                         },
@@ -505,7 +505,7 @@ def test_tool_executor_uses_oauth_access_token_for_http_mcp(
         executor.close()
 
 
-def test_http_mcp_oauth_header_uses_rivumi_store_when_env_is_absent(
+def test_http_mcp_oauth_header_uses_looplane_store_when_env_is_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -538,7 +538,7 @@ def test_http_mcp_oauth_header_uses_rivumi_store_when_env_is_absent(
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(**kwargs)
 
-    monkeypatch.setattr("rivumi.mcp_client.httpx.Client", client_factory)
+    monkeypatch.setattr("looplane.mcp_client.httpx.Client", client_factory)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     McpOAuthCredentialStore(mcp_oauth_credential_path("remote")).save(
         McpOAuthCredential(accessToken="stored-access-token")
@@ -552,7 +552,7 @@ def test_http_mcp_oauth_header_uses_rivumi_store_when_env_is_absent(
                         "oauth": {
                             "authorizationEndpoint": "https://auth.example.test/authorize",
                             "tokenEndpoint": "https://auth.example.test/token",
-                            "clientId": "rivumi",
+                            "clientId": "looplane",
                             "redirectUri": "http://localhost:1455/callback",
                             "accessTokenEnvVar": "REMOTE_MCP_ACCESS_TOKEN",
                         },
@@ -595,7 +595,7 @@ def test_mcp_oauth_client_exchanges_authorization_code_and_parses_callback() -> 
     config = NativeMcpOAuthConfig(
         authorizationEndpoint="https://auth.example.test/authorize",
         tokenEndpoint="https://auth.example.test/token",
-        clientId="rivumi",
+        clientId="looplane",
         redirectUri="http://localhost:1455/callback",
         scopes=("mcp:tools",),
         accessTokenEnvVar="REMOTE_MCP_ACCESS_TOKEN",
@@ -628,7 +628,7 @@ def test_mcp_oauth_client_exchanges_authorization_code_and_parses_callback() -> 
 
 
 def test_mcp_oauth_credential_store_round_trips_private_file(tmp_path: Path) -> None:
-    path = tmp_path / "state" / "rivumi" / "auth" / "mcp-remote.json"
+    path = tmp_path / "state" / "looplane" / "auth" / "mcp-remote.json"
     store = McpOAuthCredentialStore(path)
 
     store.save(
@@ -707,11 +707,9 @@ def test_http_mcp_requires_configured_bearer_token(tmp_path: Path) -> None:
 def test_tool_executor_exposes_mcp_resource_and_prompt_read_only_bridges(tmp_path: Path) -> None:
     server = tmp_path / "fake_mcp_server.py"
     _write_fake_mcp_server(server)
-    configs = (
-        load_native_mcp_server_configs(
-            _write_mcp_config(tmp_path, server),
-            allowlist=("local",),
-        )
+    configs = load_native_mcp_server_configs(
+        _write_mcp_config(tmp_path, server),
+        allowlist=("local",),
     )
     executor = ToolExecutor(
         workspace=tmp_path,
@@ -849,5 +847,5 @@ def test_tool_executor_refreshes_mcp_tool_list_and_call_mapping(tmp_path: Path) 
         executor.close()
 
 
-def test_rivumi_agent_advertises_native_mcp_capability() -> None:
-    assert RuntimeCapability.MCP in RUNTIME_REGISTRY["rivumi-agent"].capabilities
+def test_looplane_agent_advertises_native_mcp_capability() -> None:
+    assert RuntimeCapability.MCP in RUNTIME_REGISTRY["looplane-agent"].capabilities

@@ -4,8 +4,8 @@ from io import StringIO
 
 import pytest
 
-from rivumi.console import CompositeEventSink, ConsoleEventSink, LiveEventProjection
-from rivumi.events import RunEvent
+from looplane.console import CompositeEventSink, ConsoleEventSink, LiveEventProjection
+from looplane.events import RunEvent
 
 
 def event(sequence: int, event_type: str, **data: object) -> RunEvent:

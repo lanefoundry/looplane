@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.approvals import ApprovalDecision, ToolEffect
-from rivumi.context_providers import (
+from looplane.approvals import ApprovalDecision, ToolEffect
+from looplane.context_providers import (
     ContextProviderCommand,
     ContextProviderConfig,
     ContextProviderRunner,
 )
-from rivumi.contracts import RunStatus
-from rivumi.conversation_controller import BackendTurnLimiter, ConversationController
-from rivumi.conversation_runtime import (
+from looplane.contracts import RunStatus
+from looplane.conversation_controller import BackendTurnLimiter, ConversationController
+from looplane.conversation_runtime import (
     ApprovalRequestedEvent,
     CompactionCompletedEvent,
     CompactionStartedEvent,
@@ -32,8 +32,8 @@ from rivumi.conversation_runtime import (
     ToolStartedEvent,
     TurnCompletedEvent,
 )
-from rivumi.hooks import HookCommandConfig, HookConfig, HookRunner
-from rivumi.runtime_semantics import RuntimeCapabilities
+from looplane.hooks import HookCommandConfig, HookConfig, HookRunner
+from looplane.runtime_semantics import RuntimeCapabilities
 
 
 class RecordingSink:
@@ -205,9 +205,7 @@ async def test_backend_limiter_queues_concurrent_controller_turns() -> None:
         first.turn(
             "First",
             event_sink=RecordingSink(),
-            approval_callback=lambda _event: asyncio.sleep(
-                0, result=ApprovalDecision.DENY
-            ),
+            approval_callback=lambda _event: asyncio.sleep(0, result=ApprovalDecision.DENY),
         ).run()
     )
     await asyncio.sleep(0)
@@ -217,9 +215,7 @@ async def test_backend_limiter_queues_concurrent_controller_turns() -> None:
         second.turn(
             "Second",
             event_sink=RecordingSink(),
-            approval_callback=lambda _event: asyncio.sleep(
-                0, result=ApprovalDecision.DENY
-            ),
+            approval_callback=lambda _event: asyncio.sleep(0, result=ApprovalDecision.DENY),
         ).run()
     )
     await asyncio.sleep(0.01)
@@ -340,9 +336,7 @@ print(json.dumps({{"source": "lifecycle", "content": payload["payload"]["phase"]
             "Continue",
             event_sink=RecordingSink(),
             approval_callback=lambda _event: asyncio.sleep(0, result=ApprovalDecision.DENY),
-            attachments=(
-                RuntimeAttachment(name="notes.txt", content="note"),
-            ),
+            attachments=(RuntimeAttachment(name="notes.txt", content="note"),),
         ).run()
     )
     await asyncio.sleep(0)

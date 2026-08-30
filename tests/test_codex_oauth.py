@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from rivumi.codex_oauth import (
+from looplane.codex_oauth import (
     CODEX_CLIENT_ID,
     CODEX_RESPONSES_URL,
     TOKEN_URL,
@@ -24,14 +24,12 @@ from rivumi.codex_oauth import (
     CodexOAuthClient,
     OpenAICodexResponsesModel,
 )
-from rivumi.contracts import Message, ToolCall, ToolDefinition, ToolObservation
-from rivumi.models import ProviderError, ProviderErrorKind
+from looplane.contracts import Message, ToolCall, ToolDefinition, ToolObservation
+from looplane.models import ProviderError, ProviderErrorKind
 
 
 def jwt(account_id: str = "account-test") -> str:
-    payload = {
-        "https://api.openai.com/auth": {"chatgpt_account_id": account_id}
-    }
+    payload = {"https://api.openai.com/auth": {"chatgpt_account_id": account_id}}
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     return f"header.{encoded}.signature"
 
@@ -56,9 +54,11 @@ def test_pkce_authorization_has_expected_fixed_audience() -> None:
     assert query["code_challenge_method"] == ["S256"]
     assert query["state"] == [authorization.state]
     assert query["originator"] == ["rockcode-test"]
-    expected = base64.urlsafe_b64encode(
-        hashlib.sha256(authorization.verifier.encode()).digest()
-    ).decode().rstrip("=")
+    expected = (
+        base64.urlsafe_b64encode(hashlib.sha256(authorization.verifier.encode()).digest())
+        .decode()
+        .rstrip("=")
+    )
     assert query["code_challenge"] == [expected]
 
 
@@ -301,9 +301,7 @@ async def test_codex_transport_replays_native_tool_call_and_observation() -> Non
     await provider.complete(
         [
             Message(role="assistant", tool_calls=(prior_call,)),
-            ToolObservation(
-                tool_call_id="call_1", name="read_file", ok=True, content="contents"
-            ),
+            ToolObservation(tool_call_id="call_1", name="read_file", ok=True, content="contents"),
         ]
     )
 

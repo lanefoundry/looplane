@@ -17,7 +17,7 @@ Allow the Codex native conversation to initialize the user-configured Groundlane
 - Focused Codex adapter tests passed (19 tests).
 - Runtime/conversation/TUI regression selection passed (83 tests).
 - Full pytest suite passed on the clean rerun (383 tests).
-- Ruff passed for the two changed Python files. Repository-wide Ruff remains blocked by unrelated existing edits in `src/rivumi/tui.py` and `tests/test_tui.py`.
+- Ruff passed for the two changed Python files. Repository-wide Ruff remains blocked by unrelated existing edits in `src/looplane/tui.py` and `tests/test_tui.py`.
 
 ## Security boundary
 

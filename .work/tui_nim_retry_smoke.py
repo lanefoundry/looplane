@@ -25,14 +25,14 @@ sys.path.insert(0, str(ROOT / "src"))
 import httpx  # noqa: E402
 from openai import AsyncOpenAI  # noqa: E402
 
-import rivumi.runtime_registry as runtime_registry  # noqa: E402
-from rivumi.cli import DEFAULT_RUN_ROOT, ONBOARDING_PROVIDERS  # noqa: E402
-from rivumi.cli_config import CliConfig  # noqa: E402
-from rivumi.contracts import Limits, TaskContract, VerificationCommand  # noqa: E402
-from rivumi.conversation import ConversationStore  # noqa: E402
-from rivumi.loop import AgentRunner  # noqa: E402
-from rivumi.models import OpenAICompatibleModel  # noqa: E402
-from rivumi.tui import InlineApprovalBlock, RivumiApp  # noqa: E402
+import looplane.runtime_registry as runtime_registry  # noqa: E402
+from looplane.cli import DEFAULT_RUN_ROOT, ONBOARDING_PROVIDERS  # noqa: E402
+from looplane.cli_config import CliConfig  # noqa: E402
+from looplane.contracts import Limits, TaskContract, VerificationCommand  # noqa: E402
+from looplane.conversation import ConversationStore  # noqa: E402
+from looplane.loop import AgentRunner  # noqa: E402
+from looplane.models import OpenAICompatibleModel  # noqa: E402
+from looplane.tui import InlineApprovalBlock, looplaneApp  # noqa: E402
 
 PROVIDER = "nvidia-nim"
 MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
@@ -60,6 +60,7 @@ CANNED_COMPLETION = {
 }
 
 state = {"requests": 0}
+
 
 def flaky_handler(request: httpx.Request) -> httpx.Response:
     state["requests"] += 1
@@ -127,10 +128,10 @@ async def wait_until(app, pilot, pred, timeout: float, interval: float = 0.5) ->
 
 async def main() -> None:
     runs_before = {p.stat().st_mtime for p in DEFAULT_RUN_ROOT.glob("*/events.jsonl")}
-    app = RivumiApp(
+    app = looplaneApp(
         repository=ROOT,
         config=CliConfig(
-            runtime="rivumi-agent",
+            runtime="looplane-agent",
             provider=PROVIDER,
             model=MODEL,
             api_url=None,

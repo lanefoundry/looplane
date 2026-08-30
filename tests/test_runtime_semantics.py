@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from rivumi.approvals import ToolEffect
-from rivumi.runtime_semantics import (
+from looplane.approvals import ToolEffect
+from looplane.runtime_semantics import (
     TASK_STATE_ADAPTER,
     BackgroundTaskState,
     ContextCheckpoint,
@@ -146,9 +146,7 @@ def test_auto_compaction_policy_requires_native_capability_and_window() -> None:
         is False
     )
     assert (
-        should_auto_compact_context(
-            telemetry(90), RuntimeCapabilities(native_compaction=False)
-        )
+        should_auto_compact_context(telemetry(90), RuntimeCapabilities(native_compaction=False))
         is False
     )
 

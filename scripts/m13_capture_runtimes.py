@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-The OpenCode/Pi/OMP normalizers in ``src/rivumi/*_backend.py`` are deliberately permissive
+The OpenCode/Pi/OMP normalizers in ``src/looplane/*_backend.py`` are deliberately permissive
 placeholders; their field names are assumptions until proven against a real capture. This script
 runs each *installed* CLI exactly as the backend would (same argv via ``_argv``), in a throwaway
 temp workspace, on a read-only low-cost task, and records:
@@ -42,9 +42,9 @@ import tempfile
 import time
 from pathlib import Path
 
-from rivumi.omp_backend import OmpBackend
-from rivumi.opencode_backend import OpenCodeBackend
-from rivumi.pi_backend import PiBackend
+from looplane.omp_backend import OmpBackend
+from looplane.opencode_backend import OpenCodeBackend
+from looplane.pi_backend import PiBackend
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / ".artifacts" / "m13-captures"

@@ -84,12 +84,12 @@ Google Gemini → GEMINI_API_KEY → auth.json key "google"
 
 所以「Pi 可以透過 Google subscription 使用 Gemini」是歷史資訊，對目前版本已經過時。
 
-## 對 Rivumi 的含義
+## 對 looplane 的含義
 
 技術上，舊 Pi 證明以下組合能運作：
 
 ```text
-Rivumi harness
+looplane harness
   → Google OAuth manager
   → Cloud Code Assist protocol adapter
   → Google account subscription quota
@@ -103,10 +103,10 @@ Rivumi harness
 - Google 現行 FAQ 與 terms 明確說第三方軟體直接使用 Gemini CLI OAuth 存取 backend 違反適用條款；
 - 社群曾回報 account restriction，但沒有足夠一手證據證明這就是 Pi 移除的原因。
 
-Rivumi 現階段較可靠的 Google 路線是：
+looplane 現階段較可靠的 Google 路線是：
 
 1. **Coding CLI mode**：委派官方 Gemini CLI，讓 Google OAuth 與 subscription quota 留在官方 runtime。
-2. **Model API mode**：Rivumi harness 使用 Gemini API key 或 Vertex AI credentials，依 API／Cloud quota 計費。
+2. **Model API mode**：looplane harness 使用 Gemini API key 或 Vertex AI credentials，依 API／Cloud quota 計費。
 3. 不把舊 Pi `v1internal` transport 當成正式第三條路；若研究性保留，必須標成 unsupported/experimental 並隔離 credential 與 adapter。
 
 ## 事實交叉表

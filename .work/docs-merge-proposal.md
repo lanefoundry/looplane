@@ -62,7 +62,7 @@
 
 ### M6. Naming 計畫碎片（4 plans → 隨 A1/A2 歸檔）
 `clean-brand-name-plan.md`(14)、`short-euphonic-name-plan.md`(15)、`ottie-otti-clearance-plan.md`(7) 三份全是已完成 checklist，對應的調研成果都在 research/ naming 系列。
-- **建議**：直接歸檔（見 A1），不必另存合併檔；唯一值得保留正文的是 `rivumi-project-rename-plan.md`（記錄相容性邊界決策，rename 已執行）。
+- **建議**：直接歸檔（見 A1），不必另存合併檔；唯一值得保留正文的是 `looplane-project-rename-plan.md`（記錄相容性邊界決策，rename 已執行）。
 
 ### M7.（附帶發現）`stages/README.md` 目錄落後
 `stages/` 實有 13 檔，但 README 的 Records 只列到 M9、Pending 只列 M10/M11——**`m12-onboarding-credential-verification.md` 未被收錄**。整合時應一併補上（M12 已 closed）。
@@ -74,7 +74,7 @@
 > 建議統一搬到 `docs/archive/`（保留 git 歷史，不必真刪）。以下均已 grep 確認無活躍文件引用。
 
 ### A1. Naming/branding 調研系列 → `docs/archive/naming/`（29 檔）
-全部為 2026-08-21~22 的一次性命名調研；專案已定名 **Rivumi** 並完成 rename（`rivumi-project-rename-plan.md` 全勾選），整條探索線已被最終決定取代：
+全部為 2026-08-21~22 的一次性命名調研；專案已定名 **looplane** 並完成 rename（`looplane-project-rename-plan.md` 全勾選），整條探索線已被最終決定取代：
 
 ```
 research/2026-08-22-animal-project-package-names.md    research/name-check-packages.md
@@ -87,14 +87,14 @@ research/euphonic-lutuno-trademark-global.md           research/euphonic-lutuno-
 research/short-name-brand-ideas.md                     research/short-name-language-ideas.md
 research/short-name-namespace-scout.md                 research/ultrashort-name-brand-ideas.md
 research/ultrashort-name-language-ideas.md             research/five-letter-name-project-screen.md
-research/rivumi-nuvimi-language-screen.md              research/rivumi-nuvimi-trademark-global.md
-research/rivumi-nuvimi-trademark-tw.md                 research/otter-name-language-screen.md
+research/looplane-nuvimi-language-screen.md              research/looplane-nuvimi-trademark-global.md
+research/looplane-nuvimi-trademark-tw.md                 research/otter-name-language-screen.md
 research/2026-08-22-short-euphonic-otter-names.md      research/2026-08-22-ottie-otti-clearance.md
 research/ottie-otti-packages-projects.md               research/ottie-otti-trademarks-global.md
 research/ottie-otti-trademarks-taiwan.md
 ```
 （另加 plans/ 的 3 份 naming plan，見 M6/A2）
-- **理由**：純決策過程紀錄；結論只剩「Rivumi 通過 screen」一條有長期價值，可在 archive 放一份 10 行 INDEX.md 註記最終結論。
+- **理由**：純決策過程紀錄；結論只剩「looplane 通過 screen」一條有長期價值，可在 archive 放一份 10 行 INDEX.md 註記最終結論。
 - **注意**：這批互相引用但無外部引用者（grep 已驗證）；`five-letter-name-project-screen.md` 引用 short-name-* 兩檔，同批一起搬即不破鏈。
 
 ### A2. 已完成的一次性 plans → `docs/archive/plans/`（8 檔）
@@ -118,7 +118,7 @@ plans/m11-conversation-tui-plan.md   plans/m11-claude-tui-design.md   plans/runt
 | `research/codex-oauth-implementation.md` | 描述舊 `src/coding_agent/` 時代的實作筆記；現行架構見 stages/m4、m5 |
 | `research/interactive-cli-audit.md` | 2026-08-21 對舊 staged worktree 的唯讀 audit，目標早已落地（M2/M9），一次性 |
 | `research/onboarding-runtime-model-ux.md` | 決策已落進 runtime-onboarding-plan 與 stages/m8/m10；原文是一次性 UX 判讀 |
-| `diagnoses/cloudflare-rivumi-resource-migration.md` | 自標 "Status: closed"；描述的是已刪除的誤建資源 |
+| `diagnoses/cloudflare-looplane-resource-migration.md` | 自標 "Status: closed"；描述的是已刪除的誤建資源 |
 | `diagnoses/warp-ui-investigation.md` | 自標 "implemented and verified" 的一次性設定調查 |
 | `diagnoses/textual-ime-placeholder-investigation.md` | 針對 Textual 8.2.8 版本的一次性源碼調查，結論已付諸實作 |
 | `diagnoses/model-switch-conversation-diagnosis.md` | 自標 "implemented and verified"；行為決策已寫入 conversation.py 與 stage records |
@@ -165,5 +165,5 @@ plans/m11-conversation-tui-plan.md   plans/m11-claude-tui-design.md   plans/runt
 \* research/ 30 = 64 − 29(naming) − 1(animation refs 併入) − 4(superseded 歸檔)。若把 `m6-cloudflare-sandbox-design` 一併歸檔則再 −1，但因 stages/m6 明文引用，建議保留。
 
 - **淨縮減：活躍文件 134 → 約 76 檔（−43%）**。實體檔面：約 48 檔移入 `docs/archive/`（仍在 repo、git 可尋回）、11 檔內容併入他檔後刪除、新增 3 份合併檔（incident / nvidia-retry / spinner，其中 2 份為原檔改寫）——總實體檔數 134 → 約 124，但活躍工作面只剩 76。
-- **必做的配套**：`docs/README.md` 的 plans/diagnoses/research 三段目錄需改寫（提及的檔名近半異動）；archive/ 需附 INDEX.md 說明各批歸檔原因與最終結論（naming → Rivumi）。
+- **必做的配套**：`docs/README.md` 的 plans/diagnoses/research 三段目錄需改寫（提及的檔名近半異動）；archive/ 需附 INDEX.md 說明各批歸檔原因與最終結論（naming → looplane）。
 - **風險**：低。所有歸檔候選經 grep 確認無 stages/、plans/、根文件的活躍引用（唯一例外 `subscription-bridges.md` 曾被 provider-bridge-comparison 反向標註 superseded，屬單向說明，不改語義）。

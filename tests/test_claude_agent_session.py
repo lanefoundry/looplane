@@ -9,9 +9,9 @@ from textwrap import dedent
 
 import pytest
 
-from rivumi.approvals import ApprovalDecision, ToolEffect
-from rivumi.claude_agent_session import ClaudeAgentSession
-from rivumi.conversation_runtime import (
+from looplane.approvals import ApprovalDecision, ToolEffect
+from looplane.claude_agent_session import ClaudeAgentSession
+from looplane.conversation_runtime import (
     ActionPreviewUpdatedEvent,
     ApprovalRequestedEvent,
     ApprovalResolvedEvent,
@@ -62,7 +62,7 @@ def _fake_sidecar(tmp_path: Path, behavior: str = "normal") -> Path:
             assert "--cwd" in sys.argv
             emit({"type": "ready", "sdk_version": "0.1.77", "setting_sources": []})
             if behavior == "descendant":
-                marker = os.environ["RIVUMI_TEST_MARKER"]
+                marker = os.environ["LOOPLANE_TEST_MARKER"]
                 code = (
                     "import pathlib,time; time.sleep(0.8); "
                     f"pathlib.Path({marker!r}).write_text('alive')"
@@ -711,12 +711,12 @@ async def test_unknown_agent_or_oversized_frames_fail_closed(tmp_path: Path, beh
 @pytest.mark.asyncio
 async def test_aclose_reaps_sidecar_descendants_and_is_idempotent(tmp_path: Path) -> None:
     marker = tmp_path / "grandchild-finished"
-    host_env = {"PATH": os.environ["PATH"], "RIVUMI_TEST_MARKER": str(marker)}
-    # The production environment intentionally strips RIVUMI_TEST_MARKER, so put
+    host_env = {"PATH": os.environ["PATH"], "LOOPLANE_TEST_MARKER": str(marker)}
+    # The production environment intentionally strips LOOPLANE_TEST_MARKER, so put
     # the marker directly into the fake sidecar source for this lifecycle test.
     sidecar = _fake_sidecar(tmp_path, "descendant")
     source = sidecar.read_text(encoding="utf-8").replace(
-        'marker = os.environ["RIVUMI_TEST_MARKER"]', f"marker = {str(marker)!r}"
+        'marker = os.environ["LOOPLANE_TEST_MARKER"]', f"marker = {str(marker)!r}"
     )
     sidecar.write_text(source, encoding="utf-8")
     workspace = tmp_path / "workspace"

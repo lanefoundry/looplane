@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from rivumi.context_watch import (
+from looplane.context_watch import (
     ProjectContextWatchBackend,
     project_context_watch_capabilities,
     project_context_watch_snapshot,
@@ -13,7 +13,7 @@ from rivumi.context_watch import (
 
 def test_project_context_watch_snapshot_detects_skill_changes(tmp_path) -> None:
     first = project_context_watch_snapshot(tmp_path)
-    skills = tmp_path / ".rivumi" / "skills"
+    skills = tmp_path / ".looplane" / "skills"
     skills.mkdir(parents=True)
     (skills / "review.md").write_text("---\nname: review\n---\nCheck risks.", encoding="utf-8")
 
@@ -22,12 +22,12 @@ def test_project_context_watch_snapshot_detects_skill_changes(tmp_path) -> None:
     assert second.changed_categories(first) == ("skills",)
     rendered = render_project_context_reload(first, second)
     assert "[project-context-reload-v1]" in rendered
-    assert "- skills: .rivumi/skills/review.md" in rendered
+    assert "- skills: .looplane/skills/review.md" in rendered
 
 
 def test_project_context_watch_snapshot_detects_raw_hook_changes(tmp_path) -> None:
     first = project_context_watch_snapshot(tmp_path)
-    hooks = tmp_path / ".rivumi"
+    hooks = tmp_path / ".looplane"
     hooks.mkdir()
     (hooks / "hooks.json").write_text('{"pre_tool_use":[]}', encoding="utf-8")
 
@@ -51,7 +51,7 @@ async def test_watch_project_context_changes_yields_changed_categories(tmp_path)
     next_change = asyncio.create_task(anext(watcher))
     try:
         await asyncio.sleep(0.02)
-        skills = tmp_path / ".rivumi" / "skills"
+        skills = tmp_path / ".looplane" / "skills"
         skills.mkdir(parents=True)
         (skills / "review.md").write_text(
             "---\nname: review\n---\nCheck risks.",
@@ -63,7 +63,7 @@ async def test_watch_project_context_changes_yields_changed_categories(tmp_path)
         await watcher.aclose()
 
     assert change.changed_categories == ("skills",)
-    assert change.current.sources["skills"] == (".rivumi/skills/review.md",)
+    assert change.current.sources["skills"] == (".looplane/skills/review.md",)
 
 
 async def test_watch_project_context_changes_rejects_unavailable_backend(tmp_path) -> None:

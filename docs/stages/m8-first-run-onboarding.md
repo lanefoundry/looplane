@@ -56,7 +56,7 @@ AI readiness requires both account ID and token; Gemini accepts either supported
 
 ## Implementation
 
-- `src/rivumi/cli.py`: bounded discovery, provider/model pickers, readiness hints, headless
+- `src/looplane/cli.py`: bounded discovery, provider/model pickers, readiness hints, headless
   contract, explicit-provider lock, and context/task presentation.
 - `tests/test_cli_onboarding.py`: discovery, first-run, cancellation, persistence, TTY/headless,
   provider precedence, and credential-state regressions.

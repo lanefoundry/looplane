@@ -8,14 +8,14 @@ from pathlib import Path
 import pytest
 from conftest import run_git
 
-from rivumi.approvals import (
+from looplane.approvals import (
     ApprovalDecision,
     ApprovalRequest,
     CallbackApprovalPolicy,
     HeadlessApprovalPolicy,
     ToolEffect,
 )
-from rivumi.contracts import (
+from looplane.contracts import (
     Limits,
     ModelCapabilities,
     ModelProtocol,
@@ -25,9 +25,9 @@ from rivumi.contracts import (
     ToolCall,
     VerificationCommand,
 )
-from rivumi.loop import AgentRunner
-from rivumi.models import ScriptedModel
-from rivumi.session import SessionStore
+from looplane.loop import AgentRunner
+from looplane.models import ScriptedModel
+from looplane.session import SessionStore
 
 FIX_PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
@@ -74,9 +74,7 @@ async def test_interactive_policy_approves_patch_and_final_verification(
 
     model = ScriptedModel(
         [
-            ModelTurn(
-                tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)
-            ),
+            ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)),
             ModelTurn(content="Fixed."),
         ]
     )
@@ -154,8 +152,7 @@ async def test_nonterminal_session_resumes_without_reapplying_patch(
     patch = Path(result.artifacts["patch"]).read_text()
     assert patch.count("+    return left + right") == 1
     events = [
-        json.loads(line)
-        for line in Path(result.artifacts["events"]).read_text().splitlines()
+        json.loads(line) for line in Path(result.artifacts["events"]).read_text().splitlines()
     ]
     assert [event["sequence"] for event in events] == list(range(len(events)))
     assert any(event["event_type"] == "session.resumed" for event in events)
@@ -177,13 +174,7 @@ async def test_resume_abandons_an_unresolved_approval_without_executing_it(
     first = AgentRunner(
         task_for(tiny_bug_repo),
         ScriptedModel(
-            [
-                ModelTurn(
-                    tool_calls=(
-                        ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),
-                    )
-                )
-            ]
+            [ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),))]
         ),
         run_root,
         run_id=run_id,
@@ -206,9 +197,7 @@ async def test_resume_abandons_an_unresolved_approval_without_executing_it(
         ScriptedModel(
             [
                 ModelTurn(
-                    tool_calls=(
-                        ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),
-                    )
+                    tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)
                 ),
                 ModelTurn(content="Fixed after requesting approval again."),
             ]
@@ -219,8 +208,7 @@ async def test_resume_abandons_an_unresolved_approval_without_executing_it(
 
     assert result.status == RunStatus.COMPLETED
     events = [
-        json.loads(line)
-        for line in Path(result.artifacts["events"]).read_text().splitlines()
+        json.loads(line) for line in Path(result.artifacts["events"]).read_text().splitlines()
     ]
     assert any(event["event_type"] == "approval.abandoned" for event in events)
     assert Path(result.artifacts["patch"]).read_text().count("+    return left + right") == 1
@@ -235,13 +223,7 @@ async def test_resume_reconciles_approval_decided_before_started_event(
     first = AgentRunner(
         task_for(tiny_bug_repo),
         ScriptedModel(
-            [
-                ModelTurn(
-                    tool_calls=(
-                        ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),
-                    )
-                )
-            ]
+            [ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),))]
         ),
         run_root,
         run_id=run_id,
@@ -267,9 +249,7 @@ async def test_resume_reconciles_approval_decided_before_started_event(
         ScriptedModel(
             [
                 ModelTurn(
-                    tool_calls=(
-                        ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),
-                    )
+                    tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)
                 ),
                 ModelTurn(content="Fixed after approval recovery."),
             ]
@@ -370,9 +350,7 @@ async def test_resume_reconciles_reused_grant_before_started_event(
         ScriptedModel(
             [
                 ModelTurn(
-                    tool_calls=(
-                        ToolCall(name="apply_patch", arguments={"patch": NOTE_PATCH}),
-                    )
+                    tool_calls=(ToolCall(name="apply_patch", arguments={"patch": NOTE_PATCH}),)
                 ),
                 ModelTurn(content="Finished after reusing the grant safely."),
             ]

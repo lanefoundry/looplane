@@ -3,14 +3,14 @@
 ## Outcome
 
 Let users select OpenCode, Pi, or OMP beside Claude Code and Codex CLI without replacing or
-embedding them underneath Rivumi's native harness. Rivumi Agent remains independently implemented;
+embedding them underneath looplane's native harness. looplane Agent remains independently implemented;
 external CLIs remain separately owned agent loops reached through a normalized runtime boundary.
 
 ## Non-negotiable architecture boundary
 
 ```text
-Rivumi
-├── Native harness: Rivumi Agent
+looplane
+├── Native harness: looplane Agent
 │   └── ModelProvider: OpenAI / Anthropic / Gemini / compatible APIs / local models
 └── External coding CLI runtimes
     ├── Claude Code
@@ -20,11 +20,11 @@ Rivumi
     └── OMP (Oh My Pi)
 ```
 
-- Native mode: Rivumi owns the loop, tools, context, approvals, session state, compaction, and
+- Native mode: looplane owns the loop, tools, context, approvals, session state, compaction, and
   verification. A model API is only a provider transport.
 - External mode: the selected CLI owns the loop, model interaction, internal tools, and native
-  session. Rivumi must not wrap it in a second model-driven loop.
-- OpenCode, Pi, and OMP may inform Rivumi's design, but none is a runtime dependency of Rivumi
+  session. looplane must not wrap it in a second model-driven loop.
+- OpenCode, Pi, and OMP may inform looplane's design, but none is a runtime dependency of looplane
   Agent.
 
 ## Runtime contract
@@ -38,7 +38,7 @@ creating a parallel `CodingCliAdapter` hierarchy. It must cover:
   and classified errors;
 - runtime/model switching and the context boundary it creates;
 - bounded stdout/stderr/frame handling and fail-closed protocol validation;
-- vendor IDs retained privately by the adapter and Rivumi-owned IDs exposed to the controller.
+- vendor IDs retained privately by the adapter and looplane-owned IDs exposed to the controller.
 
 Machine-protocol preference order:
 
@@ -68,9 +68,9 @@ provide.
 ## Authentication and billing boundary
 
 - The child CLI owns its login and credential storage.
-- Rivumi may report installation and an adapter-provided readiness check; it must not infer a valid
+- looplane may report installation and an adapter-provided readiness check; it must not infer a valid
   subscription merely from an executable or credential file being present.
-- Rivumi never reads, copies, refreshes, proxies, or converts another CLI's OAuth credential into
+- looplane never reads, copies, refreshes, proxies, or converts another CLI's OAuth credential into
   native model-provider access.
 - Subscription, extra-usage, and per-token API billing must be documented per CLI from current
   upstream policy. An external CLI login never becomes a generic `ModelProvider` credential.
@@ -95,8 +95,8 @@ provide.
   proven necessary.
 - Preserve behavior with fake-runtime tests before adding a new CLI.
 - Add a capability matrix consumed by the controller and TUI.
-- Generalize the current Claude/Codex-only runtime options and dispatch in `src/rivumi/cli.py` and
-  the durable runtime schema in `src/rivumi/conversation.py`, with migration/backward-compatibility
+- Generalize the current Claude/Codex-only runtime options and dispatch in `src/looplane/cli.py` and
+  the durable runtime schema in `src/looplane/conversation.py`, with migration/backward-compatibility
   coverage.
 
 ### Slice 2: OpenCode
@@ -110,7 +110,7 @@ provide.
 
 - Validate Pi's supported programmatic/event interface and extension lifecycle.
 - Implement only capabilities backed by stable upstream contracts; do not depend on its private
-  credential files or turn a subscription transport into Rivumi native model access.
+  credential files or turn a subscription transport into looplane native model access.
 
 ### Slice 4: OMP
 
@@ -120,7 +120,7 @@ provide.
 
 ### Slice 5: Product surface and evidence
 
-- Add installed runtime choices beside Rivumi Agent, Claude Code, and Codex CLI.
+- Add installed runtime choices beside looplane Agent, Claude Code, and Codex CLI.
 - Add actionable unavailable/not-authenticated/protocol-version messages.
 - Run fake-CLI contract suites for every adapter and opt-in live smokes only where the installed
   runtime and its supported login are available.
@@ -129,8 +129,8 @@ provide.
 
 ## Explicitly out of scope
 
-- Using OpenCode, Pi, or OMP as Rivumi Agent's underlying harness.
-- Sharing or importing another CLI's credentials into Rivumi native mode.
+- Using OpenCode, Pi, or OMP as looplane Agent's underlying harness.
+- Sharing or importing another CLI's credentials into looplane native mode.
 - Advertising a subscription as a model API.
 - Hiding nested-agent execution behind a generic provider name.
 - Claiming identical approvals, resume, MCP, costs, or tool visibility across runtimes.

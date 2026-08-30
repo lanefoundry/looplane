@@ -1,4 +1,4 @@
-"""Run the real RivumiApp (not headless) with a fake approval-requesting runner."""
+"""Run the real looplaneApp (not headless) with a fake approval-requesting runner."""
 
 import asyncio
 import sys
@@ -9,12 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from test_tui import FakeModel, FakeRunner  # noqa: E402
 
-from rivumi.approvals import ApprovalReason, ApprovalRequest, ToolEffect  # noqa: E402
-from rivumi.cli_config import CliConfig  # noqa: E402
-from rivumi.contracts import RunResult, ToolCall  # noqa: E402
-from rivumi.tui import RivumiApp  # noqa: E402
+from looplane.approvals import ApprovalReason, ApprovalRequest, ToolEffect  # noqa: E402
+from looplane.cli_config import CliConfig  # noqa: E402
+from looplane.contracts import RunResult, ToolCall  # noqa: E402
+from looplane.tui import looplaneApp  # noqa: E402
 
-LOG = Path("/tmp/rivumi-pty-debug.log")
+LOG = Path("/tmp/looplane-pty-debug.log")
 
 
 def log(msg: str) -> None:
@@ -44,8 +44,8 @@ async def main() -> None:
     def factory(_request, approval_policy, event_sink):
         return ApprovalRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
 
-    app = RivumiApp(
-        repository=Path("/tmp/rivumi-repro"),
+    app = looplaneApp(
+        repository=Path("/tmp/looplane-repro"),
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
         providers=(("ollama", "Ollama local"),),

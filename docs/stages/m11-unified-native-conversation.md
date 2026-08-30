@@ -46,12 +46,12 @@ Both runtimes -> ConversationWorkspace
 
 `ConversationController` owns a long-lived provider-neutral runtime session. Each turn streams
 typed text, tool, approval, and terminal events. Vendor thread/session/tool identifiers remain
-inside the adapter. Rivumi-generated turn/action/approval identifiers are the only correlation values
+inside the adapter. looplane-generated turn/action/approval identifiers are the only correlation values
 that reach the renderer and durable conversation store.
 
 Codex uses the installed `codex app-server`, initializes one thread in `workspace-write`, and
-routes file-change/command approval requests through Rivumi. Its local MCP configuration is reduced
-to Groundlane only; Rivumi explicitly disables every other configured MCP server and forwards only
+routes file-change/command approval requests through looplane. Its local MCP configuration is reduced
+to Groundlane only; looplane explicitly disables every other configured MCP server and forwards only
 Groundlane's configured bearer-token environment variable. Claude uses the installed official Agent
 SDK through a pinned Node sidecar with `settingSources: []`, no MCP, no Agent/Task delegation, and
 PreToolUse/canUseTool approval correlation. Unknown tools and protocol frames fail closed.
@@ -63,9 +63,9 @@ committed `HEAD`, removes origin, isolates Git metadata, disables hooks/fsmonito
 workspace across conversation turns. Dirty source files are deliberately excluded and surfaced as
 a warning boundary. Once created, that clone is independent of concurrent source-worktree changes.
 
-At every terminal event Rivumi re-audits the bounded patch and allowed paths. Codex file-change events
+At every terminal event looplane re-audits the bounded patch and allowed paths. Codex file-change events
 must exactly account for the actual patch. Claude's SDK does not provide a reliable complete diff,
-so Rivumi recomputes it from the isolated Git workspace and attaches that audited diff to the typed
+so looplane recomputes it from the isolated Git workspace and attaches that audited diff to the typed
 edit row. Cleanup removes only the disposable workspace and cannot retroactively fail a completed
 turn because an unrelated source file changed.
 
@@ -79,7 +79,7 @@ turn because an unrelated source file changed.
 - diagnostics: retained behind `Details`, not mirrored into the primary transcript;
 - conversation: ordinary turns share the same native child/session and the same disposable
   workspace; `/new` clears the conversation. A Claude/Codex runtime or model change keeps the
-  Rivumi-owned transcript, records a context boundary, starts a new native session, and replays the
+  looplane-owned transcript, records a context boundary, starts a new native session, and replays the
   bounded completed-turn history once.
 
 There is no longer a user-facing Ask/Agent decision. A message remains ordinary conversation until
@@ -88,10 +88,10 @@ security boundary.
 
 ## Persistence and resume
 
-Rivumi's separate `ConversationStore` remains canonical across application restarts. It stores only a
+looplane's separate `ConversationStore` remains canonical across application restarts. It stores only a
 strict user/assistant turn schema in 0600 files under a 0700 state directory. Vendor session IDs,
 credentials, raw stderr, and opaque provider metadata are not persisted. A live process uses the
-native session directly; after restart, Rivumi opens a fresh native session and supplies bounded,
+native session directly; after restart, looplane opens a fresh native session and supplies bounded,
 completed-turn semantic replay once.
 
 ## Verification
@@ -103,7 +103,7 @@ completed-turn semantic replay once.
 - `uv build`: source distribution and wheel built successfully.
 - Real installed Codex app-server smoke returned `PCA_SMOKE_OK` through the live long-lived
   adapter; this is a historical pre-rename marker, and no credential value was read or printed.
-- Before the Rivumi rename, the former editable `pca` command was refreshed through
+- Before the looplane rename, the former editable `pca` command was refreshed through
   `scripts/install-dev-cli`; its isolated dependency environment passed `uv pip check` plus
   `pca --help`.
 

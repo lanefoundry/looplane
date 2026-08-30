@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.cloudflare_provider_setup import (
+from looplane.cloudflare_provider_setup import (
     ProviderSetupError,
     load_provider_manifest,
     load_secret_env_file,
@@ -74,9 +74,9 @@ def test_custom_provider_requires_all_safe_routing_fields() -> None:
     with pytest.raises(ProviderSetupError, match="explicit opt-in"):
         parse_provider_manifest(json.dumps(value))
 
-    profile = parse_provider_manifest(
-        json.dumps(value), allow_custom_endpoint=True
-    ).profiles["custom"]
+    profile = parse_provider_manifest(json.dumps(value), allow_custom_endpoint=True).profiles[
+        "custom"
+    ]
     assert profile.api_key_env == "ACME_API_KEY"
 
     del custom["custom"]["apiKeyEnv"]
@@ -129,9 +129,7 @@ def test_resolve_all_secrets_fails_before_returning_partial_values() -> None:
         "groq-fast": {"provider": "groq", "model": "model-a"},
         "router": {"provider": "openrouter", "model": "model-b"},
     }
-    manifest = parse_provider_manifest(
-        json.dumps({"default": "groq-fast", "profiles": profiles})
-    )
+    manifest = parse_provider_manifest(json.dumps({"default": "groq-fast", "profiles": profiles}))
 
     with pytest.raises(ProviderSetupError, match="OPENROUTER_API_KEY") as raised:
         resolve_provider_secrets(manifest, {"GROQ_API_KEY": "never-leak-this"})
@@ -160,9 +158,7 @@ def test_setup_runs_secret_bulk_then_build_then_deploy_without_secret_in_argv(
     assert calls[1][0] == ["npm", "run", "build:runtime"]
     assert calls[2][0][:3] == ["npx", "wrangler", "deploy"]
     assert calls[0][0] == ["npx", "wrangler", "secret", "bulk", "--env", "production"]
-    assert json.loads(calls[0][1]["input"]) == {
-        "MODEL_PROVIDER_KEY_GROQ": "super-secret"
-    }
+    assert json.loads(calls[0][1]["input"]) == {"MODEL_PROVIDER_KEY_GROQ": "super-secret"}
     assert all("super-secret" not in argument for argv, _ in calls for argument in argv)
     assert all(kwargs["cwd"] == tmp_path for _, kwargs in calls)
     assert all(kwargs["text"] is True and kwargs["check"] is True for _, kwargs in calls)

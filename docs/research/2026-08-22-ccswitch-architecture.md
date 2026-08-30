@@ -8,7 +8,7 @@
 2. 它是在切設定檔、代理 API，還是自己實作 agent harness？
 3. Claude、Codex 的 credentials 與 OAuth token 分別由誰持有？
 4. 它如何做到跨協定、快速切 provider 與 failover？
-5. 哪些設計適合移植到 Rivumi 的「Coding CLI」與「Model API」兩種模式？
+5. 哪些設計適合移植到 looplane 的「Coding CLI」與「Model API」兩種模式？
 
 ## 結論
 
@@ -19,7 +19,7 @@
 - **Auth Center**：保存部分 provider 的 API key/OAuth 帳號；對 Codex ChatGPT OAuth 可取得、刷新 token，並在需要時把完整 token bundle 寫回 `~/.codex/auth.json`。
 - **不是 agent loop**：工具呼叫、上下文、shell/file 操作、重試與任務流程仍由 Claude Code、Codex CLI 等上游 client 負責。
 
-因此，CCSwitch 最接近 Rivumi 的 **Coding CLI 模式加上一個可選 transport router**，並不能取代 Rivumi 的 **Model API 模式／自有 harness**。
+因此，CCSwitch 最接近 looplane 的 **Coding CLI 模式加上一個可選 transport router**，並不能取代 looplane 的 **Model API 模式／自有 harness**。
 
 ## 架構
 
@@ -80,16 +80,16 @@ Codex OAuth manager 實作 OpenAI device-code flow、每帳號 refresh lock、ac
 
 所以 CCSwitch 並沒有解決「第三方自有 harness 使用 Claude Pro/Max 內含額度」。Claude 官方訂閱路徑仍是 **Claude Code 持有 OAuth 與 agent runtime**；CCSwitch 只做設定管理或額度顯示。
 
-## 對 Rivumi 的含義
+## 對 looplane 的含義
 
-Rivumi 應把兩個選項拆成兩個互相正交的軸，而不只是單一 toggle：
+looplane 應把兩個選項拆成兩個互相正交的軸，而不只是單一 toggle：
 
 | 軸 | 選項 | 誰擁有 agent loop | 誰呼叫模型 |
 |---|---|---|---|
-| Execution mode | Coding CLI | Codex CLI / Claude Code | CLI 直接或經 Rivumi router |
-| Execution mode | Model API | Rivumi `AgentRunner` / harness | Rivumi `ModelProvider` |
+| Execution mode | Coding CLI | Codex CLI / Claude Code | CLI 直接或經 looplane router |
+| Execution mode | Model API | looplane `AgentRunner` / harness | looplane `ModelProvider` |
 | Transport mode | Direct | 不改變 | execution owner 直連 upstream |
-| Transport mode | Local router | 不改變 | 先到 Rivumi loopback，再 route/convert |
+| Transport mode | Local router | 不改變 | 先到 looplane loopback，再 route/convert |
 
 建議的邊界：
 
@@ -124,7 +124,7 @@ ApiAgentRunner
 - 把 ChatGPT/Claude 訂閱、API billing、extra usage 混成同一種額度；
 - 讓 local proxy 與自有 harness 共用同一個模糊的 `Provider` 抽象，導致工具迴圈 ownership 不清楚。
 
-CCSwitch 自己也在 release note 對 Codex OAuth reverse proxy 標示條款與帳號限制風險。因此若 Rivumi 提供這條路，應是清楚標示的 experimental transport；而「呼叫官方 Codex CLI」則是較穩定的 subscription-backed Coding CLI mode。
+CCSwitch 自己也在 release note 對 Codex OAuth reverse proxy 標示條款與帳號限制風險。因此若 looplane 提供這條路，應是清楚標示的 experimental transport；而「呼叫官方 Codex CLI」則是較穩定的 subscription-backed Coding CLI mode。
 
 ## 事實交叉表
 

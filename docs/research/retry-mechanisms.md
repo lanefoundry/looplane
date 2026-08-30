@@ -1,6 +1,6 @@
 # Coding Agent LLM API Retry 機制比較
 
-> 日期：2026-08-26　範圍：Claude Code、pi/omp、opencode、codex、rivumi 現況
+> 日期：2026-08-26　範圍：Claude Code、pi/omp、opencode、codex、looplane 現況
 > 證據路徑前綴：CC = `claude-code-source/src/`、oc = `opencode/packages/`、cx = `codex/codex-rs/`
 
 ## 一、總覽表
@@ -12,7 +12,7 @@
 | **omp** | 標準化 `AIError` 分類（`isTransientStatus`：408/429/5xx） | transport 5~6；turn 層 **10**；oneshot 3 | transport `500ms×2^n` cap 60s；turn 層 cap 8s + 75–100% jitter；Copilot 特例固定 400ms×8 | 最全面：5 種 header + **從錯誤 body 文字萃取**（"retry in 250ms"、"try again in ~158 min"）；hint 視為權威但超過 maxDelay 直接失敗 |
 | **opencode** | session 層訊息 regex + provider 層 reason tag；OpenAI 404 也算 retryable | session 5；provider executor 2；AI SDK 歸 0（防三層疊加） | session：`2s×2^(n-1)` + 0~25% jitter，無 header 時 cap 30s；provider：500ms±20% cap 10s | 尊重三格式（ms/秒/HTTP-date）；無 header 時才套 30s cap |
 | **codex** | 二層：transport `RetryOn{retry_429,retry_5xx,retry_transport}` + 語意層 `CodexErr::is_retryable()` | request 4 / stream 5（可設定，硬上限 100） | `200ms×2^(n-1)` ±10% jitter；無 max delay（除無限重試路徑 cap 60s） | **HTTP header 不尊重**（原始碼留 TODO）；但解析錯誤訊息文字 "try again in Ns" 當作 delay |
-| **rivumi** | `ProviderErrorKind`（RETRYABLE/RATE_LIMIT/AUTH/INVALID_REQUEST） | 3 | 固定表 `(1s, 2s, 4s)` 純指數**無 jitter** | 尊重 `retry-after` header（`models.py:172`） |
+| **looplane** | `ProviderErrorKind`（RETRYABLE/RATE_LIMIT/AUTH/INVALID_REQUEST） | 3 | 固定表 `(1s, 2s, 4s)` 純指數**無 jitter** | 尊重 `retry-after` header（`models.py:172`） |
 
 ## 二、Retry 判斷的共識邊界
 
@@ -56,7 +56,7 @@
 
 - **CC**：`Retrying in {N} seconds… (attempt {X}/{Y})` 每秒 tick（`SystemAPIErrorMessage.tsx:106`）；SDK/headless 吐 `api_retry` 事件含 attempt/max_retries/retry_delay_ms/error_status（`QueryEngine.ts:943-954`）
 - **pi/omp**：`auto_retry_start/end` session 事件 → TUI「Retrying (N/M) in Xs… (esc to cancel)」，Esc 可取消 retry（`status-indicator.ts:47`、`event-controller.ts:1998-2005`）
-- **oc**：status event `{type:"retry", attempt, message, next}` → `[retrying in 5s attempt #3]` 前端 1 秒 interval 倒數（`tui/prompt/index.tsx:1548-1573`）——截圖中 rivumi 顯示的格式即此家族
+- **oc**：status event `{type:"retry", attempt, message, next}` → `[retrying in 5s attempt #3]` 前端 1 秒 interval 倒數（`tui/prompt/index.tsx:1548-1573`）——截圖中 looplane 顯示的格式即此家族
 - **cx**：`"Reconnecting... {n}/{max}"` 通知 UI（`responses_retry.rs`）
 
 ## 六、可設定性
@@ -69,15 +69,15 @@
 | omp | 最細：`retry.modelFallback`、`fallbackChains`、`usageAwareFallback` 等 | jitter 公式 |
 | oc | 無使用者設定 | 全部 |
 
-## 七、值得抄進 rivumi 的清單（依 CP 值排序）
+## 七、值得抄進 looplane 的清單（依 CP 值排序）
 
-rivumi 現況（`loop.py:694-728`、`models.py`）：3 次、固定表 (1,2,4)s、尊重 retry-after、`model.retry` 事件已有、取消可中斷等待——骨架正確，缺：
+looplane 現況（`loop.py:694-728`、`models.py`）：3 次、固定表 (1,2,4)s、尊重 retry-after、`model.retry` 事件已有、取消可中斷等待——骨架正確，缺：
 
 1. **Jitter**（所有家都有）：`(1,2,4)` 改 `base×2^n × U(0.9,1.1)` 或加 0~25% 正向 jitter——多 client 同打 provider 時避免同步震盪
-2. **5xx/overloaded 訊息字串分類**：rivumi 目前靠 status + kind，可補 `overloaded`/`server_is_overloaded` body 關鍵字（參考 oc `retry.ts:33-41` 白名單）
+2. **5xx/overloaded 訊息字串分類**：looplane 目前靠 status + kind，可補 `overloaded`/`server_is_overloaded` body 關鍵字（參考 oc `retry.ts:33-41` 白名單）
 3. **`x-should-retry` header**：pi/CC 都尊重，一行成本
 4. **Context overflow 不重試的明確分類**：確認 `INVALID_REQUEST` 涵蓋 prompt-too-long 並直接 fail（交給未來 compaction）
-5. **連續 N 次 529/overloaded → model fallback**（CC `MAX_529_RETRIES=3`）：rivumi 多 provider 目錄是現成 fallback 來源
+5. **連續 N 次 529/overloaded → model fallback**（CC `MAX_529_RETRIES=3`）：looplane 多 provider 目錄是現成 fallback 來源
 6. **次數上限提高到 5~10 + max delay cap 30~32s**：3 次 × 4s 上限在 upstream rate limit 場景偏短（截圖場景就是這個）
 7. 若未來加 streaming：**直接採 omp 的 replay-veto 語義**（tool call 已發出就不重放），別走 CC 已認列 bug 的路
 

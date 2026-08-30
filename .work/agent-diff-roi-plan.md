@@ -41,12 +41,12 @@
 - [x] Persist per-lane model usage for primary/reviewer calls
 - [x] Add fail-closed `CommandSandbox` wrapper for native verification checks
 - [x] Wire `--sandbox-checks` through native CLI/runner/executor
-- [x] Wire default `PermissionGuard` into legacy `rivumi exec/run` and resume paths
+- [x] Wire default `PermissionGuard` into legacy `looplane exec/run` and resume paths
 - [x] Update report after reviewer lane, sandbox opt-in, and legacy guard baseline landed
 - [x] Add user/project/subfolder instruction loading and prompt injection
 - [x] Add config-backed additive deny rules for native permission guard
-- [x] Add `rivumi sessions --query/-q` over bounded run/conversation metadata
-- [x] Add `rivumi sessions --show` compact timeline over run events
+- [x] Add `looplane sessions --query/-q` over bounded run/conversation metadata
+- [x] Add `looplane sessions --show` compact timeline over run events
 - [x] Add named sandbox profile and config-backed sandbox read roots
 - [x] Refresh A18 Agent-as-a-Service implementation plan from current Cloudflare/local surfaces
 - [x] Add Cloudflare `RunSession` Durable Object and authenticated run resource APIs

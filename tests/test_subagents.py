@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.contracts import Limits, ModelTurn, RunStatus, TaskContract, VerificationCommand
-from rivumi.models import ScriptedModel
-from rivumi.subagents import (
+from looplane.contracts import Limits, ModelTurn, RunStatus, TaskContract, VerificationCommand
+from looplane.models import ScriptedModel
+from looplane.subagents import (
     analyze_subagent_schedule_events,
     analyze_subagent_schedule_jsonl,
     derive_subagent_task,
@@ -91,9 +91,7 @@ def test_normalize_subagent_schedule_rejects_cycles() -> None:
 
 def test_normalize_subagent_schedule_rejects_unsafe_ids() -> None:
     with pytest.raises(ValueError, match="safe identifier"):
-        normalize_subagent_schedule(
-            [{"id": "../bad", "role": "scout", "instruction": "Inspect."}]
-        )
+        normalize_subagent_schedule([{"id": "../bad", "role": "scout", "instruction": "Inspect."}])
 
 
 def test_analyze_subagent_schedule_events_counts_roles_and_waves() -> None:

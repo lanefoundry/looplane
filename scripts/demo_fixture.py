@@ -9,15 +9,15 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from rivumi.contracts import (
+from looplane.contracts import (
     Limits,
     ModelTurn,
     TaskContract,
     ToolCall,
     VerificationCommand,
 )
-from rivumi.loop import AgentRunner
-from rivumi.models import ScriptedModel
+from looplane.loop import AgentRunner
+from looplane.models import ScriptedModel
 
 PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py

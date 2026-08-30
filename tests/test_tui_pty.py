@@ -1,4 +1,4 @@
-"""Real-PTY integration tests for Rivumi's terminal lifecycle.
+"""Real-PTY integration tests for looplane's terminal lifecycle.
 
 Headless Textual tests cannot observe terminal escape sequences, so these
 tests run the app inside a real pseudo-terminal and assert on the raw byte
@@ -24,10 +24,10 @@ _DRIVER_TEMPLATE = textwrap.dedent(
     """
     from pathlib import Path
 
-    from rivumi.cli_config import CliConfig
-    from rivumi.conversation import ConversationStore
-    from rivumi.contracts import RunResult, RunStatus
-    from rivumi.tui import RivumiApp
+    from looplane.cli_config import CliConfig
+    from looplane.conversation import ConversationStore
+    from looplane.contracts import RunResult, RunStatus
+    from looplane.tui import looplaneApp
 
 
     class FakeRunner:
@@ -53,7 +53,7 @@ _DRIVER_TEMPLATE = textwrap.dedent(
             return None
 
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=Path.cwd(),
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda request, policy, sink: (FakeRunner(policy, sink), None),
@@ -139,9 +139,7 @@ def test_normal_exit_returns_to_primary_buffer_with_transcript(tmp_path: Path) -
     # The app entered and then left DEC alternate screen (1049).
     assert b"\x1b[?1049h" in output
     assert _LEAVE_ALTERNATE_SCREEN in output
-    primary_tail = output.rsplit(_LEAVE_ALTERNATE_SCREEN, 1)[-1].decode(
-        errors="replace"
-    )
+    primary_tail = output.rsplit(_LEAVE_ALTERNATE_SCREEN, 1)[-1].decode(errors="replace")
 
     # Finalized semantic history lands in the primary buffer after exit.
     assert "You › hello from pty" in primary_tail
@@ -149,9 +147,7 @@ def test_normal_exit_returns_to_primary_buffer_with_transcript(tmp_path: Path) -
 
     # A copyable resume command for the persisted conversation is included.
     resume_lines = [
-        line
-        for line in primary_tail.splitlines()
-        if line.startswith("Resume with: /resume ")
+        line for line in primary_tail.splitlines() if line.startswith("Resume with: /resume ")
     ]
     assert len(resume_lines) == 1
     conversation_id = resume_lines[0].removeprefix("Resume with: /resume ").strip()
@@ -171,9 +167,9 @@ def test_transcript_survives_when_conversation_was_never_persisted(
             """
             from pathlib import Path
 
-            from rivumi.cli_config import CliConfig
-            from rivumi.contracts import RunResult, RunStatus
-            from rivumi.tui import RivumiApp
+            from looplane.cli_config import CliConfig
+            from looplane.contracts import RunResult, RunStatus
+            from looplane.tui import looplaneApp
 
 
             class FakeRunner:
@@ -193,7 +189,7 @@ def test_transcript_survives_when_conversation_was_never_persisted(
                     )
 
 
-            app = RivumiApp(
+            app = looplaneApp(
                 repository=Path.cwd(),
                 config=CliConfig(provider="ollama", model="qwen3:4b"),
                 runner_factory=lambda request, policy, sink: (FakeRunner(), None),
@@ -210,9 +206,7 @@ def test_transcript_survives_when_conversation_was_never_persisted(
     )
 
     output = _run_driver_in_pty(driver)
-    primary_tail = output.rsplit(_LEAVE_ALTERNATE_SCREEN, 1)[-1].decode(
-        errors="replace"
-    )
+    primary_tail = output.rsplit(_LEAVE_ALTERNATE_SCREEN, 1)[-1].decode(errors="replace")
     assert "You › no store prompt" in primary_tail
     assert "Assistant › No store summary." in primary_tail
-    assert "Rivumi session" in primary_tail
+    assert "looplane session" in primary_tail

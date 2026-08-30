@@ -1,6 +1,6 @@
 # 啟動效能 Playbook：從 Codex 0.148.0 學到的
 
-> 目標讀者：rivumi 開發者。目的：把 OpenAI 收購 Astral 後重做 Codex CLI life cycle 的經驗，轉成本專案可執行的工程實務。
+> 目標讀者：looplane 開發者。目的：把 OpenAI 收購 Astral 後重做 Codex CLI life cycle 的經驗，轉成本專案可執行的工程實務。
 
 ## 1. 案例背景
 
@@ -12,19 +12,19 @@ OpenAI 於 2026/03 收購 Astral（uv / ruff / ty 背後公司），團隊併入
 - 官方 changelog 的優化全是流程層級：MCP OAuth 憑證讀取加速、plugin discovery 快取重用、skill/plugin 並行探索。
 - 單一 PR（openai/codex#26469）就把 TUI 中位數啟動從 **833ms → 504ms**，並附上 paired benchmark 數據。
 
-## 2. rivumi 現況基準（2026-08-22 實測）
+## 2. looplane 現況基準（2026-08-22 實測）
 
 ```
-$ time .venv/bin/python -c "import rivumi.cli"
+$ time .venv/bin/python -c "import looplane.cli"
 real    0.701s   ← TUI 還沒出現就燒掉 ~700ms
 
-$ python -X importtime -c "import rivumi.cli"  # 最重路徑
-398ms   rivumi.cli
-└─ 354ms  rivumi.codex_oauth
+$ python -X importtime -c "import looplane.cli"  # 最重路徑
+398ms   looplane.cli
+└─ 354ms  looplane.codex_oauth
    └─ 247ms  openai SDK（連 grader types 都載入）
 ```
 
-診斷：`src/rivumi/cli.py` 頂層 eager import 所有 backends 與 OAuth 模組，
+診斷：`src/looplane/cli.py` 頂層 eager import 所有 backends 與 OAuth 模組，
 導致「只想跑 `--help` 或非 Codex 流程」的使用者也付出整包 OpenAI SDK 的代價。
 
 ## 3. 五原則與對應做法
@@ -33,26 +33,26 @@ $ python -X importtime -c "import rivumi.cli"  # 最重路徑
 
 Codex 的指標不是「import 時間」，而是 **median time to first editable composer**。
 
-**rivumi 做法**：
+**looplane 做法**：
 
-- 定義北極星指標：`rivumi` 啟動 → composer 可輸入（TUI ready）。
-- 在 TUI 初始化完成處打點，寫入 startup telemetry（可用環境變數 `RIVUMI_STARTUP_LOG` 控制輸出）。
+- 定義北極星指標：`looplane` 啟動 → composer 可輸入（TUI ready）。
+- 在 TUI 初始化完成處打點，寫入 startup telemetry（可用環境變數 `LOOPLANE_STARTUP_LOG` 控制輸出）。
 - 所有 perf PR 必須附 before/after paired benchmark（見第 4 節方法論）。
 
 ### 原則二：Lazy import —— 最低垂的果實
 
 把「不會立刻用到」的重模組延後載入。
 
-**rivumi 做法**（`cli.py`）：
+**looplane 做法**（`cli.py`）：
 
 ```python
 # Before（頂層）
-from rivumi.claude_backend import ClaudeCodeBackend
-from rivumi.codex_oauth import ...
+from looplane.claude_backend import ClaudeCodeBackend
+from looplane.codex_oauth import ...
 
 # After：函式內延遲載入
 def _load_codex_backend():
-    from rivumi.codex_backend import CodexBackend
+    from looplane.codex_backend import CodexBackend
     return CodexBackend
 
 @cache
@@ -74,7 +74,7 @@ def _get_openai_client():
 
 Codex 把 hook discovery 與 account/model bootstrap 改為同時跑。
 
-**rivumi 做法**：盤點啟動步驟，找出無依賴者用 `asyncio.gather`：
+**looplane 做法**：盤點啟動步驟，找出無依賴者用 `asyncio.gather`：
 
 | 步驟 | 是否獨立 |
 |---|---|
@@ -87,7 +87,7 @@ Codex 把 hook discovery 與 account/model bootstrap 改為同時跑。
 
 任何「掃描」類工作不得在每次啟動重做。
 
-**rivumi 做法**：
+**looplane 做法**：
 
 - backend capability、workspace 狀態掃描結果以「相關 config 的 hash」為 key 快取到磁碟（參考 Codex：key 只含 plugin 相關設定，避免無關變更使快取失效）。
 - 並行請求同一資源時 single-flight（只放行第一個，其餘共用結果），防止 stampede 與 race。
@@ -95,7 +95,7 @@ Codex 把 hook discovery 與 account/model bootstrap 改為同時跑。
 
 ### 原則五：驗證迴路速度 = 產品本身
 
-rivumi 的賣點是 verified patches；agent 每秒能迭代幾次，取決於 linter/tester 多快。
+looplane 的賣點是 verified patches；agent 每秒能迭代幾次，取決於 linter/tester 多快。
 
 - 已選 ruff ✅，繼續把「單次迭代毫秒數」當核心 KPI。
 - evals 與 sandbox 驗證流程同樣適用原則二～四（延遲載入、並行、快取）。
@@ -104,8 +104,8 @@ rivumi 的賣點是 verified patches；agent 每秒能迭代幾次，取決於 l
 
 1. **工具**：`hyperfine --warmup 3 --min-runs 10`。
 2. **paired benchmark**：交替執行 before/after 各 10 次，取中位數，避免機器雜訊。
-3. **場景要真實**：帶著現有 `~/.rivumi` 設定與 workspace 跑，不要用乾淨環境自欺。
-4. **importtime 找元兇**：`python -X importtime -c "import rivumi.cli" | sort -t'|' -k2 -rn | head`。
+3. **場景要真實**：帶著現有 `~/.looplane` 設定與 workspace 跑，不要用乾淨環境自欺。
+4. **importtime 找元兇**：`python -X importtime -c "import looplane.cli" | sort -t'|' -k2 -rn | head`。
 
 建議新增 `scripts/bench_startup.sh` 固化上述流程，perf PR 一律貼數字。
 

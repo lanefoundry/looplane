@@ -11,11 +11,11 @@ import os
 import stat
 from pathlib import Path
 
-from rivumi.backends import ExternalAgentEvent, ExternalAgentTask
-from rivumi.external_cli_base import StreamJsonCliBackend
-from rivumi.omp_backend import OmpBackend
-from rivumi.opencode_backend import OpenCodeBackend
-from rivumi.pi_backend import PiBackend
+from looplane.backends import ExternalAgentEvent, ExternalAgentTask
+from looplane.external_cli_base import StreamJsonCliBackend
+from looplane.omp_backend import OmpBackend
+from looplane.opencode_backend import OpenCodeBackend
+from looplane.pi_backend import PiBackend
 
 
 class _CollectingSink:
@@ -38,9 +38,7 @@ def _fake_executable(tmp_path: Path, payload: str) -> str:
     return str(script)
 
 
-def _normalized_via_run(
-    backend: StreamJsonCliBackend, payload: str, tmp_path: Path
-) -> object:
+def _normalized_via_run(backend: StreamJsonCliBackend, payload: str, tmp_path: Path) -> object:
     executable = _fake_executable(tmp_path, payload)
     sink = _CollectingSink()
     backend.executable = executable

@@ -3,15 +3,15 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from rivumi.approvals import (
+from looplane.approvals import (
     ApprovalDecision,
     ApprovalReason,
     ApprovalRequest,
     HeadlessApprovalPolicy,
     ToolEffect,
 )
-from rivumi.contracts import ToolCall, VerificationCommand
-from rivumi.permissions import (
+from looplane.contracts import ToolCall, VerificationCommand
+from looplane.permissions import (
     DANGEROUS_AUTO_ALLOW_MAX_RANK,
     SUSPICIOUS_COMMAND_TIMEOUT_DENY_SECONDS,
     AllowRule,
@@ -27,7 +27,7 @@ from rivumi.permissions import (
     merge_permission_rule_sources,
     plan_dangerous_mode_entry,
 )
-from rivumi.policy_config import discover_policy_rules
+from looplane.policy_config import discover_policy_rules
 
 
 def tool_request(
@@ -36,7 +36,7 @@ def tool_request(
     *,
     effect: ToolEffect | None = None,
 ) -> ApprovalRequest:
-    from rivumi.approvals import effect_for_tool
+    from looplane.approvals import effect_for_tool
 
     return ApprovalRequest(
         run_id="run",
@@ -187,7 +187,7 @@ def test_policy_rule_sources_merge_user_then_project_without_precedence_side_eff
 
 
 def test_discovered_policy_sources_preserve_explicit_precedence(tmp_path) -> None:
-    policy_dir = tmp_path / ".rivumi"
+    policy_dir = tmp_path / ".looplane"
     policy_dir.mkdir()
     (policy_dir / "policy.json").write_text(
         '{"deny_rules":["run_check(git push:*)"],"allow_rules":["read_file(docs/**)"]}',
@@ -217,7 +217,7 @@ def test_discovered_policy_sources_preserve_explicit_precedence(tmp_path) -> Non
         "project allow_rules",
     )
     assert discovery.org_policy_path == org_policy_path
-    assert discovery.project_policy_path == tmp_path / ".rivumi" / "policy.json"
+    assert discovery.project_policy_path == tmp_path / ".looplane" / "policy.json"
     assert [rule.tool_name for rule in discovery.rules.deny_rules] == [
         "read_file",
         "run_check",
@@ -291,18 +291,11 @@ def test_guard_deny_rules_remain_authoritative_over_command_classifier() -> None
     guard = PermissionGuard(deny_rules=(DenyRule.parse("run_check(git status:*)"),))
     request = tool_request("run_check", {"name": "status"})
 
+    assert guard.command_policy(request, ("git status",)).action is CommandPolicyAction.ALLOW
     assert (
-        guard.command_policy(request, ("git status",)).action
-        is CommandPolicyAction.ALLOW
+        guard.forbidden_reason(request, ("git status --short",)) == "deny rule run_check (prefix)"
     )
-    assert (
-        guard.forbidden_reason(request, ("git status --short",))
-        == "deny rule run_check (prefix)"
-    )
-    assert (
-        guard.pre_decision(request, ("git status --short",))
-        is ApprovalDecision.DENY
-    )
+    assert guard.pre_decision(request, ("git status --short",)) is ApprovalDecision.DENY
 
 
 def test_allow_rules_apply_only_after_deny_rules_and_critical_floor() -> None:
@@ -313,14 +306,8 @@ def test_allow_rules_apply_only_after_deny_rules_and_critical_floor() -> None:
     guard = PermissionGuard(deny_rules=rules.deny_rules, allow_rules=rules.allow_rules)
     request = tool_request("run_check", {"name": "tests"})
 
-    assert (
-        guard.pre_decision(request, ("pytest tests/unit",))
-        is ApprovalDecision.ALLOW_ONCE
-    )
-    assert (
-        guard.pre_decision(request, ("pytest secrets/unit",))
-        is ApprovalDecision.DENY
-    )
+    assert guard.pre_decision(request, ("pytest tests/unit",)) is ApprovalDecision.ALLOW_ONCE
+    assert guard.pre_decision(request, ("pytest secrets/unit",)) is ApprovalDecision.DENY
 
 
 def test_allow_rules_pre_allow_after_deny_checks() -> None:
@@ -355,9 +342,7 @@ def test_deny_and_critical_floor_remain_authoritative_over_allow_rules() -> None
 
 def test_guard_timeout_denies_suspicious_commands_with_auditable_reason() -> None:
     guard = PermissionGuard()
-    request = command_request(
-        ("bash", "-c", "pytest -q && git diff --check")
-    ).model_copy(
+    request = command_request(("bash", "-c", "pytest -q && git diff --check")).model_copy(
         update={
             "command": VerificationCommand(
                 name="check",
@@ -460,14 +445,12 @@ def test_plan_dangerous_mode_entry_grants_for_prior_acceptance_or_env() -> None:
         {"accepted": True, "env_acknowledged": False},
         {"accepted": False, "env_acknowledged": True},
     ):
-        outcome = plan_dangerous_mode_entry(
-            is_tty=False, is_root=False, sandboxed=False, **kwargs
-        )
+        outcome = plan_dangerous_mode_entry(is_tty=False, is_root=False, sandboxed=False, **kwargs)
         assert outcome == "granted"
 
 
 def test_plan_dangerous_mode_entry_requires_tty_or_env_acknowledgment() -> None:
-    with pytest.raises(DangerousModeError, match="RIVUMI_ACCEPT_DANGEROUS_MODE"):
+    with pytest.raises(DangerousModeError, match="LOOPLANE_ACCEPT_DANGEROUS_MODE"):
         plan_dangerous_mode_entry(
             accepted=False,
             env_acknowledged=False,

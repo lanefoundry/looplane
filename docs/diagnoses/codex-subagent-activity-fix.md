@@ -15,7 +15,7 @@ turn, while unknown side-effecting tools remain fail-closed.
 
 ## Exit contract
 
-- Idle `Escape`, `Ctrl+C`, and `Ctrl+D` close Rivumi even when the composer has focus.
+- Idle `Escape`, `Ctrl+C`, and `Ctrl+D` close looplane even when the composer has focus.
 - `/exit` and `/quit` close immediately when idle.
 - `/exit` and `/quit` cooperatively stop an active agent, then close after cleanup.
 

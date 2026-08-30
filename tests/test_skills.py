@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from rivumi.skills import (
+from looplane.skills import (
     SkillError,
     load_project_skills,
     render_skill_context,
@@ -11,7 +11,7 @@ from rivumi.skills import (
 
 
 def test_load_project_skills_reads_bounded_markdown_frontmatter(tmp_path) -> None:
-    skills = tmp_path / ".rivumi" / "skills"
+    skills = tmp_path / ".looplane" / "skills"
     skills.mkdir(parents=True)
     (skills / "review.md").write_text(
         """---
@@ -31,13 +31,13 @@ Check regression risk before final output.
     assert len(loaded) == 1
     assert loaded[0].name == "reviewer"
     assert loaded[0].description == "Review patch risks."
-    assert loaded[0].source == ".rivumi/skills/review.md"
-    assert "Project skills from .rivumi/skills" in rendered
+    assert loaded[0].source == ".looplane/skills/review.md"
+    assert "Project skills from .looplane/skills" in rendered
     assert "Check regression risk" in rendered
 
 
 def test_load_project_skills_rejects_symlink_and_bad_frontmatter(tmp_path) -> None:
-    skills = tmp_path / ".rivumi" / "skills"
+    skills = tmp_path / ".looplane" / "skills"
     skills.mkdir(parents=True)
     target = tmp_path / "outside.md"
     target.write_text("outside", encoding="utf-8")
@@ -54,7 +54,7 @@ def test_load_project_skills_rejects_symlink_and_bad_frontmatter(tmp_path) -> No
 
 
 def test_select_project_skills_uses_exact_on_demand_names(tmp_path) -> None:
-    skills = tmp_path / ".rivumi" / "skills"
+    skills = tmp_path / ".looplane" / "skills"
     skills.mkdir(parents=True)
     (skills / "review.md").write_text("---\nname: reviewer\n---\nReview.", encoding="utf-8")
     (skills / "test.md").write_text("---\nname: test-writer\n---\nTest.", encoding="utf-8")

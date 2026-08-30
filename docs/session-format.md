@@ -1,6 +1,6 @@
-# Rivumi Session Format
+# looplane Session Format
 
-Rivumi 的每個 run 都持久化到 `runs/<run_id>/`，格式設計目標：**crash-safe、
+looplane 的每個 run 都持久化到 `runs/<run_id>/`，格式設計目標：**crash-safe、
 可 resume、可被第三方工具解析**（對標 pi 的 session JSONL 與 codex 的 rollout 格式，
 見 `docs/research/2026-08-25-agent-usage-packages.md`）。
 
@@ -21,7 +21,7 @@ runs/<run_id>/
 
 ## events.jsonl
 
-一行一個 `RunEvent`（`src/rivumi/events.py:19-30`），欄位固定、`extra="forbid"`：
+一行一個 `RunEvent`（`src/looplane/events.py:19-30`），欄位固定、`extra="forbid"`：
 
 ```json
 {
@@ -48,12 +48,12 @@ runs/<run_id>/
 
 ### 長壽對話（ask 模式）
 
-互動對話另存於 `$XDG_STATE_HOME/rivumi/conversations/<id>/events.jsonl`
-（`src/rivumi/conversation.py:312-314`），同為 append-only JSONL，`/resume` 由此重放。
+互動對話另存於 `$XDG_STATE_HOME/looplane/conversations/<id>/events.jsonl`
+（`src/looplane/conversation.py:312-314`），同為 append-only JSONL，`/resume` 由此重放。
 
 ## session.json — SessionManifest
 
-`src/rivumi/session.py:72-103`，`schema_version: 1`：
+`src/looplane/session.py:72-103`，`schema_version: 1`：
 
 | 欄位 | 說明 |
 |------|------|
@@ -73,7 +73,7 @@ runs/<run_id>/
 
 ## usage 物件（三處共用）
 
-`src/rivumi/contracts.py:152-167`：
+`src/looplane/contracts.py:152-167`：
 
 ```json
 {
@@ -92,13 +92,13 @@ runs/<run_id>/
 
 ## checkpoint.json — Checkpoint
 
-`src/rivumi/contracts.py:232-246`：`run_id`、`task_id`、`status`、`step`、`messages`、
+`src/looplane/contracts.py:232-246`：`run_id`、`task_id`、`status`、`step`、`messages`、
 `tool_call_count`、`usage`、`active_writer_token`、`last_action_fingerprint`、`metadata`。
 每個狀態變更步驟後原子重寫（`loop.py:486-501`）。
 
 ## result.json — RunResult
 
-`src/rivumi/contracts.py:248-268`：`status`（completed/failed/cancelled）、`summary`、
+`src/looplane/contracts.py:248-268`：`status`（completed/failed/cancelled）、`summary`、
 `changed_files`、`verification`、`usage`、`terminal_reason`、`error`、`artifacts`。
 
 ## 給生態系工具的指引

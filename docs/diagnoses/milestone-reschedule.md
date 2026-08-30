@@ -12,7 +12,7 @@ unified conversation)                                          (external
 ```
 
 Rationale (from `docs/research/2026-08-22-capability-current-state-audit.md`):
-- M10/M11 are the current uncommitted worktree (rename `coding_agent` → `rivumi` plus unified
+- M10/M11 are the current uncommitted worktree (rename `coding_agent` → `looplane` plus unified
   conversation). They must close first so the rename and conversation contract are immutable before
   any performance or runtime work builds on top.
 - M12 (startup performance) must precede M13 (OpenCode/Pi/OMP). Otherwise each new eagerly-imported
@@ -27,7 +27,7 @@ Rationale (from `docs/research/2026-08-22-capability-current-state-audit.md`):
       against the implementation; the external QuidProQuo blog drafts are reviewed by the user in the
       `quidproquo` repo and are out of scope here.
 - [ ] Create scoped commits preserving unrelated worktree changes:
-  - rename `coding_agent` → `rivumi` (src, tests, scripts, config, docs references);
+  - rename `coding_agent` → `looplane` (src, tests, scripts, config, docs references);
   - M10 runtime-first subscription TUI (implementation + stage doc);
   - M11 unified native conversation (implementation + stage doc);
   - research/work artifacts and startup playbook;
@@ -42,7 +42,7 @@ Follow `docs/plans/m12-startup-performance-plan.md` and `docs/startup-performanc
       JSON under `.artifacts/startup/`.
 - [ ] Slice 2: lazy-load path-specific deps (Codex OAuth/OpenAI SDK, vendor backends, conversation,
       gateway, uvicorn) behind narrow loaders; assert lightweight routes no longer import them.
-- [ ] Startup telemetry via `RIVUMI_STARTUP_LOG` (bounded, private, non-secret, disabled by default).
+- [ ] Startup telemetry via `LOOPLANE_STARTUP_LOG` (bounded, private, non-secret, disabled by default).
 - [ ] Slice 3: parallelize independent startup work only after writing the dependency graph.
 - [ ] Slice 4: versioned single-flight disk cache for repeated discovery; never cache secrets/failures.
 - [ ] Slice 5: CI regression gate after a stable runner baseline (fail >10% median regression).
@@ -60,14 +60,14 @@ Follow `docs/plans/m13-external-coding-cli-adapters-plan.md`:
 - [ ] Slice 2: OpenCode adapter (structured SDK/RPC/ACP/JSONL preferred).
 - [ ] Slice 3: Pi adapter (stable upstream contract only).
 - [ ] Slice 4: OMP (Oh My Pi) adapter; reuse Pi only where protocol evidence proves compatibility.
-- [ ] Slice 5: product surface (runtime picker lists Rivumi Agent, Claude Code, Codex CLI, OpenCode,
+- [ ] Slice 5: product surface (runtime picker lists looplane Agent, Claude Code, Codex CLI, OpenCode,
       Pi, OMP), fake-CLI contract suites, opt-in live smokes.
 
-Architecture boundary (non-negotiable): Rivumi Agent stays the native harness; external CLIs are
-sibling runtimes, never the implementation underneath Rivumi Agent or a `ModelProvider` transport.
+Architecture boundary (non-negotiable): looplane Agent stays the native harness; external CLIs are
+sibling runtimes, never the implementation underneath looplane Agent or a `ModelProvider` transport.
 
 ## Out of scope for this pass
 
-- Native long-lived model conversation / context compaction for Rivumi Agent (separate future work).
-- Rewriting Rivumi in another language; absolute cross-machine startup SLA.
+- Native long-lived model conversation / context compaction for looplane Agent (separate future work).
+- Rewriting looplane in another language; absolute cross-machine startup SLA.
 - Sharing/importing another CLI's credentials into native mode.

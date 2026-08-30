@@ -430,7 +430,7 @@ describe("POST /v1/runs", () => {
       dependencies(sandbox()),
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "rivumi-control-plane" });
+    expect(await response.json()).toEqual({ ok: true, service: "looplane-control-plane" });
   });
 
   it("requires control-plane authentication before allocating a sandbox", async () => {
@@ -496,22 +496,22 @@ describe("POST /v1/runs", () => {
     );
     expect(handle.exec).toHaveBeenCalledTimes(1);
     const [command, options] = handle.exec.mock.calls[0]!;
-    expect(command).toBe("/usr/local/bin/rivumi-sandbox-run");
+    expect(command).toBe("/usr/local/bin/looplane-sandbox-run");
     expect(options.env).toMatchObject({
-      RIVUMI_MODEL_ID: model,
-      RIVUMI_MODEL_GATEWAY_URL: "https://control.example/internal/v1",
+      LOOPLANE_MODEL_ID: model,
+      LOOPLANE_MODEL_GATEWAY_URL: "https://control.example/internal/v1",
     });
     expect(JSON.stringify(options.env)).not.toContain(providerSecret);
-    expect(options.env).not.toHaveProperty("RIVUMI_RUN_TOKEN");
-    expect(options.env).not.toHaveProperty("RIVUMI_EVENT_TOKEN");
+    expect(options.env).not.toHaveProperty("LOOPLANE_RUN_TOKEN");
+    expect(options.env).not.toHaveProperty("LOOPLANE_EVENT_TOKEN");
     const tokenWrite = handle.writeFile.mock.calls.find(
-      ([path]) => path === "/workspace/.rivumi-run-token",
+      ([path]) => path === "/workspace/.looplane-run-token",
     );
     const eventTokenWrite = handle.writeFile.mock.calls.find(
-      ([path]) => path === "/workspace/.rivumi-event-token",
+      ([path]) => path === "/workspace/.looplane-event-token",
     );
     const approvalTokenWrite = handle.writeFile.mock.calls.find(
-      ([path]) => path === "/workspace/.rivumi-approval-token",
+      ([path]) => path === "/workspace/.looplane-approval-token",
     );
     expect(tokenWrite?.[1]).toEqual(expect.any(String));
     expect(eventTokenWrite?.[1]).toEqual(expect.any(String));
@@ -878,10 +878,10 @@ describe("POST /v1/runs", () => {
     expect((await startRun(deps)).status).toBe(202);
     await deps.drainBackground();
     const token = handle.writeFile.mock.calls.find(
-      ([path]) => path === "/workspace/.rivumi-run-token",
+      ([path]) => path === "/workspace/.looplane-run-token",
     )?.[1] as string;
     const eventToken = handle.writeFile.mock.calls.find(
-      ([path]) => path === "/workspace/.rivumi-event-token",
+      ([path]) => path === "/workspace/.looplane-event-token",
     )?.[1] as string;
     const replay = await handleRequest(
       request(

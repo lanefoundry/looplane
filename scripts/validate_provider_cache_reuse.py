@@ -15,9 +15,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from rivumi.contracts import Message
-from rivumi.models import OpenAICompatibleModel, ResponsesModel
-from rivumi.prompts import PromptSection, render_prompt_sections
+from looplane.contracts import Message
+from looplane.models import OpenAICompatibleModel, ResponsesModel
+from looplane.prompts import PromptSection, render_prompt_sections
 
 SKIP_EXIT = 77
 
@@ -28,14 +28,14 @@ def _env(name: str) -> str | None:
 
 
 def _provider_model() -> tuple[str, str, str, str | None]:
-    provider = _env("RIVUMI_CACHE_VALIDATE_PROVIDER")
-    model = _env("RIVUMI_CACHE_VALIDATE_MODEL")
-    api_key = _env("RIVUMI_CACHE_VALIDATE_API_KEY")
-    base_url = _env("RIVUMI_CACHE_VALIDATE_BASE_URL")
+    provider = _env("LOOPLANE_CACHE_VALIDATE_PROVIDER")
+    model = _env("LOOPLANE_CACHE_VALIDATE_MODEL")
+    api_key = _env("LOOPLANE_CACHE_VALIDATE_API_KEY")
+    base_url = _env("LOOPLANE_CACHE_VALIDATE_BASE_URL")
     if not provider or not model or not api_key:
         print(
-            "skip: set RIVUMI_CACHE_VALIDATE_PROVIDER, "
-            "RIVUMI_CACHE_VALIDATE_MODEL, and RIVUMI_CACHE_VALIDATE_API_KEY",
+            "skip: set LOOPLANE_CACHE_VALIDATE_PROVIDER, "
+            "LOOPLANE_CACHE_VALIDATE_MODEL, and LOOPLANE_CACHE_VALIDATE_API_KEY",
             file=sys.stderr,
         )
         raise SystemExit(SKIP_EXIT)
@@ -105,7 +105,7 @@ async def _run() -> int:
         "cache_reused": cache_reused,
         "turns": turns,
     }
-    output_path = _env("RIVUMI_CACHE_VALIDATE_OUTPUT")
+    output_path = _env("LOOPLANE_CACHE_VALIDATE_OUTPUT")
     if output_path:
         Path(output_path).write_text(
             json.dumps(payload, indent=2, sort_keys=True),

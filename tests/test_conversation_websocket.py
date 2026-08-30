@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from rivumi.conversation_runtime import RuntimeTurnStatus, TextDeltaEvent, TurnCompletedEvent
-from rivumi.conversation_websocket import ConversationWebSocketApp
-from rivumi.runtime_semantics import RuntimeCapabilities
+from looplane.conversation_runtime import RuntimeTurnStatus, TextDeltaEvent, TurnCompletedEvent
+from looplane.conversation_websocket import ConversationWebSocketApp
+from looplane.runtime_semantics import RuntimeCapabilities
 
 
 class FakeSession:
@@ -77,9 +77,7 @@ async def test_conversation_websocket_streams_turn_events_and_result() -> None:
 
     assert outbound[0] == {"type": "websocket.accept"}
     payloads = [
-        json.loads(message["text"])
-        for message in outbound
-        if message["type"] == "websocket.send"
+        json.loads(message["text"]) for message in outbound if message["type"] == "websocket.send"
     ]
     assert payloads[0]["type"] == "event"
     assert payloads[0]["event"]["event_type"] == "text_delta"
@@ -125,9 +123,7 @@ async def test_conversation_websocket_accepts_injected_items_for_next_turn() -> 
     )
 
     payloads = [
-        json.loads(message["text"])
-        for message in outbound
-        if message["type"] == "websocket.send"
+        json.loads(message["text"]) for message in outbound if message["type"] == "websocket.send"
     ]
     assert payloads[0] == {
         "type": "injected_items_accepted",
@@ -202,9 +198,7 @@ async def test_conversation_websocket_accepts_typed_ide_context_for_next_turn(
     )
 
     payloads = [
-        json.loads(message["text"])
-        for message in outbound
-        if message["type"] == "websocket.send"
+        json.loads(message["text"]) for message in outbound if message["type"] == "websocket.send"
     ]
     assert payloads[0] == {
         "type": "ide_context_accepted",
@@ -243,9 +237,7 @@ async def test_conversation_websocket_rejects_ide_context_without_project_root()
     )
 
     payloads = [
-        json.loads(message["text"])
-        for message in outbound
-        if message["type"] == "websocket.send"
+        json.loads(message["text"]) for message in outbound if message["type"] == "websocket.send"
     ]
     assert payloads[0] == {
         "type": "error",

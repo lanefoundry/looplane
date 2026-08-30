@@ -1,11 +1,11 @@
-"""Tests for the disk-cached rivumi-agent model catalog."""
+"""Tests for the disk-cached looplane-agent model catalog."""
 
 from __future__ import annotations
 
 import httpx
 import pytest
 
-from rivumi import model_catalog
+from looplane import model_catalog
 
 
 @pytest.fixture()

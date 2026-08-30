@@ -1,5 +1,5 @@
-from rivumi.contracts import Message, ToolDefinition, ToolObservation, VerificationCommand
-from rivumi.prompts import (
+from looplane.contracts import Message, ToolDefinition, ToolObservation, VerificationCommand
+from looplane.prompts import (
     A10_SUBAGENT_PLANNER_POLICY_VERSION,
     CODING_AGENT_PROMPT_VERSION,
     CODING_AGENT_SYSTEM_PROMPT,
@@ -86,9 +86,7 @@ def test_prompt_builder_renders_broader_context_sections() -> None:
         git_status=("## main", " M src/app.py"),
     )
     interaction_context = render_interaction_prompt_context()
-    runtime_context = render_runtime_prompt_context(
-        {"mode": "native_loop", "sandbox_checks": True}
-    )
+    runtime_context = render_runtime_prompt_context({"mode": "native_loop", "sandbox_checks": True})
     prompt = build_coding_agent_system_prompt(
         tool_context=tool_context,
         interaction_context=interaction_context,

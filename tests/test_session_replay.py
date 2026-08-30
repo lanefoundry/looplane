@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.session_replay import (
+from looplane.session_replay import (
     MAX_REPLAY_TEXT_CHARS,
     ReplayValidationError,
     canonical_fork_seed_json,

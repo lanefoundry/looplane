@@ -8,13 +8,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from test_tui import FakeModel, FakeRunner  # noqa: E402
-
-from rivumi.cli_config import CliConfig
-from rivumi.contracts import RunResult
-from rivumi.approvals import ApprovalReason, ApprovalRequest, ToolEffect
-from rivumi.contracts import RunResult, ToolCall
-from rivumi.tui import InlineApprovalBlock, RivumiApp
 from textual.widgets import OptionList
+
+from looplane.approvals import ApprovalReason, ApprovalRequest, ToolEffect
+from looplane.cli_config import CliConfig
+from looplane.contracts import RunResult, ToolCall
+from looplane.tui import InlineApprovalBlock, looplaneApp
 
 
 async def main() -> None:
@@ -36,8 +35,8 @@ async def main() -> None:
     def factory(_request, approval_policy, event_sink):
         return ApprovalRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
 
-    app = RivumiApp(
-        repository=Path("/tmp/rivumi-repro"),
+    app = looplaneApp(
+        repository=Path("/tmp/looplane-repro"),
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
         providers=(("ollama", "Ollama local"),),
@@ -59,7 +58,10 @@ async def main() -> None:
         print("focused widget:", app.focused)
         print("choices focused:", choices.has_focus)
         print("highlighted:", choices.highlighted)
-        print("choices can_focus:", type(choices).can_focus if hasattr(type(choices), "can_focus") else "?")
+        print(
+            "choices can_focus:",
+            type(choices).can_focus if hasattr(type(choices), "can_focus") else "?",
+        )
 
         await pilot.press("down")
         await pilot.pause()

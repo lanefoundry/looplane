@@ -5,7 +5,7 @@ from io import StringIO
 import pytest
 from pydantic import ValidationError
 
-from rivumi.approvals import (
+from looplane.approvals import (
     ApprovalDecision,
     ApprovalReason,
     ApprovalRequest,
@@ -15,7 +15,7 @@ from rivumi.approvals import (
     TTYApprovalPolicy,
     effect_for_tool,
 )
-from rivumi.contracts import ToolCall, VerificationCommand
+from looplane.contracts import ToolCall, VerificationCommand
 
 
 def request(effect: ToolEffect) -> ApprovalRequest:
@@ -56,10 +56,7 @@ async def test_tty_session_grant_avoids_second_prompt() -> None:
     input_stream = TTYInput("a\n")
     output = StringIO()
     policy = TTYApprovalPolicy(input_stream, output)
-    assert (
-        await policy.decide(request(ToolEffect.MODIFY))
-        == ApprovalDecision.ALLOW_SESSION
-    )
+    assert await policy.decide(request(ToolEffect.MODIFY)) == ApprovalDecision.ALLOW_SESSION
     assert await policy.decide(request(ToolEffect.MODIFY)) == ApprovalDecision.ALLOW_ONCE
     assert input_stream.tell() == 2
     assert policy.grants == {ToolEffect.MODIFY}

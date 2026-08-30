@@ -1,19 +1,19 @@
-# Coding CLI landscape for Rivumi
+# Coding CLI landscape for looplane
 
 Date: 2026-08-22
 
 ## Decision
 
-Rivumi owns and implements its native harness. Existing coding CLIs are optional external agents, not Rivumi's underlying harness. Use two execution modes:
+looplane owns and implements its native harness. Existing coding CLIs are optional external agents, not looplane's underlying harness. Use two execution modes:
 
-1. **Native model mode**: Rivumi owns the agent loop, tools, context, permissions, sessions, and UI; model providers are accessed through their supported APIs.
-2. **External coding CLI mode**: Rivumi launches an independent CLI harness and normalizes its events, approvals, session lifecycle, and output. Codex CLI, Claude Code, Gemini CLI, OpenCode, Pi, OMP, and similar agents belong here.
+1. **Native model mode**: looplane owns the agent loop, tools, context, permissions, sessions, and UI; model providers are accessed through their supported APIs.
+2. **External coding CLI mode**: looplane launches an independent CLI harness and normalizes its events, approvals, session lifecycle, and output. Codex CLI, Claude Code, Gemini CLI, OpenCode, Pi, OMP, and similar agents belong here.
 
-OpenCode, Pi, and OMP are useful architecture references for Rivumi's own harness and may also be exposed as external CLI adapters. Rivumi must not depend on any of them for its native execution path.
+OpenCode, Pi, and OMP are useful architecture references for looplane's own harness and may also be exposed as external CLI adapters. looplane must not depend on any of them for its native execution path.
 
 ## Evidence matrix
 
-| CLI | Harness ownership | Machine interface | Auth / subscription boundary | License / openness | Rivumi fit |
+| CLI | Harness ownership | Machine interface | Auth / subscription boundary | License / openness | looplane fit |
 |---|---|---|---|---|---|
 | OpenCode | OpenCode | `run --format json`, headless HTTP server, ACP stdio, official TS SDK | Broad API providers; supported OAuth options vary by provider. Do not rely on prohibited Claude/Google OAuth piggybacking. | MIT | Excellent generic open-harness backend |
 | Gemini CLI | Google | Headless text/JSON/stream-JSON with tool events and exit codes | Official Google login can consume Gemini CLI quotas, including eligible Google AI plans | Apache-2.0 | Excellent official Google subscription backend |
@@ -27,7 +27,7 @@ OpenCode, Pi, and OMP are useful architecture references for Rivumi's own harnes
 
 ## Recommended sequence
 
-1. Define Rivumi's provider-neutral native harness contract and event schema.
+1. Define looplane's provider-neutral native harness contract and event schema.
 2. Keep the existing Codex CLI and Claude Code CLI adapters as external harnesses.
 3. Add Gemini CLI to fill the official Google subscription path.
 4. Add OpenCode, Pi, and OMP only as sibling external CLI adapters where their machine interfaces are stable enough.
@@ -64,6 +64,6 @@ OpenCode, Pi, and OMP are useful architecture references for Rivumi's own harnes
 
 ## Inferences and cautions
 
-- A CLI accepting a subscription login does not make that subscription a reusable model API. Rivumi must preserve the official CLI harness boundary whenever plan usage depends on it.
+- A CLI accepting a subscription login does not make that subscription a reusable model API. looplane must preserve the official CLI harness boundary whenever plan usage depends on it.
 - ACP support may mean either “this CLI can be controlled as an agent” or “this CLI delegates to another agent.” These are architecturally different and need distinct adapter metadata.
 - Repository stars are only a maintenance/adoption signal; the ranking above primarily weights stable machine interfaces, auth-policy safety, and harness quality.

@@ -10,7 +10,7 @@ Goal: independently generate and quickly screen at most 12 pronounceable 4-6 let
 
 Only **two of twelve** survive this intentionally strict short-name crowding screen:
 
-1. **Rivumi** — strongest: PyPI/npm clear, GitHub exact user/repository clear, zero fuzzy repository-name results, and no exact software/product/company result surfaced.
+1. **looplane** — strongest: PyPI/npm clear, GitHub exact user/repository clear, zero fuzzy repository-name results, and no exact software/product/company result surfaced.
 2. **Nuvimi** — runner-up: PyPI/npm clear, GitHub exact user/repository clear, only two irrelevant fuzzy repository-name results, and no exact software/product/company result surfaced.
 
 Short coined names are crowded enough that keeping only two is more useful than padding the shortlist with names that already have exact handles, repositories, packages, apps, or products.
@@ -19,7 +19,7 @@ Short coined names are crowded enough that keeping only two is more useful than 
 
 | Candidate | Length / pronunciation | PyPI | npm | GitHub exact handle | GitHub exact repo | Product-search result | Decision |
 |---|---|---:|---:|---|---|---|---|
-| **Rivumi** | 6; ri-vu-mi | 404 | 404 | Clear | Clear | No exact named product/company surfaced | **Keep #1** |
+| **looplane** | 6; ri-vu-mi | 404 | 404 | Clear | Clear | No exact named product/company surfaced | **Keep #1** |
 | **Nuvimi** | 6; nu-vi-mi | 404 | 404 | Clear | Clear | No exact named product/company surfaced | **Keep #2** |
 | Lutelo | 6; lu-te-lo | 404 | 404 | Occupied | Clear | Exact-name music artist on Apple Music | Drop |
 | Lutimi | 6; lu-ti-mi | 404 | 404 | Occupied | Clear | Active `LUTIMI NR CORP` company name plus heavy GitHub search noise | Drop |
@@ -45,14 +45,14 @@ For the two survivors:
 
 | Name | PyPI | npm | GitHub user/org | Exact repository | Fuzzy repository count |
 |---|---:|---:|---:|---|---:|
-| `rivumi` | 404 | 404 | 404 | None | 0 |
+| `looplane` | 404 | 404 | 404 | None | 0 |
 | `nuvimi` | 404 | 404 | 404 | None | 2 irrelevant substring results |
 
 These status codes are timestamped observations, not reservations or guarantees. Package and account availability must be refreshed immediately before registration/publication.
 
 ## Recommendation
 
-Advance **Rivumi** and **Nuvimi** to the next phase only. The next phase should cover:
+Advance **looplane** and **Nuvimi** to the next phase only. The next phase should cover:
 
 1. exact and phonetic trademark databases in intended markets/classes;
 2. `.com`, `.ai`, and practical alternate-domain status;

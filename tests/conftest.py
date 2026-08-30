@@ -9,17 +9,15 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep rivumi's disk caches and saved config out of the real user state
+    """Keep looplane's disk caches and saved config out of the real user state
     so tests neither pollute it nor read entries from it."""
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "config" / "config.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "config" / "config.json"))
     monkeypatch.delenv("PCA_CONFIG", raising=False)
 
 
-FIXTURE_ROOT = (
-    Path(__file__).resolve().parents[1] / "evals" / "fixtures" / "tiny-python-bug"
-)
+FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "evals" / "fixtures" / "tiny-python-bug"
 
 
 def run_git(repository: Path, *args: str) -> str:

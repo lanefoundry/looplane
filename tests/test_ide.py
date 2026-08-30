@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from rivumi.ide import (
+from looplane.ide import (
     EditorDeepLinkStyle,
     IdeBridgeError,
     IdeDiagnosticSeverity,
@@ -21,7 +21,7 @@ def test_project_ide_diagnostics_loads_lsp_publish_diagnostics(tmp_path) -> None
     source = tmp_path / "src" / "app.py"
     source.parent.mkdir()
     source.write_text("x = 1\n", encoding="utf-8")
-    diagnostics = tmp_path / ".rivumi" / "ide"
+    diagnostics = tmp_path / ".looplane" / "ide"
     diagnostics.mkdir(parents=True)
     (diagnostics / "diagnostics.json").write_text(
         json.dumps(
@@ -58,7 +58,7 @@ def test_project_ide_diagnostics_loads_lsp_publish_diagnostics(tmp_path) -> None
 
 
 def test_project_ide_diagnostics_rejects_outside_file_uri(tmp_path) -> None:
-    diagnostics = tmp_path / ".rivumi" / "ide"
+    diagnostics = tmp_path / ".looplane" / "ide"
     diagnostics.mkdir(parents=True)
     (diagnostics / "diagnostics.json").write_text(
         json.dumps(
@@ -86,7 +86,7 @@ def test_project_open_files_loads_editor_state(tmp_path) -> None:
     source = tmp_path / "src" / "app.py"
     source.parent.mkdir()
     source.write_text("x = 1\n", encoding="utf-8")
-    open_files = tmp_path / ".rivumi" / "ide"
+    open_files = tmp_path / ".looplane" / "ide"
     open_files.mkdir(parents=True)
     (open_files / "open-files.json").write_text(
         json.dumps(

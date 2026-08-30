@@ -39,12 +39,12 @@
 
 `grep -rln -i "\blsp\b" codex/codex-rs --include="*.rs"` 無命中。codex 沒有 LSP 整合，靠 shell 執行測試/build 取得回饋。
 
-## rivumi 現況
+## looplane 現況
 
-- `src/rivumi/tools.py#run_check` — 「Run one exact argv verification command selected by its allowlisted name」（L197 description）；verification_commands 由外部傳入 exact non-empty argv（tools.py L80-83）。無任何 LSP / 被動診斷迴路。
-- 外部執行基建：`src/rivumi/external_runner.py#ExternalCodingRunner`。
+- `src/looplane/tools.py#run_check` — 「Run one exact argv verification command selected by its allowlisted name」（L197 description）；verification_commands 由外部傳入 exact non-empty argv（tools.py L80-83）。無任何 LSP / 被動診斷迴路。
+- 外部執行基建：`src/looplane/external_runner.py#ExternalCodingRunner`。
 
-## rivumi 設計草案（寫進文章）
+## looplane 設計草案（寫進文章）
 
 1. Phase 1 pull-on-edit：編輯工具成功後對該檔做一次 bounded LSP 診斷查詢（學 opencode `<diagnostics>` block，error-only、per-file cap）
 2. Phase 2 長駐 server 子程序（掛 external_runner 同級的生命週期管理）＋ deferred diagnostics 注入下一 turn（學 omp mutationVersion staleness + ledger 去重）

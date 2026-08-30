@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Rivumi must distinguish an automatic model selection policy from the concrete model reported by the
+looplane must distinguish an automatic model selection policy from the concrete model reported by the
 active runtime. The header and `/status` should show the actual model once known, without deriving it
 from assistant prose. Typing `/model` with no trailing space must immediately show choices.
 

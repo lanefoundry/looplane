@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.otel_export import export_run, run_to_otel_payload
+from looplane.otel_export import export_run, run_to_otel_payload
 
 
 def _write_run(run_dir: Path) -> None:
@@ -60,7 +60,7 @@ def test_run_to_otel_payload_maps_genai_attributes(tmp_path: Path) -> None:
     assert attributes["gen_ai.usage.output_tokens"] == {"intValue": 200}
     assert attributes["gen_ai.usage.cache_read_input_tokens"] == {"intValue": 400}
     assert attributes["gen_ai.usage.reasoning_tokens"] == {"intValue": 50}
-    assert attributes["rivumi.status"] == {"stringValue": "completed"}
+    assert attributes["looplane.status"] == {"stringValue": "completed"}
     assert span["status"]["code"] == "STATUS_CODE_OK"
 
 

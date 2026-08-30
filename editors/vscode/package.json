@@ -1,13 +1,13 @@
 {
-  "name": "rivumi-vscode",
-  "displayName": "Rivumi",
-  "description": "Push VS Code diagnostics and open-file context into Rivumi.",
+  "name": "looplane-vscode",
+  "displayName": "looplane",
+  "description": "Push VS Code diagnostics and open-file context into looplane.",
   "version": "0.1.0",
-  "publisher": "rivumi",
+  "publisher": "looplane",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vincentxuu/rivumi.git",
+    "url": "https://github.com/vincentxuu/looplane.git",
     "directory": "editors/vscode"
   },
   "engines": {
@@ -18,28 +18,28 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:rivumi.pushIdeContext"
+    "onCommand:looplane.pushIdeContext"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "rivumi.pushIdeContext",
-        "title": "Rivumi: Push IDE Context"
+        "command": "looplane.pushIdeContext",
+        "title": "looplane: Push IDE Context"
       }
     ],
     "configuration": {
-      "title": "Rivumi",
+      "title": "looplane",
       "properties": {
-        "rivumi.ideContext.enabled": {
+        "looplane.ideContext.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Push diagnostics and open files into .rivumi/ide for Rivumi runs."
+          "description": "Push diagnostics and open files into .looplane/ide for looplane runs."
         },
-        "rivumi.ideContext.webSocketUrl": {
+        "looplane.ideContext.webSocketUrl": {
           "type": "string",
           "default": "",
-          "description": "Optional Rivumi conversation WebSocket attach URL for direct IDE context push."
+          "description": "Optional looplane conversation WebSocket attach URL for direct IDE context push."
         }
       }
     }

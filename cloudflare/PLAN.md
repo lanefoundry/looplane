@@ -18,6 +18,6 @@ local release review is GO.
 
 Verified 2026-08-21: 44 Vitest cases across Worker and capability DO contracts, strict TypeScript,
 generated binding drift check, `wrangler deploy --dry-run`, and image smoke proving the wrapper is
-root-owned `0555`, drops to non-root `rivumi`, consumes the token file, and writes owner-only output.
+root-owned `0555`, drops to non-root `looplane`, consumes the token file, and writes owner-only output.
 The deployed local image ID is `sha256:25a65f1f9a03bd6b9c764d3781aada90b18a71ee2cb8c975ea43f52428e2dd50`
 for two independent builds from the same source and lockfiles.

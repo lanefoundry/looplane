@@ -8,8 +8,8 @@ import httpx
 import pytest
 from openai import APIStatusError
 
-from rivumi.cache_strategy import provider_cache_trace
-from rivumi.contracts import (
+from looplane.cache_strategy import provider_cache_trace
+from looplane.contracts import (
     InjectedContext,
     Message,
     ModelTurn,
@@ -18,7 +18,7 @@ from rivumi.contracts import (
     ToolObservation,
     Usage,
 )
-from rivumi.models import (
+from looplane.models import (
     AnthropicModel,
     GeminiModel,
     OpenAICompatibleModel,
@@ -30,7 +30,7 @@ from rivumi.models import (
     _http_error,
     _retry_after,
 )
-from rivumi.prompts import PromptSection, render_prompt_sections
+from looplane.prompts import PromptSection, render_prompt_sections
 
 TOOL = ToolDefinition(
     name="read_file",
@@ -129,9 +129,7 @@ async def test_openai_compatible_text_tool_and_usage_roundtrip() -> None:
     )
     completions = FakeCompletions(response)
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    model = OpenAICompatibleModel(
-        model="fake-model", client=client, supports_tool_calling=True
-    )
+    model = OpenAICompatibleModel(model="fake-model", client=client, supports_tool_calling=True)
 
     turn = await model.complete(MESSAGES, (TOOL,))
 
@@ -155,9 +153,7 @@ async def test_openai_compatible_renders_injected_context_as_marked_user_message
     )
     completions = FakeCompletions(response)
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    model = OpenAICompatibleModel(
-        model="fake-model", client=client, supports_tool_calling=True
-    )
+    model = OpenAICompatibleModel(model="fake-model", client=client, supports_tool_calling=True)
 
     await model.complete(
         [
@@ -186,9 +182,7 @@ async def test_openai_compatible_maps_message_attachments_to_native_content() ->
     )
     completions = FakeCompletions(response)
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    model = OpenAICompatibleModel(
-        model="fake-model", client=client, supports_tool_calling=True
-    )
+    model = OpenAICompatibleModel(model="fake-model", client=client, supports_tool_calling=True)
 
     await model.complete((Message(role="system", content="Use tools."), ATTACHMENT_MESSAGE))
 
@@ -356,12 +350,8 @@ async def test_http_adapters_map_message_attachments_to_native_content(provider:
     else:
         parts = requests[0]["contents"][0]["parts"]
         assert parts[0] == {"text": "Inspect attachments."}
-        assert parts[1] == {
-            "inline_data": {"mime_type": "image/png", "data": "aW1hZ2U="}
-        }
-        assert parts[2] == {
-            "text": "[attachment:notes.md; media_type=text/markdown]\n# Notes"
-        }
+        assert parts[1] == {"inline_data": {"mime_type": "image/png", "data": "aW1hZ2U="}}
+        assert parts[2] == {"text": "[attachment:notes.md; media_type=text/markdown]\n# Notes"}
 
 
 @pytest.mark.asyncio
@@ -439,9 +429,7 @@ async def test_openai_second_turn_preserves_tool_call_ids_and_failed_observation
     )
     completions = FakeCompletions(response)
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    model = OpenAICompatibleModel(
-        model="fake-model", client=client, supports_tool_calling=True
-    )
+    model = OpenAICompatibleModel(model="fake-model", client=client, supports_tool_calling=True)
 
     await model.complete(SECOND_TURN_MESSAGES, (TOOL,))
 
@@ -656,9 +644,7 @@ async def test_remote_ollama_compatible_endpoint_uses_explicit_api_key() -> None
         assert model.provider_name == "ollama"
         assert model.capabilities.tool_calling is True
         assert model._client.api_key == "fake-ollama-api-key"
-        assert str(model._client.base_url).rstrip("/") == (
-            "https://ollama-gateway.example.test/v1"
-        )
+        assert str(model._client.base_url).rstrip("/") == ("https://ollama-gateway.example.test/v1")
     finally:
         await model.aclose()
 
@@ -752,9 +738,7 @@ async def test_openai_compatible_passes_bounded_provider_options() -> None:
     await model.complete([Message(role="user", content="test")])
 
     assert completions.requests[0]["extra_body"]["think"] is False
-    assert completions.requests[0]["extra_body"]["prompt_cache_key"].startswith(
-        "rivumi-openai:"
-    )
+    assert completions.requests[0]["extra_body"]["prompt_cache_key"].startswith("looplane-openai:")
     trace = provider_cache_trace("openai-compatible", completions.requests[0])
     assert trace.cache_ready is True
     assert trace.prompt_cache_key is not None
@@ -864,9 +848,7 @@ async def test_openai_status_errors_are_normalized(
     error = APIStatusError("injected failure", response=response, body={"error": "failure"})
     completions = FakeCompletions(error)
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    model = OpenAICompatibleModel(
-        model="fake", client=client, supports_tool_calling=True
-    )
+    model = OpenAICompatibleModel(model="fake", client=client, supports_tool_calling=True)
 
     with pytest.raises(ProviderError) as caught:
         await model.complete(MESSAGES)
@@ -874,6 +856,7 @@ async def test_openai_status_errors_are_normalized(
     assert caught.value.kind == expected_kind
     assert caught.value.status_code == status_code
     assert caught.value.retry_after_seconds == 2
+
 
 RESPONSES_PAYLOAD = {
     "id": "resp-1",
@@ -992,7 +975,7 @@ async def test_responses_model_translates_canonical_request_shape() -> None:
         await client.aclose()
 
     request = requests[0]
-    assert request["prompt_cache_key"].startswith("rivumi-responses:")
+    assert request["prompt_cache_key"].startswith("looplane-responses:")
     trace = provider_cache_trace("openai-responses", request)
     assert trace.cache_ready is True
     assert trace.tool_schema_fingerprint is not None
@@ -1033,8 +1016,12 @@ async def test_responses_model_incomplete_maps_to_length_finish_reason() -> None
     }
     client = make_json_client(payload)
     model = ResponsesModel(
-        model="fake", api_key="test", base_url="https://opencode.ai/zen/v1",
-        client=client, allow_custom_endpoint=True, supports_tool_calling=True,
+        model="fake",
+        api_key="test",
+        base_url="https://opencode.ai/zen/v1",
+        client=client,
+        allow_custom_endpoint=True,
+        supports_tool_calling=True,
     )
 
     try:

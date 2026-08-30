@@ -13,16 +13,16 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from rivumi import cli
-from rivumi.approvals import HeadlessApprovalPolicy
-from rivumi.claude_conversation import IsolatedClaudeConversation
-from rivumi.codex_conversation import IsolatedCodexConversation
-from rivumi.codex_oauth import CodexCredentials, CodexCredentialStore
-from rivumi.contracts import ModelTurn, RunResult, RunStatus, TaskContract, ToolCall
-from rivumi.conversation_controller import BackendTurnLimiter, ConversationController
-from rivumi.loop import AgentRunner
-from rivumi.mcp_client import McpOAuthCredential, McpOAuthCredentialStore
-from rivumi.models import ScriptedModel
+from looplane import cli
+from looplane.approvals import HeadlessApprovalPolicy
+from looplane.claude_conversation import IsolatedClaudeConversation
+from looplane.codex_conversation import IsolatedCodexConversation
+from looplane.codex_oauth import CodexCredentials, CodexCredentialStore
+from looplane.contracts import ModelTurn, RunResult, RunStatus, TaskContract, ToolCall
+from looplane.conversation_controller import BackendTurnLimiter, ConversationController
+from looplane.loop import AgentRunner
+from looplane.mcp_client import McpOAuthCredential, McpOAuthCredentialStore
+from looplane.models import ScriptedModel
 
 FIX_PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
@@ -36,7 +36,7 @@ diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.
 """
 
 
-def test_bare_rivumi_runs_our_agent_loop_with_trace_and_session(
+def test_bare_looplane_runs_our_agent_loop_with_trace_and_session(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
     model = ScriptedModel(
@@ -48,7 +48,7 @@ def test_bare_rivumi_runs_our_agent_loop_with_trace_and_session(
     monkeypatch.setattr(cli, "_model_from_env", lambda **_: model)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(
-        "rivumi.approvals.TTYApprovalPolicy",
+        "looplane.approvals.TTYApprovalPolicy",
         lambda *_: HeadlessApprovalPolicy(allow_modify=True, allow_execute=True),
     )
     run_root = tmp_path / "runs"
@@ -122,8 +122,8 @@ def test_plugin_install_and_list_commands_install_local_package(tmp_path: Path) 
     installed_payload = json.loads(installed.output)
     assert installed_payload["name"] == "review-pack"
     assert installed_payload["discovery"]["keywords"] == ["review"]
-    assert (repo / ".rivumi" / "plugins" / "review-pack.json").is_file()
-    assert (repo / ".rivumi" / "plugins" / "review.md").is_file()
+    assert (repo / ".looplane" / "plugins" / "review-pack.json").is_file()
+    assert (repo / ".looplane" / "plugins" / "review.md").is_file()
     assert listed.exit_code == 0, listed.output
     payload = json.loads(listed.output)
     assert payload[0]["name"] == "review-pack"
@@ -136,13 +136,13 @@ def test_missing_textual_reports_editable_install_refresh(tmp_path: Path, monkey
     original_import = builtins.__import__
 
     def import_without_textual(name, *args, **kwargs):
-        if name == "rivumi.tui":
+        if name == "looplane.tui":
             raise ModuleNotFoundError("No module named 'textual'", name="textual")
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", import_without_textual)
     monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "config.json"))
 
     result = CliRunner().invoke(cli.app, ["--model", "qwen3:4b"])
 
@@ -165,10 +165,10 @@ def test_positional_prompt_cd_alias_and_print_mode_use_own_loop(
             captured["kwargs"] = kwargs
             super().__init__(task, selected_model, run_root, **kwargs)
 
-    monkeypatch.setattr("rivumi.loop.AgentRunner", CapturingRunner)
+    monkeypatch.setattr("looplane.loop.AgentRunner", CapturingRunner)
     monkeypatch.setattr(cli, "_model_from_env", lambda **_: model)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing-config.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -203,7 +203,7 @@ def test_known_subcommand_wins_over_default_prompt_routing(tmp_path: Path) -> No
 
 def test_config_command_and_cli_env_config_precedence(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "config.json"
-    monkeypatch.setenv("RIVUMI_CONFIG", str(path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(path))
     saved = CliRunner().invoke(
         cli.app,
         [
@@ -317,7 +317,7 @@ def test_routed_help_never_exposes_hidden_chat_command() -> None:
 def test_legacy_short_provider_option_has_actionable_migration_error(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
     result = CliRunner().invoke(
         cli.app,
         ["-p", "ollama", "--model", "qwen3:4b", "--task", "Fix it"],
@@ -326,7 +326,7 @@ def test_legacy_short_provider_option_has_actionable_migration_error(
     assert result.exit_code == 2
     assert "-p now means --print" in result.output
     assert "--provider" in result.output
-    assert "rivumi chat" not in result.output
+    assert "looplane chat" not in result.output
 
 
 def test_exec_positional_and_legacy_run_flags_share_headless_contract(
@@ -348,7 +348,7 @@ def test_exec_positional_and_legacy_run_flags_share_headless_contract(
                 artifacts={"patch": str(tmp_path / "changes.patch")},
             )
 
-    monkeypatch.setattr("rivumi.loop.AgentRunner", FakeRunner)
+    monkeypatch.setattr("looplane.loop.AgentRunner", FakeRunner)
     model_options = []
 
     def fake_model(**kwargs):
@@ -356,7 +356,7 @@ def test_exec_positional_and_legacy_run_flags_share_headless_contract(
         return ScriptedModel([ModelTurn(content="unused")])
 
     monkeypatch.setattr(cli, "_model_from_env", fake_model)
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     modern = CliRunner().invoke(
         cli.app,
@@ -385,7 +385,7 @@ def test_exec_positional_and_legacy_run_flags_share_headless_contract(
 def test_fallback_model_does_not_reuse_primary_custom_api_url(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
+    from looplane import loop
 
     captured_runner_kwargs: dict[str, object] = {}
     model_options: list[dict[str, object]] = []
@@ -412,7 +412,7 @@ def test_fallback_model_does_not_reuse_primary_custom_api_url(
     monkeypatch.setattr(cli, "_model_from_env", fake_model)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -446,7 +446,7 @@ def test_fallback_model_does_not_reuse_primary_custom_api_url(
 def test_model_role_alias_resolves_before_model_construction(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
+    from looplane import loop
 
     model_options: list[dict[str, object]] = []
 
@@ -471,7 +471,7 @@ def test_model_role_alias_resolves_before_model_construction(
     monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
     monkeypatch.setattr(cli, "_model_from_env", fake_model)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -486,7 +486,7 @@ def test_model_role_alias_resolves_before_model_construction(
 def test_fallback_model_role_alias_expands_to_ordered_candidates(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
+    from looplane import loop
 
     captured_runner_kwargs: dict[str, object] = {}
     model_options: list[dict[str, object]] = []
@@ -512,7 +512,7 @@ def test_fallback_model_role_alias_expands_to_ordered_candidates(
     monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
     monkeypatch.setattr(cli, "_model_from_env", fake_model)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -546,7 +546,7 @@ def test_fallback_model_role_alias_expands_to_ordered_candidates(
 def test_auto_review_builds_reviewer_lane_without_reusing_primary_custom_api_url(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
+    from looplane import loop
 
     captured_runner_kwargs: dict[str, object] = {}
     model_options: list[dict[str, object]] = []
@@ -572,7 +572,7 @@ def test_auto_review_builds_reviewer_lane_without_reusing_primary_custom_api_url
     monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
     monkeypatch.setattr(cli, "_model_from_env", fake_model)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -605,7 +605,7 @@ def test_auto_review_builds_reviewer_lane_without_reusing_primary_custom_api_url
 def test_sandbox_checks_flag_reaches_native_runner(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
+    from looplane import loop
 
     monkeypatch.setattr(cli.sys, "platform", "linux")
     captured_runner_kwargs: dict[str, object] = {}
@@ -634,7 +634,7 @@ def test_sandbox_checks_flag_reaches_native_runner(
         ),
     )
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -658,14 +658,14 @@ def test_sandbox_checks_flag_reaches_native_runner(
 def test_sandbox_config_reaches_native_runner(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
+    from looplane import loop
 
     monkeypatch.setattr(cli.sys, "platform", "linux")
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
             {
-                "runtime": "rivumi-agent",
+                "runtime": "looplane-agent",
                 "provider": "openai-compatible",
                 "model": "primary",
                 "sandbox_profile": "verification",
@@ -701,7 +701,7 @@ def test_sandbox_config_reaches_native_runner(
         ),
     )
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(config_path))
 
     result = CliRunner().invoke(
         cli.app,
@@ -724,8 +724,8 @@ def test_sandbox_config_reaches_native_runner(
 def test_exec_alias_wires_default_permission_guard(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
-    from rivumi.permissions import PermissionGuard
+    from looplane import loop
+    from looplane.permissions import PermissionGuard
 
     captured_runner_kwargs: dict[str, object] = {}
 
@@ -753,7 +753,7 @@ def test_exec_alias_wires_default_permission_guard(
         ),
     )
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -776,8 +776,8 @@ def test_exec_alias_wires_default_permission_guard(
 def test_exec_alias_wires_configured_permission_guard(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
-    from rivumi.permissions import PermissionGuard
+    from looplane import loop
+    from looplane.permissions import PermissionGuard
 
     captured_runner_kwargs: dict[str, object] = {}
     config_path = tmp_path / "config.json"
@@ -817,7 +817,7 @@ def test_exec_alias_wires_configured_permission_guard(
         ),
     )
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(config_path))
 
     result = CliRunner().invoke(
         cli.app,
@@ -834,8 +834,8 @@ def test_exec_alias_wires_configured_permission_guard(
 def test_exec_alias_wires_cwd_project_policy_after_user_config(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
-    from rivumi.permissions import PermissionGuard
+    from looplane import loop
+    from looplane.permissions import PermissionGuard
 
     captured_runner_kwargs: dict[str, object] = {}
     config_path = tmp_path / "config.json"
@@ -850,7 +850,7 @@ def test_exec_alias_wires_cwd_project_policy_after_user_config(
         ),
         encoding="utf-8",
     )
-    policy_dir = tiny_bug_repo / ".rivumi"
+    policy_dir = tiny_bug_repo / ".looplane"
     policy_dir.mkdir()
     (policy_dir / "policy.json").write_text(
         json.dumps(
@@ -887,7 +887,7 @@ def test_exec_alias_wires_cwd_project_policy_after_user_config(
     )
     monkeypatch.chdir(tiny_bug_repo)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(config_path))
 
     result = CliRunner().invoke(cli.app, ["exec", "Fix it"])
 
@@ -901,12 +901,12 @@ def test_exec_alias_wires_cwd_project_policy_after_user_config(
 def test_cli_fails_closed_with_clear_invalid_project_policy_error(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    policy_dir = tiny_bug_repo / ".rivumi"
+    policy_dir = tiny_bug_repo / ".looplane"
     policy_dir.mkdir()
     (policy_dir / "policy.json").write_text('{"deny_rules":["not valid"]}', encoding="utf-8")
     monkeypatch.chdir(tiny_bug_repo)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing-config.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -922,7 +922,7 @@ def test_cli_fails_closed_with_clear_invalid_project_policy_error(
     )
 
     assert result.exit_code == 2
-    assert ".rivumi/policy.json" in result.output
+    assert ".looplane/policy.json" in result.output
     assert "invalid deny rule" in result.output
 
 
@@ -1023,10 +1023,10 @@ def test_sessions_query_matches_bounded_event_content(tmp_path: Path) -> None:
 def test_sessions_query_matches_conversation_event_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from rivumi.conversation import ConversationEventKind, ConversationStore
+    from looplane.conversation import ConversationEventKind, ConversationStore
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    conversation_root = tmp_path / "state" / "rivumi" / "conversations"
+    conversation_root = tmp_path / "state" / "looplane" / "conversations"
     store = ConversationStore(conversation_root, durable=False)
     created = asyncio.run(store.create(runtime="codex-cli", title="notes"))
     snapshot, lease = asyncio.run(store.resume(created.manifest.conversation_id))
@@ -1423,7 +1423,7 @@ def test_policy_inspect_reports_sources_precedence_and_effective_rules(
     )
     project_dir = tmp_path / "repo"
     project_dir.mkdir()
-    policy_dir = project_dir / ".rivumi"
+    policy_dir = project_dir / ".looplane"
     policy_dir.mkdir()
     (policy_dir / "policy.json").write_text(
         json.dumps(
@@ -1434,7 +1434,7 @@ def test_policy_inspect_reports_sources_precedence_and_effective_rules(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(config_path))
 
     result = CliRunner().invoke(
         cli.app,
@@ -1482,11 +1482,11 @@ def test_policy_inspect_reports_invalid_project_policy_path(
     config_path.write_text("{}", encoding="utf-8")
     project_dir = tmp_path / "repo"
     project_dir.mkdir()
-    policy_dir = project_dir / ".rivumi"
+    policy_dir = project_dir / ".looplane"
     policy_dir.mkdir()
     policy_path = policy_dir / "policy.json"
     policy_path.write_text('{"allow_rules":["not valid"]}', encoding="utf-8")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(config_path))
 
     result = CliRunner().invoke(
         cli.app,
@@ -1538,7 +1538,7 @@ def test_sessions_show_and_replay_are_mutually_exclusive(tmp_path: Path) -> None
 def test_model_role_alias_honors_explicit_provider_filter(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import loop
+    from looplane import loop
 
     model_options: list[dict[str, object]] = []
 
@@ -1563,7 +1563,7 @@ def test_model_role_alias_honors_explicit_provider_filter(
     monkeypatch.setattr(loop, "AgentRunner", FakeRunner)
     monkeypatch.setattr(cli, "_model_from_env", fake_model)
     monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -1591,7 +1591,7 @@ def test_model_role_alias_without_candidates_fails_before_model_construction(
         raise AssertionError("_model_from_env should not run")
 
     monkeypatch.setattr(cli, "_model_from_env", fail_model)
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -1618,7 +1618,7 @@ def test_unknown_model_role_alias_fails_before_model_construction(
         raise AssertionError("_model_from_env should not run")
 
     monkeypatch.setattr(cli, "_model_from_env", fail_model)
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -1643,7 +1643,7 @@ def test_unknown_fallback_model_role_alias_fails_before_model_construction(
 
     monkeypatch.setattr(cli, "_model_from_env", fail_model)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
 
     result = CliRunner().invoke(
         cli.app,
@@ -1672,7 +1672,7 @@ def test_ollama_preset_retains_a_bounded_tool_turn_budget(monkeypatch) -> None:
         captured.update(kwargs)
         return sentinel
 
-    monkeypatch.setattr("rivumi.models.OpenAICompatibleModel", fake_model)
+    monkeypatch.setattr("looplane.models.OpenAICompatibleModel", fake_model)
 
     model = cli._model_from_env(
         provider="ollama",
@@ -1696,7 +1696,7 @@ def test_remote_ollama_uses_explicit_key_but_loopback_never_receives_it(monkeypa
         captured.append(kwargs)
         return object()
 
-    monkeypatch.setattr("rivumi.models.OpenAICompatibleModel", fake_model)
+    monkeypatch.setattr("looplane.models.OpenAICompatibleModel", fake_model)
     monkeypatch.setenv("OLLAMA_API_KEY", "remote-only-secret")
 
     cli._model_from_env(
@@ -1788,8 +1788,8 @@ def test_claude_backend_requires_explicit_coding_boundaries(
                 artifacts={"patch": str(tmp_path / "changes.patch")},
             )
 
-    monkeypatch.setattr("rivumi.claude_backend.ClaudeCodeBackend", FakeBackend)
-    monkeypatch.setattr("rivumi.external_runner.ExternalCodingRunner", FakeRunner)
+    monkeypatch.setattr("looplane.claude_backend.ClaudeCodeBackend", FakeBackend)
+    monkeypatch.setattr("looplane.external_runner.ExternalCodingRunner", FakeRunner)
 
     rejected = CliRunner().invoke(
         cli.app,
@@ -1847,14 +1847,14 @@ def test_codex_login_closes_oauth_client_when_callback_fails(monkeypatch) -> Non
 
     class FakeOAuth:
         def begin_login(self, *, originator: str):
-            assert originator == "rivumi"
+            assert originator == "looplane"
             return SimpleNamespace(url="https://example.test/login", state="state")
 
         async def aclose(self) -> None:
             nonlocal closed
             closed = True
 
-    monkeypatch.setattr("rivumi.codex_oauth.CodexOAuthClient", FakeOAuth)
+    monkeypatch.setattr("looplane.codex_oauth.CodexOAuthClient", FakeOAuth)
     monkeypatch.setattr(cli.webbrowser, "open", lambda _: True)
 
     def fail_after_listening(_, *, on_listening, **__) -> None:
@@ -1862,7 +1862,7 @@ def test_codex_login_closes_oauth_client_when_callback_fails(monkeypatch) -> Non
         raise TimeoutError("callback timed out")
 
     monkeypatch.setattr(
-        "rivumi.oauth_login.wait_for_codex_callback",
+        "looplane.oauth_login.wait_for_codex_callback",
         fail_after_listening,
     )
 
@@ -1894,9 +1894,9 @@ def test_codex_login_opens_browser_only_after_listener_is_ready(monkeypatch) -> 
         on_listening(("127.0.0.1", 1455))
         raise TimeoutError("callback timed out")
 
-    monkeypatch.setattr("rivumi.codex_oauth.CodexOAuthClient", FakeOAuth)
+    monkeypatch.setattr("looplane.codex_oauth.CodexOAuthClient", FakeOAuth)
     monkeypatch.setattr(cli.webbrowser, "open", open_browser)
-    monkeypatch.setattr("rivumi.oauth_login.wait_for_codex_callback", fail_after_listening)
+    monkeypatch.setattr("looplane.oauth_login.wait_for_codex_callback", fail_after_listening)
 
     result = CliRunner().invoke(cli.app, ["auth", "login-codex", "--timeout", "1"])
 
@@ -1936,7 +1936,7 @@ def test_codex_manual_login_hides_callback_and_never_opens_browser(
         prompt_options.update(kwargs)
         return "http://localhost:1455/auth/callback?code=short-lived&state=expected"
 
-    monkeypatch.setattr("rivumi.codex_oauth.CodexOAuthClient", FakeOAuth)
+    monkeypatch.setattr("looplane.codex_oauth.CodexOAuthClient", FakeOAuth)
     monkeypatch.setattr(cli, "_codex_credential_path", lambda: credential_path)
     monkeypatch.setattr(cli.typer, "prompt", prompt)
     monkeypatch.setattr(
@@ -1977,9 +1977,9 @@ def test_codex_status_is_redacted_and_logout_removes_only_app_grant(
     assert not credential_path.exists()
 
 
-def test_mcp_status_and_logout_use_rivumi_owned_grant(tmp_path: Path, monkeypatch) -> None:
+def test_mcp_status_and_logout_use_looplane_owned_grant(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    credential_path = tmp_path / "state" / "rivumi" / "auth" / "mcp-remote.json"
+    credential_path = tmp_path / "state" / "looplane" / "auth" / "mcp-remote.json"
     McpOAuthCredentialStore(credential_path).save(
         McpOAuthCredential(
             accessToken="access-secret",
@@ -2015,7 +2015,7 @@ def test_mcp_manual_login_hides_callback_and_persists_app_grant(
                         "oauth": {
                             "authorizationEndpoint": "https://auth.example.test/authorize",
                             "tokenEndpoint": "https://auth.example.test/token",
-                            "clientId": "rivumi",
+                            "clientId": "looplane",
                             "redirectUri": "http://localhost:1455/callback",
                             "accessTokenEnvVar": "REMOTE_MCP_ACCESS_TOKEN",
                         },
@@ -2058,7 +2058,7 @@ def test_mcp_manual_login_hides_callback_and_persists_app_grant(
         return "http://localhost:1455/callback?code=short-lived&state=expected"
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setattr("rivumi.mcp_client.McpOAuthClient", FakeOAuth)
+    monkeypatch.setattr("looplane.mcp_client.McpOAuthClient", FakeOAuth)
     monkeypatch.setattr(cli.typer, "prompt", prompt)
     monkeypatch.setattr(
         cli.webbrowser,
@@ -2076,19 +2076,19 @@ def test_mcp_manual_login_hides_callback_and_persists_app_grant(
     assert prompt_options["hide_input"] is True
     assert "short-lived" not in result.output
     assert "access-secret" not in result.output
-    credential_path = tmp_path / "state" / "rivumi" / "auth" / "mcp-remote.json"
+    credential_path = tmp_path / "state" / "looplane" / "auth" / "mcp-remote.json"
     credential = McpOAuthCredentialStore(credential_path).load()
     assert credential is not None
     assert credential.access_token == "access-secret"
 
 
 def _stub_verification(monkeypatch, *, ok: bool, message: str = "") -> None:
-    from rivumi.provider_verification import VerificationResult
+    from looplane.provider_verification import VerificationResult
 
     async def fake_verify(provider, fields, **_kwargs):
         return VerificationResult(ok=ok, message=message or f"{provider} check")
 
-    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fake_verify)
 
 
 def test_auth_set_key_prompts_hidden_and_persists_0600(tmp_path: Path, monkeypatch) -> None:
@@ -2101,7 +2101,7 @@ def test_auth_set_key_prompts_hidden_and_persists_0600(tmp_path: Path, monkeypat
 
     assert result.exit_code == 0, result.output
     assert "sk-secret" not in result.output
-    from rivumi.native_credentials import native_credential_path, resolve_native_field
+    from looplane.native_credentials import native_credential_path, resolve_native_field
 
     path = native_credential_path("anthropic")
     assert path.is_file()
@@ -2133,7 +2133,7 @@ def test_auth_set_key_prints_verification_failure_but_still_saves(
     assert result.exit_code == 0, result.output
     assert "⚠" in result.output
     assert "rejected the credential (401)" in result.output
-    from rivumi.native_credentials import resolve_native_field
+    from looplane.native_credentials import resolve_native_field
 
     assert resolve_native_field("anthropic", "api_key") == "sk-bad"
 
@@ -2147,7 +2147,7 @@ def test_auth_set_key_rejects_unknown_provider() -> None:
 
 def test_auth_clear_key_removes_stored_credential(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    from rivumi.native_credentials import save_native_credential
+    from looplane.native_credentials import save_native_credential
 
     save_native_credential("gemini", {"api_key": "sk-secret"})
 
@@ -2162,14 +2162,14 @@ def test_auth_clear_key_removes_stored_credential(tmp_path: Path, monkeypatch) -
 
 def test_auth_list_default_does_not_call_network(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    from rivumi.native_credentials import save_native_credential
+    from looplane.native_credentials import save_native_credential
 
     save_native_credential("gemini", {"api_key": "sk-secret"})
 
     async def fail_if_called(*_args, **_kwargs):
         raise AssertionError("auth list without --verify must not call the network")
 
-    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fail_if_called)
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fail_if_called)
 
     result = CliRunner().invoke(cli.app, ["auth", "list"])
 
@@ -2180,8 +2180,8 @@ def test_auth_list_default_does_not_call_network(tmp_path: Path, monkeypatch) ->
 
 def test_auth_list_shows_not_set_saved_and_verified_states(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    from rivumi.native_credentials import save_native_credential
-    from rivumi.provider_verification import VerificationResult
+    from looplane.native_credentials import save_native_credential
+    from looplane.provider_verification import VerificationResult
 
     save_native_credential("gemini", {"api_key": "good-key"})
     save_native_credential("groq", {"api_key": "bad-key"})
@@ -2191,7 +2191,7 @@ def test_auth_list_shows_not_set_saved_and_verified_states(tmp_path: Path, monke
             return VerificationResult(ok=True, message="Connected to gemini.")
         return VerificationResult(ok=False, message=f"{provider} rejected the credential (401).")
 
-    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fake_verify)
 
     result = CliRunner().invoke(cli.app, ["auth", "list", "--verify"])
 
@@ -2239,7 +2239,7 @@ def test_live_eval_requires_explicit_subscription_opt_in() -> None:
 def test_real_tty_routes_bare_prompt_to_full_screen_tui(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import tui
+    from looplane import tui
 
     captured: dict[str, object] = {}
 
@@ -2254,10 +2254,10 @@ def test_real_tty_routes_bare_prompt_to_full_screen_tui(
             captured["ran"] = True
             return None
 
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing-config.json"))
     monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
     monkeypatch.setattr(cli, "_discover_local_ollama_models", lambda: ("qwen3:4b",))
-    monkeypatch.setattr(tui, "RivumiApp", FakeApp)
+    monkeypatch.setattr(tui, "looplaneApp", FakeApp)
 
     result = CliRunner().invoke(
         cli.app,
@@ -2286,7 +2286,7 @@ def test_tui_subscription_runtime_routes_to_long_lived_isolated_session(
     model: str,
     session_type: type,
 ) -> None:
-    from rivumi import tui
+    from looplane import tui
 
     captured: dict[str, object] = {}
 
@@ -2300,9 +2300,9 @@ def test_tui_subscription_runtime_routes_to_long_lived_isolated_session(
         def run(self):
             return None
 
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing-config.json"))
     monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
-    monkeypatch.setattr(tui, "RivumiApp", FakeApp)
+    monkeypatch.setattr(tui, "looplaneApp", FakeApp)
     monkeypatch.setattr(
         cli,
         "_model_from_env",
@@ -2331,7 +2331,7 @@ def test_tui_subscription_runtime_routes_to_long_lived_isolated_session(
 def test_tui_codex_uses_one_isolated_long_lived_conversation(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import tui
+    from looplane import tui
 
     captured: dict[str, object] = {}
 
@@ -2345,10 +2345,10 @@ def test_tui_codex_uses_one_isolated_long_lived_conversation(
         def run(self):
             return None
 
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing-config.json"))
     monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
-    monkeypatch.setattr(tui, "RivumiApp", FakeApp)
-    monkeypatch.setattr("rivumi.external_runner.ExternalCodingRunner", None)
+    monkeypatch.setattr(tui, "looplaneApp", FakeApp)
+    monkeypatch.setattr("looplane.external_runner.ExternalCodingRunner", None)
 
     result = CliRunner().invoke(cli.app, ["-C", str(tiny_bug_repo)])
     assert result.exit_code == 0, result.output
@@ -2412,9 +2412,7 @@ def test_acquire_native_controller_reuses_open_and_recreates_closed(
     assert first.is_closed is True
 
 
-def test_conversation_server_wires_native_runtime(
-    tiny_bug_repo: Path, monkeypatch
-) -> None:
+def test_conversation_server_wires_native_runtime(tiny_bug_repo: Path, monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class FakeSession:
@@ -2453,7 +2451,7 @@ def test_conversation_server_wires_native_runtime(
 
 
 def test_rebuild_controller_after_failure(tmp_path: Path, monkeypatch) -> None:
-    from rivumi import tui
+    from looplane import tui
 
     captured: dict[str, object] = {}
 
@@ -2467,10 +2465,10 @@ def test_rebuild_controller_after_failure(tmp_path: Path, monkeypatch) -> None:
         def run(self) -> None:
             return None
 
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing-config.json"))
     monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
-    monkeypatch.setattr(tui, "RivumiApp", FakeApp)
-    monkeypatch.setattr("rivumi.external_runner.ExternalCodingRunner", None)
+    monkeypatch.setattr(tui, "looplaneApp", FakeApp)
+    monkeypatch.setattr("looplane.external_runner.ExternalCodingRunner", None)
 
     result = CliRunner().invoke(cli.app, ["-C", str(tmp_path)])
     assert result.exit_code == 0, result.output
@@ -2496,7 +2494,7 @@ def test_rebuild_controller_after_failure(tmp_path: Path, monkeypatch) -> None:
 def test_plain_flag_never_launches_full_screen_tui(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import tui
+    from looplane import tui
 
     class FakeRunner:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -2516,7 +2514,7 @@ def test_plain_flag_never_launches_full_screen_tui(
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(
         tui,
-        "RivumiApp",
+        "looplaneApp",
         lambda **_: (_ for _ in ()).throw(AssertionError("TUI must not launch")),
     )
     monkeypatch.setattr(
@@ -2524,7 +2522,7 @@ def test_plain_flag_never_launches_full_screen_tui(
         "_model_from_env",
         lambda **_: ScriptedModel([ModelTurn(content="unused")]),
     )
-    monkeypatch.setattr("rivumi.loop.AgentRunner", FakeRunner)
+    monkeypatch.setattr("looplane.loop.AgentRunner", FakeRunner)
 
     result = CliRunner().invoke(
         cli.app,
@@ -2543,7 +2541,7 @@ def test_plain_flag_never_launches_full_screen_tui(
 
 
 def test_startup_tracer_is_noop_when_disabled(tmp_path: Path, monkeypatch) -> None:
-    from rivumi.startup_trace import _StartupTracer
+    from looplane.startup_trace import _StartupTracer
 
     log = tmp_path / "startup.jsonl"
     tracer = _StartupTracer(None)
@@ -2553,10 +2551,8 @@ def test_startup_tracer_is_noop_when_disabled(tmp_path: Path, monkeypatch) -> No
     assert not log.exists()
 
 
-def test_startup_tracer_emits_config_load_span(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from rivumi.startup_trace import _StartupTracer
+def test_startup_tracer_emits_config_load_span(tmp_path: Path, monkeypatch) -> None:
+    from looplane.startup_trace import _StartupTracer
 
     log = tmp_path / "startup.jsonl"
     monkeypatch.setattr(cli, "_STARTUP", _StartupTracer(str(log)))

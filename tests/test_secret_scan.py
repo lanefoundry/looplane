@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rivumi.secret_scan import redact_secrets, scan_file_for_secrets, scan_patch_for_secrets
+from looplane.secret_scan import redact_secrets, scan_file_for_secrets, scan_patch_for_secrets
 
 
 def test_scan_patch_for_secrets_reports_added_secret_without_value() -> None:

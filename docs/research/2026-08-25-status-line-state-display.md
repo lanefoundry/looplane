@@ -5,7 +5,7 @@
 
 ## 問題
 
-rivumi 的 TUI footer 只有 `status · terminal_reason · N changed file(s)`（`src/rivumi/tui.py` `_result_status`）。
+looplane 的 TUI footer 只有 `status · terminal_reason · N changed file(s)`（`src/looplane/tui.py` `_result_status`）。
 token 用量、模型名、耗時都已被追蹤並持久化（`RunResult.usage`、`checkpoint.json`、
 `session.json` 的 `active_wall_time_seconds`、`ContextUsageUpdatedEvent`），但 UI 只能透過
 `/context`、`/status` 手動查詢，平時看不到。
@@ -59,17 +59,17 @@ token 用量、模型名、耗時都已被追蹤並持久化（`RunResult.usage`
 
 pi/codex 用 JSONL 事件流且 usage 內嵌（pi 內嵌 `message.usage`、codex 有 `TokenCount` event），
 resume 後可重算 context%；opencode 用 SQLite，session 層級 tokens/cost 是正規化欄位增量加總
-（`core/src/session/projector.ts:62-67`）。rivumi 現行的 `events.jsonl` + `session.json` 已符合此共識。
+（`core/src/session/projector.ts:62-67`）。looplane 現行的 `events.jsonl` + `session.json` 已符合此共識。
 
-## rivumi 決策（2026-08-25 實作）
+## looplane 決策（2026-08-25 實作）
 
 採 claude-code 演算法 + pi 版面，最小實作：
 
-1. 新增 `RuntimeMetrics(Static)` widget（`src/rivumi/tui.py`），掛在 `#status-row`
+1. 新增 `RuntimeMetrics(Static)` widget（`src/looplane/tui.py`），掛在 `#status-row`
    的 `#status` 與 `#new-items` 之間，narrow 模式隱藏。
 2. 顯示格式：`model · ↑in ↓out · ctx N% · Ns`（turn 結束後才顯示 elapsed）。
 3. context% = `telemetry.input_tokens / telemetry.context_window`——
-   rivumi 的 `ContextTelemetry.input_tokens` 已含 cached（subset 語義，
+   looplane 的 `ContextTelemetry.input_tokens` 已含 cached（subset 語義，
    `runtime_semantics.py:39-49` validator 保證），等價於 claude-code 公式。
 4. 顏色分級：>70% yellow、>90% bold red（抄 pi/omp 門檻）。
 5. 更新時機（對應 claude-code 的效能紀律）：只在
@@ -80,7 +80,7 @@ resume 後可重算 context%；opencode 用 SQLite，session 層級 tokens/cost 
 ## 未做（未來擴充）
 
 - codex 式可設定 `StatusLineItem` 列舉或 claude-code 式外部 command hook
-- cost 顯示（rivumi 的 Usage 尚無 cost 欄位）
+- cost 顯示（looplane 的 Usage 尚無 cost 欄位）
 
 ## 上緣「工作中」狀態設計（2026-08-25 調查）
 
@@ -107,11 +107,11 @@ resume 後可重算 context%；opencode 用 SQLite，session 層級 tokens/cost 
 - oh-my-pi：cadence 分離——shimmer 開 30fps、關閉時只推 spinner 幀不重繪文字
   （`packages/tui/src/components/loader.ts:95-102`）；shimmer palette 以 WeakMap 快取
 
-### rivumi 現況與缺口
+### looplane 現況與缺口
 
 已有：otter spinner 幀、glimmer 掃光、phase 文案、16 秒後 `(Ns)` elapsed（對標 pi，接近 claude-code）。
 
 缺口（優先序）：
 1. **esc to interrupt 提示**——codex/omp/claude 都有；建議與既有 elapsed 合併成 `(45s · esc to interrupt)`
-2. **即時 token 估算**——僅 claude-code 有；可抄 chars/4（rivumi 串流文字已在 `_runtime_stream_text`）
+2. **即時 token 估算**——僅 claude-code 有；可抄 chars/4（looplane 串流文字已在 `_runtime_stream_text`）
 3. 停滯變紅——claude-code 獨有，錦上添花

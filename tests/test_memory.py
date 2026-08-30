@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.memory import (
+from looplane.memory import (
     load_memory_entries,
     parse_remember_argument,
     relevant_memory_entries,

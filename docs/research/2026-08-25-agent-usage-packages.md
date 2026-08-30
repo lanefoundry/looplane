@@ -1,22 +1,22 @@
 # Agent 操作資訊生態系套件調查（開發參考）
 
 日期：2026-08-25（GitHub Search API 即時數據）
-關聯：`2026-08-25-status-line-state-display.md`（rivumi 狀態列設計）、
+關聯：`2026-08-25-status-line-state-display.md`（looplane 狀態列設計）、
 `.research/ccswitch-architecture`（已搬至 `docs/research/2026-08-22-ccswitch-architecture.md`）
 
 ## 生態系總覽
 
 圍繞 coding agent 操作資訊的第三方套件共十大類。共通點：**幾乎全部靠解析 agent 的本地
-JSONL 日誌或 statusline hook 運作**，沒有人碰 agent 內部 API——這驗證了 rivumi
+JSONL 日誌或 statusline hook 運作**，沒有人碰 agent 內部 API——這驗證了 looplane
 「log 格式即生態系入場券」的判斷。
 
-## 1. Provider / 帳號切換器（體量最大，與 rivumi 定位最接近）
+## 1. Provider / 帳號切換器（體量最大，與 looplane 定位最接近）
 
 | 套件 | Stars | 重點 |
 |------|-------|------|
-| [farion1231/cc-switch](https://github.com/farion1231/cc-switch) | **129k** | 跨平台桌面 All-in-One：Claude Code/Codex/OpenCode/OpenClaw/Grok/Hermes 的 provider 切換。rivumi 的 `runtime_registry` + provider 表直接對標 |
+| [farion1231/cc-switch](https://github.com/farion1231/cc-switch) | **129k** | 跨平台桌面 All-in-One：Claude Code/Codex/OpenCode/OpenClaw/Grok/Hermes 的 provider 切換。looplane 的 `runtime_registry` + provider 表直接對標 |
 | [jolehuit/clother](https://github.com/jolehuit/clother) | 430 | 多 provider profile 即時切換 CLI |
-| [SakuraByteCore/codexmate](https://github.com/SakuraByteCore/codexmate) | 337 | 本地控制台：跨 Codex/Claude/Gemini/Pi/OpenCode 切 provider、管 session、編排任務——「local-first control plane」定位與 rivumi 幾乎重疊 |
+| [SakuraByteCore/codexmate](https://github.com/SakuraByteCore/codexmate) | 337 | 本地控制台：跨 Codex/Claude/Gemini/Pi/OpenCode 切 provider、管 session、編排任務——「local-first control plane」定位與 looplane 幾乎重疊 |
 | [mcowger/plexus](https://github.com/mcowger/plexus) | 231 | 統一 API gateway + quota 追蹤 |
 | [xjoker/codex-switch](https://github.com/xjoker/codex-switch) | 58 | Codex 多帳號 profile + usage dashboard TUI |
 
@@ -30,7 +30,7 @@ JSONL 日誌或 statusline hook 運作**，沒有人碰 agent 內部 API——�
 | [phuryn/claude-usage](https://github.com/phuryn/claude-usage) | 2.2k | 本地 dashboard，Pro/Max 訂閱者進度條 |
 | [alexgreensh/token-optimizer](https://github.com/alexgreensh/token-optimizer) | 2.0k | 「ghost tokens」診斷、compaction 存活、context 品質衰減 |
 | [xiufengsun/TokenTracker](https://github.com/xiufengsun/TokenTracker) | 1.4k | 31 工具，原生 app，不讀 prompt 內容 |
-| [Piebald-AI/splitrail](https://github.com/Piebald-AI/splitrail) | 217 | 即時 tracker，明列支援 **OpenCode/Pi Agent**——與 rivumi runtime 表重疊 |
+| [Piebald-AI/splitrail](https://github.com/Piebald-AI/splitrail) | 217 | 即時 tracker，明列支援 **OpenCode/Pi Agent**——與 looplane runtime 表重疊 |
 | [douglasmonsky/codex-usage-tracker](https://github.com/douglasmonsky/codex-usage-tracker) | 193 | Codex 用量 MCP tools + dashboard（credits/caching/thread patterns） |
 | 其他 | | [aiusage](https://github.com/juliantanx/aiusage) 116★、[coding_agent_usage_tracker](https://github.com/Dicklesworthstone/coding_agent_usage_tracker) 80★（quota+rate limit+cost 一支 CLI）、[better-ccusage](https://github.com/cobra91/better-ccusage) 79★、[antigravity-usage](https://github.com/skainguyen1412/antigravity-usage) 374★、[gemistat](https://github.com/ryoppippi/gemistat) 21★ |
 
@@ -38,9 +38,9 @@ JSONL 日誌或 statusline hook 運作**，沒有人碰 agent 內部 API——�
 
 | 套件 | Stars | 重點 |
 |------|-------|------|
-| [jarrodwatts/claude-hud](https://github.com/jarrodwatts/claude-hud) | 27.6k | Claude Code plugin：context usage、active tools、running agents、todo progress 四象限——rivumi HUD 功能藍本 |
+| [jarrodwatts/claude-hud](https://github.com/jarrodwatts/claude-hud) | 27.6k | Claude Code plugin：context usage、active tools、running agents、todo progress 四象限——looplane HUD 功能藍本 |
 | [sirmalloc/ccstatusline](https://github.com/sirmalloc/ccstatusline) | 12.6k | 高度客製化 statusline + powerline 主題；吃 Claude Code statusLine stdin JSON |
-| [GLaDO8/claude-context-visualizer](https://github.com/GLaDO8/claude-context-visualizer) | 7 | truecolor 分段條顯示 context 佔用——rivumi footer ctx% 的視覺化升級方向 |
+| [GLaDO8/claude-context-visualizer](https://github.com/GLaDO8/claude-context-visualizer) | 7 | truecolor 分段條顯示 context 佔用——looplane footer ctx% 的視覺化升級方向 |
 
 ## 4. 即時監控 / Menu Bar / Limits
 
@@ -58,8 +58,8 @@ JSONL 日誌或 statusline hook 運作**，沒有人碰 agent 內部 API——�
 | [seastart/aicoder-session-viewer](https://github.com/seastart/aicoder-session-viewer) | 9 | 統一桌面 app：**Claude Code/Codex/Gemini/Antigravity/OpenCode** 的 session 瀏覽/恢復/匯出 |
 | [tanghong123/claude-replay](https://github.com/tanghong123/claude-replay) | 2 | 唯讀 transcript replay（`claude --resume` 但唯讀） |
 
-**對 rivumi 的意義**：rivumi 已有 `/resume`；跨 runtime 的統一 session 檢視是空白地帶，
-而 rivumi 的 runtime_registry 恰好握有所有 backend 的 session 位置。
+**對 looplane 的意義**：looplane 已有 `/resume`；跨 runtime 的統一 session 檢視是空白地帶，
+而 looplane 的 runtime_registry 恰好握有所有 backend 的 session 位置。
 
 ## 6. DevTools / 控制台 / Observability 平台
 
@@ -79,8 +79,8 @@ JSONL 日誌或 statusline hook 運作**，沒有人碰 agent 內部 API——�
 - [KB1SLN-Labs/agent-observability](https://github.com/KB1SLN-Labs/agent-observability)（13★）：全自架 OTel → Prometheus + Loki → Grafana
 - [RogerReed/agentlens](https://github.com/RogerReed/agentlens)（11★）：OTEL traces + 本地 log 的 VS Code 檢視
 
-**對 rivumi 的意義**：OTel 語義約定（GenAI events）正在成為 agent 遙測的交換標準；
-rivumi 的 `events.jsonl` 若對齊 OTel GenAI 語義，可免費接入整個 Grafana 生態。
+**對 looplane 的意義**：OTel 語義約定（GenAI events）正在成為 agent 遙測的交換標準；
+looplane 的 `events.jsonl` 若對齊 OTel GenAI 語義，可免費接入整個 Grafana 生態。
 
 ## 8. Context Window 視覺化 / 診斷
 
@@ -110,17 +110,17 @@ rivumi 的 `events.jsonl` 若對齊 OTel GenAI 語義，可免費接入整個 Gr
 
 ## 開發啟示（彙整）
 
-1. **JSONL 內嵌 usage 是入場券**：第 2/4/5/8 類全部依賴解析本地日誌。rivumi 的
+1. **JSONL 內嵌 usage 是入場券**：第 2/4/5/8 類全部依賴解析本地日誌。looplane 的
    `events.jsonl` + `session.json` 已符合共識，應文件化 schema（對標 pi `docs/session-format.md`）
 2. **cc-switch 129k★ 是最強市場信號**：provider/runtime 切換的需求遠大於 agent 本身——
-   rivumi 的 `runtime_registry` 定位踩在生態系最大痛點上，`codexmate`（337★）證明
+   looplane 的 `runtime_registry` 定位踩在生態系最大痛點上，`codexmate`（337★）證明
    「local-first control plane」還有整併空間
 3. **claude-hud 四象限**（context/tools/agents/todo）是 HUD 藍本；ccstatusline 證明
    「狀態 JSON → 外部渲染」契約需求真實
 4. **OTel GenAI 語義**是新興交換標準（loongsuite-pilot/opencode-plugin-otel），
-   rivumi events 對齊後可免費接入 Grafana 生態
+   looplane events 對齊後可免費接入 Grafana 生態
 5. **跨 runtime 統一 session 檢視是空白地帶**：aicoder-session-viewer 只有 9★ 但方向正確，
-   rivumi 握有所有 backend 的 session 位置，是天然整合者
+   looplane 握有所有 backend 的 session 位置，是天然整合者
 6. **預算硬上限**（budgetclaw）與 **agent 可讀回的 observability**（tma1）是新興差異化方向
 
 ## 行動計畫（2026-08-25 決策：全做）
@@ -133,11 +133,11 @@ rivumi 的 `events.jsonl` 若對齊 OTel GenAI 語義，可免費接入整個 Gr
 4. `docs/session-format.md`——生態入場券
 5. `statusline_command` 設定（claude-code 式外部渲染契約）
 6. `Limits.max_total_tokens` 預算硬上限（terminal_reason `token_budget_exceeded`）
-7. `rivumi sessions` 跨 run/conversation 清單
-8. `rivumi export-otel` OTel GenAI OTLP-JSON 匯出
+7. `looplane sessions` 跨 run/conversation 清單
+8. `looplane export-otel` OTel GenAI OTLP-JSON 匯出
 
 後續外部動作（需人工）：
 
-- 向 splitrail / codeburn / ccusage 提 rivumi parser PR（附 `docs/session-format.md`）
+- 向 splitrail / codeburn / ccusage 提 looplane parser PR（附 `docs/session-format.md`）
 - 對齊 loongsuite-pilot 的 OTel event 細節後提交整合
-- 向 awesome-claude-code 提交 rivumi 條目
+- 向 awesome-claude-code 提交 looplane 條目

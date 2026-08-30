@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.contracts import Limits, ToolCall, VerificationCommand
-from rivumi.policy import SafePathPolicy
-from rivumi.tools import ToolExecutor
+from looplane.contracts import Limits, ToolCall, VerificationCommand
+from looplane.policy import SafePathPolicy
+from looplane.tools import ToolExecutor
 
 
 def make_executor(
@@ -183,11 +183,11 @@ def test_tool_program_rejects_expanded_loop_over_step_limit(tiny_bug_repo: Path)
             name="tool_program",
             arguments={
                 "steps": [
-                        {
-                            "op": "repeat",
-                            "count": 2,
-                            "steps": [{"op": "git_diff"}, {"op": "git_diff"}],
-                        }
+                    {
+                        "op": "repeat",
+                        "count": 2,
+                        "steps": [{"op": "git_diff"}, {"op": "git_diff"}],
+                    }
                 ]
             },
         )
@@ -417,9 +417,9 @@ diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.
     assert observation.error is not None
     assert "exceed" in observation.error.lower()
     assert "bytes" in observation.error.lower()
-    assert "left - right" in (
-        tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
-    ).read_text()
+    assert (
+        "left - right" in (tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py").read_text()
+    )
 
 
 def test_apply_patch_rejects_stale_target_content(tiny_bug_repo: Path) -> None:
@@ -678,9 +678,7 @@ def test_replace_text_enforces_cumulative_structural_limits(
     assert second_result.error is not None and error_fragment in second_result.error
     assert first.read_text() == "first = True\n"
     assert second.read_text() == "second = False\n"
-    assert executor.reviewable_patch().changed_paths == (
-        "src/tiny_python_bug/first.py",
-    )
+    assert executor.reviewable_patch().changed_paths == ("src/tiny_python_bug/first.py",)
 
 
 def test_replace_text_requires_a_current_read(tiny_bug_repo: Path) -> None:
@@ -796,7 +794,7 @@ def test_replace_text_restores_original_after_post_replace_fsync_failure(
     assert observation.ok is False
     assert observation.error is not None and "fsync failure" in observation.error
     assert target.read_bytes() == before
-    assert not list(target.parent.glob(".*.rivumi-replace-*"))
+    assert not list(target.parent.glob(".*.looplane-replace-*"))
 
 
 def test_tool_output_limit_is_a_true_utf8_byte_cap(tiny_bug_repo: Path) -> None:
@@ -842,7 +840,7 @@ def test_verification_process_does_not_receive_model_or_github_secrets(
 def test_sandboxed_verification_fails_closed_when_platform_support_is_missing(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import rivumi.runtime as runtime
+    import looplane.runtime as runtime
 
     marker = tmp_path / "must-not-exist"
     monkeypatch.setattr(runtime.sys, "platform", "linux")
@@ -869,7 +867,7 @@ def test_sandboxed_verification_fails_closed_when_platform_support_is_missing(
 def test_sandboxed_verification_passes_profile_and_read_roots(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import rivumi.tools as tools
+    import looplane.tools as tools
 
     captured: dict[str, object] = {}
 
@@ -988,12 +986,8 @@ new file mode 100644
     limit = max(len(first.encode()), len(second.encode())) + 40
     executor = make_executor(tiny_bug_repo, limits=Limits(max_patch_bytes=limit))
 
-    first_observation = executor.execute(
-        ToolCall(name="apply_patch", arguments={"patch": first})
-    )
-    second_observation = executor.execute(
-        ToolCall(name="apply_patch", arguments={"patch": second})
-    )
+    first_observation = executor.execute(ToolCall(name="apply_patch", arguments={"patch": first}))
+    second_observation = executor.execute(ToolCall(name="apply_patch", arguments={"patch": second}))
 
     assert first_observation.ok is True
     assert second_observation.ok is False

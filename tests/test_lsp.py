@@ -6,8 +6,8 @@ import textwrap
 import pytest
 from pydantic import ValidationError
 
-from rivumi.ide import load_project_ide_diagnostics
-from rivumi.lsp import LspServerCommand, ManagedLspServer
+from looplane.ide import load_project_ide_diagnostics
+from looplane.lsp import LspServerCommand, ManagedLspServer
 
 
 @pytest.mark.asyncio

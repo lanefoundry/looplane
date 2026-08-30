@@ -42,7 +42,7 @@ remained unavailable with `Transport closed`. Current behavior was then verified
 ## Ideas borrowed and adjustments
 
 The Worker is intentionally a control plane, not the coding agent. It stages validated input,
-activates a capability, invokes `/usr/local/bin/rivumi-sandbox-run`, validates the terminal bundle, and
+activates a capability, invokes `/usr/local/bin/looplane-sandbox-run`, validates the terminal bundle, and
 tears down. The Python wheel contains the same `AgentRunner`, model contract, tools, path policy,
 approval policy, checkpoint, patch, and verifier used by local headless mode.
 
@@ -96,7 +96,7 @@ npm --prefix cloudflare run dry-run      Worker, 2 DO bindings, container built
 git diff --check                         passed
 ```
 
-Container evidence confirms root-owned mode `0555` wrapper, non-root `rivumi` execution, owner-only
+Container evidence confirms root-owned mode `0555` wrapper, non-root `looplane` execution, owner-only
 workspace/response, consumed token file, blocked same-user `/proc` environment read, six original
 sandbox contract tests plus the bounded error test, and repeatable image construction.
 

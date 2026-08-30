@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.claude_conversation import IsolatedClaudeConversation
-from rivumi.conversation_runtime import (
+from looplane.claude_conversation import IsolatedClaudeConversation
+from looplane.conversation_runtime import (
     RuntimeToolKind,
     RuntimeToolStatus,
     RuntimeTurnStatus,
@@ -13,7 +13,7 @@ from rivumi.conversation_runtime import (
     ToolStartedEvent,
     TurnCompletedEvent,
 )
-from rivumi.tools import ReviewablePatch
+from looplane.tools import ReviewablePatch
 
 
 class FakeWorkspace:
@@ -86,11 +86,11 @@ async def test_file_change_gets_pca_audited_relative_path_and_diff(
         TurnCompletedEvent(sequence=2, turn_id="turn", status=RuntimeTurnStatus.COMPLETED),
     )
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ConversationWorkspace.create",
+        "looplane.claude_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ClaudeAgentSession",
+        "looplane.claude_conversation.ClaudeAgentSession",
         lambda **_kwargs: FakeSession(events),
     )
     host = IsolatedClaudeConversation(tmp_path)
@@ -111,11 +111,11 @@ async def test_workspace_review_failure_turns_terminal_into_failure(
     workspace = FakeWorkspace(tmp_path, review_error=RuntimeError("unsafe patch"))
     events = (TurnCompletedEvent(sequence=0, turn_id="turn", status=RuntimeTurnStatus.COMPLETED),)
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ConversationWorkspace.create",
+        "looplane.claude_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ClaudeAgentSession",
+        "looplane.claude_conversation.ClaudeAgentSession",
         lambda **_kwargs: FakeSession(events),
     )
     host = IsolatedClaudeConversation(tmp_path)
@@ -131,11 +131,11 @@ async def test_unreported_patch_fails_terminal_audit(tmp_path: Path, monkeypatch
     workspace = FakeWorkspace(tmp_path)
     events = (TurnCompletedEvent(sequence=0, turn_id="turn", status=RuntimeTurnStatus.COMPLETED),)
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ConversationWorkspace.create",
+        "looplane.claude_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ClaudeAgentSession",
+        "looplane.claude_conversation.ClaudeAgentSession",
         lambda **_kwargs: FakeSession(events),
     )
     host = IsolatedClaudeConversation(tmp_path)
@@ -168,11 +168,11 @@ async def test_read_tool_never_receives_workspace_diff(tmp_path: Path, monkeypat
         TurnCompletedEvent(sequence=2, turn_id="turn", status=RuntimeTurnStatus.COMPLETED),
     )
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ConversationWorkspace.create",
+        "looplane.claude_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ClaudeAgentSession",
+        "looplane.claude_conversation.ClaudeAgentSession",
         lambda **_kwargs: FakeSession(events),
     )
     host = IsolatedClaudeConversation(tmp_path)
@@ -187,11 +187,11 @@ async def test_read_tool_never_receives_workspace_diff(tmp_path: Path, monkeypat
 async def test_session_constructor_failure_closes_workspace(tmp_path: Path, monkeypatch) -> None:
     workspace = FakeWorkspace(tmp_path)
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ConversationWorkspace.create",
+        "looplane.claude_conversation.ConversationWorkspace.create",
         lambda *_args, **_kwargs: _async_value(workspace),
     )
     monkeypatch.setattr(
-        "rivumi.claude_conversation.ClaudeAgentSession",
+        "looplane.claude_conversation.ClaudeAgentSession",
         lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad session")),
     )
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.conversation_workspace import (
+from looplane.conversation_workspace import (
     ConversationWorkspace,
     ConversationWorkspaceIntegrityError,
 )

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from rivumi.startup_cache import (
+from looplane.startup_cache import (
     CACHE_SCHEMA_VERSION,
     _cache_dir,
     _safe_filename,

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.instructions import (
+from looplane.instructions import (
     load_instruction_documents,
     render_instruction_context,
     render_instruction_diagnostics,
@@ -19,7 +19,7 @@ def test_load_instruction_documents_orders_user_root_and_subfolder(tmp_path: Pat
     user_file = tmp_path / "user-instructions.md"
     user_file.write_text("Prefer terse output.", encoding="utf-8")
     (project / "AGENTS.md").write_text("Root guidance.", encoding="utf-8")
-    (nested / "RIVUMI.md").write_text("Nested guidance.", encoding="utf-8")
+    (nested / "LOOPLANE.md").write_text("Nested guidance.", encoding="utf-8")
 
     documents = load_instruction_documents(
         project_root=project,
@@ -30,7 +30,7 @@ def test_load_instruction_documents_orders_user_root_and_subfolder(tmp_path: Pat
     assert [document.source for document in documents] == [
         str(user_file),
         "AGENTS.md",
-        "packages/app/RIVUMI.md",
+        "packages/app/LOOPLANE.md",
     ]
     rendered = render_instruction_context(documents)
     assert rendered.index("Prefer terse output.") < rendered.index("Root guidance.")
@@ -47,7 +47,7 @@ def test_project_override_instructions_replace_earlier_project_layers(
     user_file.write_text("User guidance.", encoding="utf-8")
     (project / "AGENTS.md").write_text("Root guidance.", encoding="utf-8")
     (nested / "AGENTS.override.md").write_text("Override guidance.", encoding="utf-8")
-    (nested / "RIVUMI.md").write_text("Nested normal guidance.", encoding="utf-8")
+    (nested / "LOOPLANE.md").write_text("Nested normal guidance.", encoding="utf-8")
 
     documents = load_instruction_documents(
         project_root=project,

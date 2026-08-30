@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from rivumi.cli_config import SUPPORTED_PROVIDERS
-from rivumi.contracts import Usage
-from rivumi.provider_catalog import ModelRole, estimate_cost, role_candidates
+from looplane.cli_config import SUPPORTED_PROVIDERS
+from looplane.contracts import Usage
+from looplane.provider_catalog import ModelRole, estimate_cost, role_candidates
 
 
 def test_estimate_cost_marks_static_table_as_estimated() -> None:
@@ -41,9 +41,7 @@ def test_role_candidates_filter_provider() -> None:
 
 
 def test_role_candidates_allow_only_explicit_unknown_price_routes() -> None:
-    assert ("opencode-zen", "muse-spark-1.2-contributor-free") in role_candidates(
-        ModelRole.PARSER
-    )
+    assert ("opencode-zen", "muse-spark-1.2-contributor-free") in role_candidates(ModelRole.PARSER)
     assert role_candidates(ModelRole.PARSER, provider="unknown") == ()
 
 

@@ -1,4 +1,4 @@
-from rivumi.transcript import (
+from looplane.transcript import (
     AssistantItem,
     NoticeItem,
     ToolGroupItem,

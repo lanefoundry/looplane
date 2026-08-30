@@ -7,9 +7,9 @@ from textwrap import dedent
 
 import pytest
 
-from rivumi.approvals import ApprovalDecision, ToolEffect
-from rivumi.codex_app_server import CodexAppServerSession
-from rivumi.conversation_runtime import (
+from looplane.approvals import ApprovalDecision, ToolEffect
+from looplane.codex_app_server import CodexAppServerSession
+from looplane.conversation_runtime import (
     ActionPreviewUpdatedEvent,
     ApprovalRequestedEvent,
     ApprovalResolvedEvent,
@@ -29,7 +29,7 @@ from rivumi.conversation_runtime import (
     TurnCompletedEvent,
     TurnStartedEvent,
 )
-from rivumi.runtime_semantics import ContextTelemetryAccuracy, ProposedChangeKind
+from looplane.runtime_semantics import ContextTelemetryAccuracy, ProposedChangeKind
 
 
 def _fake_codex(
@@ -67,7 +67,7 @@ def _fake_codex(
                 if method == "initialize":
                     capabilities = frame["params"]["capabilities"]
                     assert frame["params"]["clientInfo"] == {{
-                        "name": "rivumi", "title": "Rivumi", "version": "0.1.0"
+                        "name": "looplane", "title": "looplane", "version": "0.1.0"
                     }}
                     assert capabilities["experimentalApi"] is True
                     assert (
@@ -429,9 +429,7 @@ async def test_foreign_thread_item_notification_fails_closed(tmp_path: Path) -> 
     session._native_thread_id = "thread"
     session._bind_turn("native-turn", "local-turn")
     session._active_turn = "local-turn"
-    with pytest.raises(
-        ConversationProtocolError, match="item/started notification correlation"
-    ):
+    with pytest.raises(ConversationProtocolError, match="item/started notification correlation"):
         session._handle_notification(
             "item/started",
             {
@@ -1096,7 +1094,7 @@ async def test_unknown_turn_notification_is_dropped_with_diagnostics(
     session._native_thread_id = "thread"
     session._bind_turn("native-turn", "local-turn")
 
-    with caplog.at_level(_logging.WARNING, logger="rivumi.codex_app_server"):
+    with caplog.at_level(_logging.WARNING, logger="looplane.codex_app_server"):
         session._handle_notification(
             "thread/tokenUsage/updated",
             {"threadId": "thread", "turnId": "rogue-turn", "tokenUsage": {}},
@@ -1105,16 +1103,12 @@ async def test_unknown_turn_notification_is_dropped_with_diagnostics(
     # Observational telemetry degrades instead of ending the conversation.
     assert session._event_queue.empty()
     # The offending native id still stays diagnosable in the log.
-    warning = next(
-        record for record in caplog.records if record.levelno == _logging.WARNING
-    )
+    warning = next(record for record in caplog.records if record.levelno == _logging.WARNING)
     assert "rogue-turn" in warning.getMessage()
 
 
 @pytest.mark.asyncio
-async def test_unknown_turn_diagnostics_include_retained_stderr(
-    tmp_path: Path, caplog
-) -> None:
+async def test_unknown_turn_diagnostics_include_retained_stderr(tmp_path: Path, caplog) -> None:
     import logging as _logging
 
     session = CodexAppServerSession(working_directory=tmp_path)
@@ -1123,22 +1117,20 @@ async def test_unknown_turn_diagnostics_include_retained_stderr(
     session._stderr_tail.append(b"codex panic: internal turn registry reset\n")
 
     with (
-        caplog.at_level(_logging.WARNING, logger="rivumi.codex_app_server"),
+        caplog.at_level(_logging.WARNING, logger="looplane.codex_app_server"),
         pytest.raises(ConversationProtocolError) as exc_info,
     ):
-            session._handle_notification(
-                "item/started",
-                {
-                    "threadId": "thread",
-                    "turnId": "subagent-turn",
-                    "item": {"id": "item-1", "type": "reasoning"},
-                },
-            )
+        session._handle_notification(
+            "item/started",
+            {
+                "threadId": "thread",
+                "turnId": "subagent-turn",
+                "item": {"id": "item-1", "type": "reasoning"},
+            },
+        )
 
     assert "item/started" in str(exc_info.value)
-    warning = next(
-        record for record in caplog.records if record.levelno == _logging.WARNING
-    )
+    warning = next(record for record in caplog.records if record.levelno == _logging.WARNING)
     text = warning.getMessage()
     assert "codex panic: internal turn registry reset" in text
     assert "'subagent-turn'" in text
@@ -1172,10 +1164,7 @@ async def test_server_initiated_turn_is_adopted_into_active_turn(tmp_path: Path)
     )
 
     # The replacement native id now maps onto the active logical turn.
-    assert (
-        session._local_turn("native-turn-replacement", context="verify")
-        == "local-turn"
-    )
+    assert session._local_turn("native-turn-replacement", context="verify") == "local-turn"
     # The original reverse binding is preserved for interrupts.
     assert session._local_turns["local-turn"] == "native-turn"
 
@@ -1189,9 +1178,7 @@ async def test_server_initiated_completion_for_adopted_turn_terminates(
     session._bind_turn("native-turn", "local-turn")
     session._active_turn = "local-turn"
 
-    session._handle_notification(
-        "turn/started", {"turn": {"id": "native-turn-replacement"}}
-    )
+    session._handle_notification("turn/started", {"turn": {"id": "native-turn-replacement"}})
     session._handle_notification(
         "turn/completed",
         {"turn": {"id": "native-turn-replacement", "status": "completed"}},

@@ -18,7 +18,7 @@ Source: follow-up from `docs/agent-diff-report.md`.
 - `uv run pytest -q tests/test_runtime_semantics.py tests/test_prompts.py tests/test_loop_e2e.py`
 - `uv run pytest -q tests/test_tui.py -k "approval"`
 - `uv run pytest -q tests/test_cli.py::test_sessions_show_renders_compact_timeline`
-- `uv run ruff check src/rivumi/approvals.py src/rivumi/permissions.py src/rivumi/loop.py src/rivumi/tui.py src/rivumi/runtime_semantics.py src/rivumi/prompts.py src/rivumi/session_replay.py tests/test_approvals.py tests/test_permissions.py tests/test_tui.py tests/test_runtime_semantics.py tests/test_prompts.py tests/test_loop_e2e.py tests/test_session_replay.py`
+- `uv run ruff check src/looplane/approvals.py src/looplane/permissions.py src/looplane/loop.py src/looplane/tui.py src/looplane/runtime_semantics.py src/looplane/prompts.py src/looplane/session_replay.py tests/test_approvals.py tests/test_permissions.py tests/test_tui.py tests/test_runtime_semantics.py tests/test_prompts.py tests/test_loop_e2e.py tests/test_session_replay.py`
 
 ## Constraints
 

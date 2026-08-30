@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.ask_runner import ExternalAskRunner
-from rivumi.backends import (
+from looplane.ask_runner import ExternalAskRunner
+from looplane.backends import (
     ExternalAgentResult,
     ExternalAgentTask,
     ExternalRunStatus,
 )
-from rivumi.contracts import RunStatus
+from looplane.contracts import RunStatus
 
 
 class AskBackend:

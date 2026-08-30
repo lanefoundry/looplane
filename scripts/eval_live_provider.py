@@ -55,12 +55,10 @@ def prepare_source(fixture: Path, destination: Path) -> tuple[str, str]:
     )
     require_command(["git", "init", "-q"], cwd=destination)
     require_command(["git", "config", "user.email", "eval@example.com"], cwd=destination)
-    require_command(["git", "config", "user.name", "Rivumi Eval"], cwd=destination)
+    require_command(["git", "config", "user.name", "looplane Eval"], cwd=destination)
     require_command(["git", "add", "."], cwd=destination)
     require_command(["git", "commit", "-qm", "fixture: live provider eval"], cwd=destination)
-    return require_command(["git", "rev-parse", "HEAD"], cwd=destination), tree_digest(
-        destination
-    )
+    return require_command(["git", "rev-parse", "HEAD"], cwd=destination), tree_digest(destination)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -99,7 +97,7 @@ def build_agent_command(
     command = [
         sys.executable,
         "-m",
-        "rivumi",
+        "looplane",
         "run",
         "--repo",
         str(source),
@@ -181,9 +179,7 @@ def evaluate_attempt(
             and result.get("terminal_reason") == "verified"
             and all(item.get("ok") is True for item in result.get("verification", []))
         )
-        checks["changed_files"] = result.get("changed_files") == config[
-            "expected_changed_files"
-        ]
+        checks["changed_files"] = result.get("changed_files") == config["expected_changed_files"]
         artifacts = result.get("artifacts", {})
         patch_path = Path(str(artifacts.get("patch", "")))
         events_path = Path(str(artifacts.get("events", "")))

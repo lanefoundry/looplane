@@ -2,7 +2,7 @@
 
 > 日期：2026-08-24
 > 類型：技術調查 / post-mortem
-> 狀態：**已解決** — rivumi 已內建 `ResponsesModel` adapter（見 §8）
+> 狀態：**已解決** — looplane 已內建 `ResponsesModel` adapter（見 §8）
 
 ## TL;DR
 
@@ -163,7 +163,7 @@ pi --provider opencode-zen --model hy3-free
 
 ## 8. 解決紀錄（2026-08-24）
 
-最終採用「方案 A 的 rivumi 內建版」：在 rivumi 實作 `ResponsesModel` adapter，而非外部閘道。
+最終採用「方案 A 的 looplane 內建版」：在 looplane 實作 `ResponsesModel` adapter，而非外部閘道。
 
 ### 改動
 
@@ -182,8 +182,8 @@ pi --provider opencode-zen --model hy3-free
 
 ### 設計筆記
 
-- 轉譯邏輯沿用 `codex_oauth.OpenAICodexResponsesModel` 的既有模式（該 adapter 早已證明 responses 協定在 rivumi 可行），差異僅在 Codex 走 SSE、本 adapter 走 JSON——符合 rivumi non-streaming 邊界
-- pi 仍無法直接用 muse-spark（pi 的 catalog 問題在 pi 側）；外部工具若需要，可走 rivumi 的 `ModelGateway`（non-streaming）或 zen-gateway 實驗專案（streaming）
+- 轉譯邏輯沿用 `codex_oauth.OpenAICodexResponsesModel` 的既有模式（該 adapter 早已證明 responses 協定在 looplane 可行），差異僅在 Codex 走 SSE、本 adapter 走 JSON——符合 looplane non-streaming 邊界
+- pi 仍無法直接用 muse-spark（pi 的 catalog 問題在 pi 側）；外部工具若需要，可走 looplane 的 `ModelGateway`（non-streaming）或 zen-gateway 實驗專案（streaming）
 - 後續若上游新增 responses-only 模型，只需更新 `provider_catalog.RESPONSES_PROTOCOL_MODELS`
 
 ## 附錄：調查指令速查

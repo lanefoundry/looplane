@@ -1,6 +1,6 @@
 *
 !Dockerfile
-!rivumi-sandbox-run
+!looplane-sandbox-run
 !.artifacts/
 !.artifacts/*.whl
 !.artifacts/requirements.txt

@@ -1,6 +1,6 @@
-# Rivumi SDK Facade
+# looplane SDK Facade
 
-`rivumi.sdk` is the stable import surface for embedding Rivumi from Python.
+`looplane.sdk` is the stable import surface for embedding looplane from Python.
 The CLI and TUI remain user-facing entrypoints; third-party code should import
 from this facade instead of reaching into adapter internals.
 
@@ -9,9 +9,9 @@ Stability: `0.x` contracts are typed and versioned, but may change before 1.0.
 ## Run API
 
 ```python
-from rivumi.sdk import TaskContract, run_task
+from looplane.sdk import TaskContract, run_task
 
-result = await run_task(task, model, "/tmp/rivumi-runs")
+result = await run_task(task, model, "/tmp/looplane-runs")
 ```
 
 `run_task()` enables sandboxed verification by default. Pass
@@ -46,7 +46,7 @@ shares one limiter across cached native controllers by default.
 ## Replay And Fork
 
 ```python
-from rivumi.sdk import fork_run_at_event, replay_run_events
+from looplane.sdk import fork_run_at_event, replay_run_events
 
 state = replay_run_events("runs/<run-id>/events.jsonl")
 seed = fork_run_at_event(
@@ -65,7 +65,7 @@ subprocesses, model calls, or commits.
 `derive_subagent_task()` creates a child `TaskContract` that keeps the parent
 repository/base boundary while allowing narrower instructions, paths, checks,
 and limits. `run_subagent_task()` executes that child through `AgentRunner`
-under `run_root/subagents/<id>`, giving each subagent its own Rivumi run
+under `run_root/subagents/<id>`, giving each subagent its own looplane run
 directory and disposable workspace.
 
 The native loop also exposes `dispatch_subagents` to the model as a fan-out and
@@ -84,10 +84,10 @@ check, and rollback path. `AgentRunner(subagent_models=...)` lets embedders
 route child agents by role or id while keeping the model routing outside
 model-controlled tool arguments. The SDK exports
 `A10_SUBAGENT_PLANNER_POLICY_VERSION` and `render_subagent_planner_policy()` so
-embedders can inspect or reuse the same versioned planner guidance Rivumi
+embedders can inspect or reuse the same versioned planner guidance looplane
 injects into native prompts. `analyze_subagent_schedule_jsonl()` and
 `scripts/analyze_subagent_schedules.py` summarize emitted schedule traces for
-planner tuning; `rivumi sessions --analyze-subagents <run>` exposes the same
+planner tuning; `looplane sessions --analyze-subagents <run>` exposes the same
 analysis for persisted run artifacts.
 
 ## Role Lanes And Cost
@@ -95,20 +95,20 @@ analysis for persisted run artifacts.
 `role_candidates()` returns static provider/model candidates for lanes such as
 `primary`, `reasoning`, `reviewer`, `summarizer`, and `parser`.
 `estimate_cost()` turns provider usage into an estimated USD breakdown when the
-model exists in Rivumi's explicit pricing table. Missing prices return `None`;
-Rivumi must not invent a cost.
+model exists in looplane's explicit pricing table. Missing prices return `None`;
+looplane must not invent a cost.
 
 ## MCP OAuth Metadata
 
 Native MCP HTTP configs may use either `bearerTokenEnvVar` or authorization-code
-metadata under `oauth`. Rivumi first reads `oauth.accessTokenEnvVar`; if it is
-unset, `rivumi auth login-mcp` can create an app-owned authorization-code grant
-and store it in Rivumi's private credential store. Rivumi never imports another
+metadata under `oauth`. looplane first reads `oauth.accessTokenEnvVar`; if it is
+unset, `looplane auth login-mcp` can create an app-owned authorization-code grant
+and store it in looplane's private credential store. looplane never imports another
 client's credential files.
 
 ## Hooks And Skills
 
-Project skills are markdown files under `.rivumi/skills/*.md`. They are loaded
+Project skills are markdown files under `.looplane/skills/*.md`. They are loaded
 as bounded, lower-priority prompt guidance and do not execute code. External
 coding runners project the same resolved skill bundle into delegated prompts
 and persist `skill-resolution.json` metadata in the run artifacts.
@@ -116,8 +116,8 @@ and persist `skill-resolution.json` metadata in the run artifacts.
 skill projection to exact skill-name matches. The default empty tuple keeps the
 current load-all behavior; unknown or duplicate names fail closed.
 
-Project hooks live in `.rivumi/hooks.json` and are disabled unless
-`RIVUMI_ENABLE_PROJECT_HOOKS=1` is set. Hook commands use exact argv, receive a
+Project hooks live in `.looplane/hooks.json` and are disabled unless
+`LOOPLANE_ENABLE_PROJECT_HOOKS=1` is set. Hook commands use exact argv, receive a
 JSON payload on stdin, and may deny `pre_tool_use`, `post_tool_use`, or
 `approval_request` events. Native compaction fallback also emits `pre_compact`
 and `post_compact`; `pre_compact` may deny the fallback before it rewrites
@@ -125,21 +125,21 @@ history. Long-lived external runtime compaction through `ConversationController`
 uses the same `pre_compact` / `post_compact` hook events. Hooks cannot grant
 approval or bypass deny rules.
 
-Project plugins are JSON manifests under `.rivumi/plugins/*.json`. A plugin can
+Project plugins are JSON manifests under `.looplane/plugins/*.json`. A plugin can
 package markdown skills, deny-only hooks, and bounded discovery metadata such as
 keywords, homepage, repository, license, and author; packaged hooks still require
-`RIVUMI_ENABLE_PROJECT_HOOKS=1` before any command executes.
-Use `rivumi plugin install ./plugin.json` to copy a local plugin manifest and
-referenced markdown skills into the repository, and `rivumi plugin list` to
+`LOOPLANE_ENABLE_PROJECT_HOOKS=1` before any command executes.
+Use `looplane plugin install ./plugin.json` to copy a local plugin manifest and
+referenced markdown skills into the repository, and `looplane plugin list` to
 inspect installed package manifests. Discovery metadata is local manifest data;
-Rivumi does not fetch, install, or trust remote marketplace content from those
+looplane does not fetch, install, or trust remote marketplace content from those
 fields.
 
 ## Instructions
 
-Rivumi loads user instructions first, then project `AGENTS.md` / `RIVUMI.md`
+looplane loads user instructions first, then project `AGENTS.md` / `LOOPLANE.md`
 files from repository root toward the working directory. Project
-`AGENTS.override.md` / `RIVUMI.override.md` keeps user instructions but replaces
+`AGENTS.override.md` / `LOOPLANE.override.md` keeps user instructions but replaces
 earlier project instruction layers. The native loop reloads a changed resolved
 instruction bundle as injected context and watches instruction, skill, plugin,
 and hook sources for turn-boundary reload signals through
@@ -148,22 +148,22 @@ and hook sources for turn-boundary reload signals through
 changes with changed categories and source lists.
 `project_context_watch_capabilities()` advertises the backend policy: portable
 fingerprint polling is available without optional dependencies, while OS-native
-filesystem notifications are explicitly unavailable until Rivumi selects a
+filesystem notifications are explicitly unavailable until looplane selects a
 cross-platform dependency or per-platform backend. External coding runners
 project the same resolved bundle into delegated prompts, write
 `external-instruction-policy.json`, and instruct child runtimes not to apply their
 own duplicate instruction
-discovery on top of Rivumi's resolved bundle. The policy artifact also records
+discovery on top of looplane's resolved bundle. The policy artifact also records
 the backend's declared native duplicate-discovery controls as
 `native_suppression`: `configured` includes the exact argv/env controls the
-wrapper claims to apply, while `prompt_only` means Rivumi projected the resolved
+wrapper claims to apply, while `prompt_only` means looplane projected the resolved
 bundle and suppression directive but the backend did not declare a stable native
 disable control.
 
 ## Prompt Sections And Injected Context
 
 `PromptSection` and `render_prompt_sections()` provide the stable prompt
-section surface used by Rivumi's native loop. Sections carry deterministic
+section surface used by looplane's native loop. Sections carry deterministic
 names plus stable/dynamic cache metadata so callers can preserve prompt-prefix
 discipline without parsing the rendered prompt string.
 The native loop now renders core policy, tool policy, runtime facts,
@@ -178,12 +178,12 @@ embedders.
 `RuntimeInjectedContext` is the app-server input contract for context supplied
 by an embedding application. The WebSocket attach surface accepts
 `{"type":"inject_items","items":[{"source":"ide","content":"..."}]}` and queues
-accepted items for the next conversation turn, where Rivumi renders them under
+accepted items for the next conversation turn, where looplane renders them under
 `[app-server-injected-context-v1]`.
 
 Native runs may also opt into repository-local runtime context providers through
-`.rivumi/context-providers.json`. Providers are exact-argv commands, disabled
-unless `RIVUMI_ENABLE_PROJECT_HOOKS=1`, receive bounded run metadata on stdin,
+`.looplane/context-providers.json`. Providers are exact-argv commands, disabled
+unless `LOOPLANE_ENABLE_PROJECT_HOOKS=1`, receive bounded run metadata on stdin,
 and must emit `RuntimeInjectedContext` JSON. Valid provider output is injected
 before the next model request as `InjectedContext(source="context_provider:<name>")`;
 provider failures are reported as run events and do not silently mutate context.
@@ -194,7 +194,7 @@ turn lifecycle metadata, and are projected into the turn text as
 
 `RuntimeAttachment` is the bounded app-server attachment contract for turn-time
 context. A WebSocket `turn` may include `attachments` with inline text content
-or file-reference URIs; Rivumi projects them under `[app-server-attachments-v1]`
+or file-reference URIs; looplane projects them under `[app-server-attachments-v1]`
 without reading arbitrary local files on behalf of the client.
 Native provider adapters can also receive user-message attachments through
 `Message(provider_metadata={"attachments": [...]})`. OpenAI-compatible Chat
@@ -238,16 +238,16 @@ usage includes cached input tokens.
 
 Live provider cache reuse is validated outside normal unit tests with
 `scripts/validate_provider_cache_reuse.py`. Set
-`RIVUMI_CACHE_VALIDATE_PROVIDER`, `RIVUMI_CACHE_VALIDATE_MODEL`, and
-`RIVUMI_CACHE_VALIDATE_API_KEY`; optionally set `RIVUMI_CACHE_VALIDATE_BASE_URL`
-and `RIVUMI_CACHE_VALIDATE_OUTPUT`. The script makes two repeated calls, prints
+`LOOPLANE_CACHE_VALIDATE_PROVIDER`, `LOOPLANE_CACHE_VALIDATE_MODEL`, and
+`LOOPLANE_CACHE_VALIDATE_API_KEY`; optionally set `LOOPLANE_CACHE_VALIDATE_BASE_URL`
+and `LOOPLANE_CACHE_VALIDATE_OUTPUT`. The script makes two repeated calls, prints
 the persisted trace shape plus provider-reported cached input tokens, and exits
 77 when live credentials are not configured.
 
 ## IDE Diagnostics
 
 Editor or LSP adapters can export diagnostics to
-`.rivumi/ide/diagnostics.json`. Rivumi accepts a bounded Rivumi-shaped list or
+`.looplane/ide/diagnostics.json`. looplane accepts a bounded looplane-shaped list or
 an LSP `publishDiagnostics` envelope with `file://` URIs, rejects paths outside
 the repository, and injects changed snapshots as
 `InjectedContext(source="ide_diagnostics")` before model requests.
@@ -258,15 +258,15 @@ The SDK exports `IdeDiagnostic`, `IdeRange`, `IdePosition`,
 `project_root`, diagnostics include a bounded editor deep link generated with
 `build_editor_deep_link()`.
 
-For hosts that want Rivumi to own the diagnostics process, the SDK also exports
+For hosts that want looplane to own the diagnostics process, the SDK also exports
 `LspServerCommand` and `ManagedLspServer`. The supervisor starts an exact-argv
 long-lived LSP subprocess inside the project root, reads `Content-Length`
 JSON-RPC frames from stdout, consumes `textDocument/publishDiagnostics`, writes
-the same `.rivumi/ide/diagnostics.json` bridge file atomically, and exposes
+the same `.looplane/ide/diagnostics.json` bridge file atomically, and exposes
 `start()`, `wait_for_diagnostics()`, and `aclose()` lifecycle methods.
 
-Adapters can also export open-file state to `.rivumi/ide/open-files.json`.
-Rivumi accepts active file, cursor, and selection ranges, then injects changed
+Adapters can also export open-file state to `.looplane/ide/open-files.json`.
+looplane accepts active file, cursor, and selection ranges, then injects changed
 snapshots as `InjectedContext(source="ide_open_files")`. `build_editor_deep_link()`
 supports VS Code `vscode://file/...` links with one-based line/column positions
 and plain `file://` URIs; paths are normalized through the same repository-boundary
@@ -274,10 +274,10 @@ checks as diagnostics.
 
 The repository includes a packageable VS Code extension scaffold in
 `editors/vscode`. It listens for VS Code diagnostics and visible-editor changes,
-then writes those IDE bridge files atomically for Rivumi to consume. The
+then writes those IDE bridge files atomically for looplane to consume. The
 extension package includes its npm lockfile and supports `npm run compile`,
 `npm audit --audit-level=moderate`, `npm run package`, and isolated
-`code --install-extension` smoke checks. When `rivumi.ideContext.webSocketUrl`
+`code --install-extension` smoke checks. When `looplane.ideContext.webSocketUrl`
 is set, the extension also pushes typed
 `{"type":"ide_context","diagnostics":...,"open_files":...}` messages to the
 conversation WebSocket attach endpoint; the server validates paths against its
@@ -288,14 +288,14 @@ configured project root before queuing rendered `ide_diagnostics` and
 
 `resolve_instruction_documents()` returns the active user/project instruction
 bundle together with source-priority diagnostics for active and suppressed
-files. `render_instruction_diagnostics()` renders the same metadata Rivumi uses
+files. `render_instruction_diagnostics()` renders the same metadata looplane uses
 in native prompt context and external-runner `instruction-resolution.json`
 artifacts.
 
 ## Policy And Artifacts
 
-Project policy lives at `.rivumi/policy.json`. Org policy is supplied by
-`RIVUMI_ORG_POLICY` or an explicit path passed to policy discovery. Deny rules
+Project policy lives at `.looplane/policy.json`. Org policy is supplied by
+`LOOPLANE_ORG_POLICY` or an explicit path passed to policy discovery. Deny rules
 from user, org, and project policy win before allow rules.
 
 Patch acceptance, verification terminal output, transcript export, and OTel

@@ -7,9 +7,9 @@ import socket
 import uvicorn
 import websockets
 
-from rivumi.conversation_runtime import RuntimeTurnStatus, TextDeltaEvent, TurnCompletedEvent
-from rivumi.conversation_websocket import ConversationWebSocketApp
-from rivumi.runtime_semantics import RuntimeCapabilities
+from looplane.conversation_runtime import RuntimeTurnStatus, TextDeltaEvent, TurnCompletedEvent
+from looplane.conversation_websocket import ConversationWebSocketApp
+from looplane.runtime_semantics import RuntimeCapabilities
 
 
 class SmokeSession:

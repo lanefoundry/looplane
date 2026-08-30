@@ -9,15 +9,15 @@ from pathlib import Path
 import pytest
 from conftest import run_git
 
-from rivumi.approvals import (
+from looplane.approvals import (
     ApprovalDecision,
     ApprovalReason,
     ApprovalRequest,
     HeadlessApprovalPolicy,
     ToolEffect,
 )
-from rivumi.cache_strategy import ProviderCacheTrace
-from rivumi.contracts import (
+from looplane.cache_strategy import ProviderCacheTrace
+from looplane.contracts import (
     InjectedContext,
     Limits,
     Message,
@@ -32,15 +32,15 @@ from rivumi.contracts import (
     Usage,
     VerificationCommand,
 )
-from rivumi.loop import AgentRunner
-from rivumi.models import ProviderError, ProviderErrorKind, ScriptedModel
-from rivumi.permissions import PermissionGuard
-from rivumi.prompts import (
+from looplane.loop import AgentRunner
+from looplane.models import ProviderError, ProviderErrorKind, ScriptedModel
+from looplane.permissions import PermissionGuard
+from looplane.prompts import (
     INTERACTION_CONTEXT_VERSION,
     WORKSPACE_CONTEXT_REMINDER_VERSION,
     build_workspace_context_reminder,
 )
-from rivumi.session import SessionManifest, SessionPhase, SessionStore
+from looplane.session import SessionManifest, SessionPhase, SessionStore
 
 BROKEN_PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
@@ -199,8 +199,8 @@ async def test_initial_prompt_injects_explicit_memory(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory_path = tmp_path / "memory.jsonl"
-    monkeypatch.setenv("RIVUMI_MEMORY_PATH", str(memory_path))
-    from rivumi.memory import remember
+    monkeypatch.setenv("LOOPLANE_MEMORY_PATH", str(memory_path))
+    from looplane.memory import remember
 
     remember("user: prefer concise final answers", project=tiny_bug_repo)
     task = make_task(tiny_bug_repo, limits=Limits(max_steps=1))
@@ -225,7 +225,7 @@ async def test_initial_prompt_injects_explicit_memory(
 async def test_initial_prompt_injects_project_instructions(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    monkeypatch.setenv("LOOPLANE_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
     (tiny_bug_repo / "AGENTS.md").write_text("Project instruction: use pytest.", encoding="utf-8")
     task = make_task(tiny_bug_repo, limits=Limits(max_steps=1))
     model = ScriptedModel([ModelTurn(content="No change needed.")])
@@ -320,7 +320,7 @@ async def test_model_cache_trace_is_persisted_as_event_and_artifact(
             turn = await super().complete(messages, tools)
             self.last_cache_trace = ProviderCacheTrace(
                 provider="openai-responses",
-                prompt_cache_key="rivumi-responses:test",
+                prompt_cache_key="looplane-responses:test",
                 tool_schema_fingerprint="tools",
                 cache_control_blocks=0,
             )
@@ -352,7 +352,7 @@ async def test_model_cache_trace_is_persisted_as_event_and_artifact(
             "trace": {
                 "cache_control_blocks": 0,
                 "cache_ready": True,
-                "prompt_cache_key": "rivumi-responses:test",
+                "prompt_cache_key": "looplane-responses:test",
                 "provider": "openai-responses",
                 "tool_schema_fingerprint": "tools",
                 "warnings": [],
@@ -362,14 +362,12 @@ async def test_model_cache_trace_is_persisted_as_event_and_artifact(
     events = read_events(result)
     trace_event = next(event for event in events if event["event_type"] == "model.cache_trace")
     assert trace_event["data"]["cache_ready"] is True
-    assert trace_event["data"]["prompt_cache_key"] == "rivumi-responses:test"
+    assert trace_event["data"]["prompt_cache_key"] == "looplane-responses:test"
 
 
 @pytest.mark.asyncio
-async def test_initial_prompt_injects_project_skills(
-    tiny_bug_repo: Path, tmp_path: Path
-) -> None:
-    skills = tiny_bug_repo / ".rivumi" / "skills"
+async def test_initial_prompt_injects_project_skills(tiny_bug_repo: Path, tmp_path: Path) -> None:
+    skills = tiny_bug_repo / ".looplane" / "skills"
     skills.mkdir(parents=True)
     (skills / "review.md").write_text(
         "---\nname: reviewer\ndescription: local review skill\n---\nCheck edge cases.",
@@ -388,7 +386,7 @@ async def test_initial_prompt_injects_project_skills(
     first_messages, _tools = model.calls[0]
     system = first_messages[0]
     assert isinstance(system, Message)
-    assert "Project skills from .rivumi/skills" in (system.content or "")
+    assert "Project skills from .looplane/skills" in (system.content or "")
     assert "Check edge cases." in (system.content or "")
 
 
@@ -396,7 +394,7 @@ async def test_initial_prompt_injects_project_skills(
 async def test_initial_prompt_injects_only_enabled_project_skills(
     tiny_bug_repo: Path, tmp_path: Path
 ) -> None:
-    skills = tiny_bug_repo / ".rivumi" / "skills"
+    skills = tiny_bug_repo / ".looplane" / "skills"
     skills.mkdir(parents=True)
     (skills / "review.md").write_text(
         "---\nname: reviewer\n---\nReview changed code.",
@@ -442,9 +440,9 @@ print(json.dumps({"source": "ide", "content": f"provider step={payload['payload'
 """.lstrip(),
         encoding="utf-8",
     )
-    rivumi_dir = tiny_bug_repo / ".rivumi"
-    rivumi_dir.mkdir()
-    (rivumi_dir / "context-providers.json").write_text(
+    looplane_dir = tiny_bug_repo / ".looplane"
+    looplane_dir.mkdir()
+    (looplane_dir / "context-providers.json").write_text(
         json.dumps(
             {
                 "providers": [
@@ -457,7 +455,7 @@ print(json.dumps({"source": "ide", "content": f"provider step={payload['payload'
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("RIVUMI_ENABLE_PROJECT_HOOKS", "1")
+    monkeypatch.setenv("LOOPLANE_ENABLE_PROJECT_HOOKS", "1")
     task = make_task(tiny_bug_repo, limits=Limits(max_steps=2))
     model = ScriptedModel(
         [
@@ -485,8 +483,7 @@ print(json.dumps({"source": "ide", "content": f"provider step={payload['payload'
     injected = [
         message
         for message in second_messages
-        if isinstance(message, InjectedContext)
-        and message.source == "context_provider:ide"
+        if isinstance(message, InjectedContext) and message.source == "context_provider:ide"
     ]
     assert injected
     assert "provider step=1" in injected[-1].content
@@ -498,7 +495,7 @@ print(json.dumps({"source": "ide", "content": f"provider step={payload['payload'
 async def test_project_pre_tool_hook_can_deny_tool_execution(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hooks_dir = tiny_bug_repo / ".rivumi"
+    hooks_dir = tiny_bug_repo / ".looplane"
     hooks_dir.mkdir(exist_ok=True)
     hook_script = hooks_dir / "deny_read.py"
     hook_script.write_text(
@@ -527,7 +524,7 @@ if payload["payload"]["tool_call"]["name"] == "read_file":
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("RIVUMI_ENABLE_PROJECT_HOOKS", "1")
+    monkeypatch.setenv("LOOPLANE_ENABLE_PROJECT_HOOKS", "1")
     model = ScriptedModel(
         [
             ModelTurn(
@@ -554,8 +551,7 @@ if payload["payload"]["tool_call"]["name"] == "read_file":
     assert result.status is RunStatus.COMPLETED
     assert any(event["event_type"] == "hook.denied" for event in events)
     assert not any(
-        event["event_type"] == "tool.started"
-        and event["data"].get("name") == "read_file"
+        event["event_type"] == "tool.started" and event["data"].get("name") == "read_file"
         for event in events
     )
     assert any(
@@ -570,7 +566,7 @@ if payload["payload"]["tool_call"]["name"] == "read_file":
 async def test_ide_diagnostics_are_injected_as_harness_context(
     tiny_bug_repo: Path, tmp_path: Path
 ) -> None:
-    diagnostics_dir = tiny_bug_repo / ".rivumi" / "ide"
+    diagnostics_dir = tiny_bug_repo / ".looplane" / "ide"
     diagnostics_dir.mkdir(parents=True)
     (diagnostics_dir / "diagnostics.json").write_text(
         json.dumps(
@@ -620,7 +616,7 @@ async def test_ide_diagnostics_are_injected_as_harness_context(
 async def test_ide_open_files_are_injected_as_harness_context(
     tiny_bug_repo: Path, tmp_path: Path
 ) -> None:
-    ide_dir = tiny_bug_repo / ".rivumi" / "ide"
+    ide_dir = tiny_bug_repo / ".looplane" / "ide"
     ide_dir.mkdir(parents=True)
     (ide_dir / "open-files.json").write_text(
         json.dumps(
@@ -689,12 +685,8 @@ async def test_scripted_model_fixes_bug_verifies_and_writes_auditable_bundle(
                     ),
                 )
             ),
-            ModelTurn(
-                tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)
-            ),
-            ModelTurn(
-                tool_calls=(ToolCall(name="run_check", arguments={"name": "tests"}),)
-            ),
+            ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)),
+            ModelTurn(tool_calls=(ToolCall(name="run_check", arguments={"name": "tests"}),)),
             ModelTurn(content="Fixed the calculator and verified the test suite."),
         ]
     )
@@ -1097,8 +1089,7 @@ async def test_native_loop_executes_subagent_proposed_transaction(
     events = read_events(result)
     assert any(event["event_type"] == "subagents.transaction_started" for event in events)
     assert any(
-        event["event_type"] == "subagents.transaction_completed"
-        and event["data"]["ok"] is True
+        event["event_type"] == "subagents.transaction_completed" and event["data"]["ok"] is True
         for event in events
     )
     assert any(
@@ -1171,7 +1162,7 @@ async def test_mcp_resource_and_prompt_reads_execute_as_parallel_batch(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("RIVUMI_MCP_ALLOWLIST", "local")
+    monkeypatch.setenv("LOOPLANE_MCP_ALLOWLIST", "local")
     task = make_task(
         tiny_bug_repo,
         limits=Limits(max_steps=4, wall_time_seconds=30),
@@ -1319,7 +1310,7 @@ class SkillChangingModel(SlowModel):
     async def complete(self, messages: object, tools: object = ()) -> ModelTurn:
         self.calls.append((messages, tools))
         if len(self.calls) == 1:
-            skills = self.repository / ".rivumi" / "skills"
+            skills = self.repository / ".looplane" / "skills"
             skills.mkdir(parents=True, exist_ok=True)
             (skills / "review.md").write_text(
                 "---\nname: reviewer\n---\nReview the changed code.",
@@ -1358,7 +1349,7 @@ async def test_agent_runner_fails_closed_for_tool_disabled_provider(
 async def test_instruction_changes_are_reloaded_as_injected_context(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    monkeypatch.setenv("LOOPLANE_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
     (tiny_bug_repo / "AGENTS.md").write_text("Initial project guidance.", encoding="utf-8")
     model = InstructionChangingModel(tiny_bug_repo)
     task = make_task(tiny_bug_repo, limits=Limits(max_steps=2))
@@ -1387,7 +1378,7 @@ async def test_instruction_changes_are_reloaded_as_injected_context(
 async def test_project_context_watch_reloads_skill_changes_as_injected_context(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    monkeypatch.setenv("LOOPLANE_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
     model = SkillChangingModel(tiny_bug_repo)
     task = make_task(tiny_bug_repo, limits=Limits(max_steps=2))
 
@@ -1407,7 +1398,7 @@ async def test_project_context_watch_reloads_skill_changes_as_injected_context(
     ]
     assert len(reloads) == 1
     assert "[project-context-reload-v1]" in reloads[0].content
-    assert "- skills: .rivumi/skills/review.md" in reloads[0].content
+    assert "- skills: .looplane/skills/review.md" in reloads[0].content
     assert "Review the changed code." in reloads[0].content
     events = read_events(result)
     assert any(
@@ -1418,9 +1409,7 @@ async def test_project_context_watch_reloads_skill_changes_as_injected_context(
 
 
 @pytest.mark.asyncio
-async def test_model_call_is_clamped_by_run_wall_time(
-    tiny_bug_repo: Path, tmp_path: Path
-) -> None:
+async def test_model_call_is_clamped_by_run_wall_time(tiny_bug_repo: Path, tmp_path: Path) -> None:
     task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=0.5))
     started = time.monotonic()
 
@@ -1486,7 +1475,8 @@ async def test_failed_final_verification_is_fed_back_then_retried(
             ModelTurn(content="I think it is already fixed."),
             ModelTurn(
                 tool_calls=(
-                    ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH_AFTER_BROKEN}),)
+                    ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH_AFTER_BROKEN}),
+                )
             ),
             ModelTurn(content="Fixed after reading the failed verification."),
         ]
@@ -1529,9 +1519,7 @@ async def test_truncated_model_turn_continues_without_running_verification(
     model = ScriptedModel(
         [
             ModelTurn(content="", finish_reason="length"),
-            ModelTurn(
-                tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)
-            ),
+            ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)),
             ModelTurn(content="Fixed after the truncated turn."),
         ]
     )
@@ -1629,9 +1617,7 @@ def _clean_check_task(repository: Path) -> TaskContract:
         repository,
         limits=Limits(max_steps=8, wall_time_seconds=60),
         verification=(
-            VerificationCommand(
-                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
-            ),
+            VerificationCommand(name="check", argv=("git", "diff", "--check"), timeout_seconds=30),
         ),
     )
 
@@ -1648,9 +1634,7 @@ async def test_token_budget_cap_fails_the_run_before_more_model_calls(
             max_total_tokens=100,
         ),
         verification=(
-            VerificationCommand(
-                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
-            ),
+            VerificationCommand(name="check", argv=("git", "diff", "--check"), timeout_seconds=30),
         ),
     )
     model = ScriptedModel(
@@ -1686,9 +1670,7 @@ async def test_context_pressure_reminder_is_injected_once_before_next_model_requ
             max_total_tokens=100,
         ),
         verification=(
-            VerificationCommand(
-                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
-            ),
+            VerificationCommand(name="check", argv=("git", "diff", "--check"), timeout_seconds=30),
         ),
     )
     model = ScriptedModel(
@@ -1747,13 +1729,16 @@ async def test_context_pressure_reminder_is_injected_once_before_next_model_requ
     assert len(third_reminders) == 1
     assert "85 of 100 allowed task tokens" in (second_reminders[0].content or "")
     events = read_events(result)
-    assert len(
-        [
-            event
-            for event in events
-            if event["event_type"] == "context_pressure.reminder_injected"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in events
+                if event["event_type"] == "context_pressure.reminder_injected"
+            ]
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -1768,9 +1753,7 @@ async def test_history_summary_fallback_compacts_old_native_messages_once(
             max_total_tokens=100,
         ),
         verification=(
-            VerificationCommand(
-                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
-            ),
+            VerificationCommand(name="check", argv=("git", "diff", "--check"), timeout_seconds=30),
         ),
     )
     read_calculator = ToolCall(
@@ -1811,20 +1794,23 @@ async def test_history_summary_fallback_compacts_old_native_messages_once(
     assert isinstance(fourth_call_messages[1], Message)
     assert fourth_call_messages[1].role == "user"
     events = read_events(result)
-    assert len(
-        [
-            event
-            for event in events
-            if event["event_type"] == "context_pressure.summary_fallback_applied"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in events
+                if event["event_type"] == "context_pressure.summary_fallback_applied"
+            ]
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio
 async def test_history_summary_fallback_runs_pre_and_post_compaction_hooks(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hooks_dir = tiny_bug_repo / ".rivumi"
+    hooks_dir = tiny_bug_repo / ".looplane"
     hooks_dir.mkdir()
     hook_log = tmp_path / "compact-hooks.jsonl"
     hook = tmp_path / "compact_hook.py"
@@ -1851,14 +1837,12 @@ print("{{}}")
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("RIVUMI_ENABLE_PROJECT_HOOKS", "1")
+    monkeypatch.setenv("LOOPLANE_ENABLE_PROJECT_HOOKS", "1")
     task = make_task(
         tiny_bug_repo,
         limits=Limits(max_steps=4, wall_time_seconds=60, max_total_tokens=100),
         verification=(
-            VerificationCommand(
-                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
-            ),
+            VerificationCommand(name="check", argv=("git", "diff", "--check"), timeout_seconds=30),
         ),
     )
     read_calculator = ToolCall(
@@ -1881,9 +1865,7 @@ print("{{}}")
     result = await AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True).run()
 
     assert result.status == RunStatus.COMPLETED
-    hook_payloads = [
-        json.loads(line) for line in hook_log.read_text(encoding="utf-8").splitlines()
-    ]
+    hook_payloads = [json.loads(line) for line in hook_log.read_text(encoding="utf-8").splitlines()]
     assert [payload["event"] for payload in hook_payloads] == [
         "pre_compact",
         "post_compact",
@@ -1903,7 +1885,7 @@ print("{{}}")
 async def test_history_summary_fallback_pre_compaction_hook_can_deny(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hooks_dir = tiny_bug_repo / ".rivumi"
+    hooks_dir = tiny_bug_repo / ".looplane"
     hooks_dir.mkdir()
     hook = tmp_path / "deny_compact.py"
     hook.write_text(
@@ -1918,14 +1900,12 @@ print(json.dumps({"decision": "deny", "reason": "keep full context"}))
         json.dumps({"pre_compact": [{"command": [sys.executable, str(hook)]}]}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("RIVUMI_ENABLE_PROJECT_HOOKS", "1")
+    monkeypatch.setenv("LOOPLANE_ENABLE_PROJECT_HOOKS", "1")
     task = make_task(
         tiny_bug_repo,
         limits=Limits(max_steps=4, wall_time_seconds=60, max_total_tokens=100),
         verification=(
-            VerificationCommand(
-                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
-            ),
+            VerificationCommand(name="check", argv=("git", "diff", "--check"), timeout_seconds=30),
         ),
     )
     read_calculator = ToolCall(
@@ -1952,13 +1932,11 @@ print(json.dumps({"decision": "deny", "reason": "keep full context"}))
     assert not [
         message
         for message in fourth_call_messages
-        if isinstance(message, InjectedContext)
-        and message.source == "history_summary_fallback"
+        if isinstance(message, InjectedContext) and message.source == "history_summary_fallback"
     ]
     events = read_events(result)
     assert any(
-        event["event_type"] == "hook.denied"
-        and event["data"]["hook_event"] == "pre_compact"
+        event["event_type"] == "hook.denied" and event["data"]["hook_event"] == "pre_compact"
         for event in events
     )
     assert any(
@@ -1980,9 +1958,7 @@ async def test_workspace_context_reminder_is_injected_after_summary_fallback(
             max_total_tokens=100,
         ),
         verification=(
-            VerificationCommand(
-                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
-            ),
+            VerificationCommand(name="check", argv=("git", "diff", "--check"), timeout_seconds=30),
         ),
     )
     patch_call = ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH})
@@ -2030,13 +2006,16 @@ async def test_workspace_context_reminder_is_injected_after_summary_fallback(
     assert "Active constraints:" in reminder
     assert "allowed_paths=src/**" in reminder
     events = read_events(result)
-    assert len(
-        [
-            event
-            for event in events
-            if event["event_type"] == "context_pressure.workspace_reminder_injected"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in events
+                if event["event_type"] == "context_pressure.workspace_reminder_injected"
+            ]
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -2161,9 +2140,7 @@ async def test_retryable_provider_errors_are_retried_until_success(
 
     assert result.status == RunStatus.COMPLETED, result.model_dump()
     assert len(model.calls) == 3
-    retries = [
-        event for event in read_events(result) if event["event_type"] == "model.retry"
-    ]
+    retries = [event for event in read_events(result) if event["event_type"] == "model.retry"]
     assert [event["data"]["attempt"] for event in retries] == [1, 2]
     assert all(event["data"]["provider"] == "nvidia-nim" for event in retries)
     assert [event["data"]["delay_seconds"] for event in retries] == [0.0, 0.0]
@@ -2174,9 +2151,7 @@ async def test_exhausted_retryable_provider_errors_fail_with_readable_error(
     tiny_bug_repo: Path, tmp_path: Path
 ) -> None:
     task = _clean_check_task(tiny_bug_repo)
-    model = ScriptedModel(
-        [_retryable_error(code) for code in (500, 503, 500, 502, 504)]
-    )
+    model = ScriptedModel([_retryable_error(code) for code in (500, 503, 500, 502, 504)])
     runner = AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True)
     runner.model_retry_delay = lambda attempt, retry_after_seconds: 0.0
 
@@ -2205,9 +2180,7 @@ async def test_retry_exhaustion_falls_back_to_next_model_with_fresh_budget(
     tiny_bug_repo: Path, tmp_path: Path
 ) -> None:
     task = _clean_check_task(tiny_bug_repo)
-    primary = ScriptedModel(
-        [_retryable_error(500)] * 5, model_id="primary"
-    )
+    primary = ScriptedModel([_retryable_error(500)] * 5, model_id="primary")
     fallback = ScriptedModel(
         [ModelTurn(content="The repository is clean; no change is needed.")],
         model_id="fallback",
@@ -2297,9 +2270,7 @@ async def test_verified_patch_runs_read_only_reviewer_lane(
 
     assert result.status == RunStatus.COMPLETED, result.model_dump()
     assert "Reviewer lane:\nVerdict: no findings." in result.summary
-    assert Path(result.artifacts["review"]).read_text(encoding="utf-8") == (
-        "Verdict: no findings."
-    )
+    assert Path(result.artifacts["review"]).read_text(encoding="utf-8") == ("Verdict: no findings.")
     assert len(reviewer.calls) == 1
     review_messages, review_tools = reviewer.calls[0]
     assert review_tools == ()
@@ -2339,13 +2310,11 @@ async def test_non_retryable_provider_errors_fail_without_retrying(
     assert "auth" in result.error
     assert "invalid api key" in result.error
     assert len(model.calls) == 1
-    assert not [
-        event for event in read_events(result) if event["event_type"] == "model.retry"
-    ]
+    assert not [event for event in read_events(result) if event["event_type"] == "model.retry"]
 
 
 def test_retry_delay_uses_jitter_and_caps() -> None:
-    from rivumi.loop import (
+    from looplane.loop import (
         RETRY_JITTER_FRACTION,
         RETRY_MAX_DELAY_SECONDS,
         RETRY_SERVER_HINT_MAX_SECONDS,

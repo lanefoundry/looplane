@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from rivumi.conversation import (
+from looplane.conversation import (
     MAX_MESSAGE_CHARS,
     ConversationBusyError,
     ConversationEvent,
@@ -56,15 +56,13 @@ async def _completed_turn(
 
 def test_default_root_has_an_independent_state_contract(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.delenv("RIVUMI_CONVERSATION_ROOT", raising=False)
+    monkeypatch.delenv("LOOPLANE_CONVERSATION_ROOT", raising=False)
     monkeypatch.delenv("PCA_CONVERSATION_ROOT", raising=False)
 
-    assert default_conversation_root() == (
-        tmp_path / "state" / "rivumi" / "conversations"
-    )
+    assert default_conversation_root() == (tmp_path / "state" / "looplane" / "conversations")
 
     override = tmp_path / "private-conversations"
-    monkeypatch.setenv("RIVUMI_CONVERSATION_ROOT", str(override))
+    monkeypatch.setenv("LOOPLANE_CONVERSATION_ROOT", str(override))
     assert default_conversation_root() == override
 
 
@@ -73,7 +71,7 @@ def test_default_root_discovers_legacy_conversations(tmp_path: Path, monkeypatch
     legacy = state_root / "python-coding-agent" / "conversations"
     legacy.mkdir(parents=True)
     monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
-    monkeypatch.delenv("RIVUMI_CONVERSATION_ROOT", raising=False)
+    monkeypatch.delenv("LOOPLANE_CONVERSATION_ROOT", raising=False)
     monkeypatch.delenv("PCA_CONVERSATION_ROOT", raising=False)
 
     assert default_conversation_root() == legacy
@@ -687,9 +685,7 @@ async def test_fork_before_turn_excludes_selected_turn_and_after(tmp_path: Path)
         parent_manifest_path.read_bytes(),
     )
 
-    snapshot, lease = await store.fork_before_turn(
-        conversation_id, second, title="branch"
-    )
+    snapshot, lease = await store.fork_before_turn(conversation_id, second, title="branch")
     try:
         branch_id = snapshot.manifest.conversation_id
         assert branch_id != conversation_id
@@ -756,9 +752,7 @@ async def test_fork_selects_by_turn_id_for_duplicate_prompts(tmp_path: Path) -> 
 
     snapshot_second, lease_second = await store.fork_before_turn(conversation_id, second)
     try:
-        branch_messages = await store.completed_turns(
-            snapshot_second.manifest.conversation_id
-        )
+        branch_messages = await store.completed_turns(snapshot_second.manifest.conversation_id)
         # Forking before the *second* duplicate keeps only the first turn.
         assert [message.content for message in branch_messages][-1] == "one"
         assert first != second

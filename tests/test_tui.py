@@ -11,16 +11,16 @@ import pytest
 from rich.cells import cell_len
 from textual.widgets import Button, Input, OptionList, Select, Static
 
-from rivumi.approvals import (
+from looplane.approvals import (
     ApprovalDecision,
     ApprovalReason,
     ApprovalRequest,
     HeadlessApprovalPolicy,
     ToolEffect,
 )
-from rivumi.backends import ExternalAgentEvent
-from rivumi.cli_config import CliConfig, load_cli_config
-from rivumi.contracts import (
+from looplane.backends import ExternalAgentEvent
+from looplane.cli_config import CliConfig, load_cli_config
+from looplane.contracts import (
     ModelCapabilities,
     ModelProtocol,
     ModelTurn,
@@ -31,12 +31,12 @@ from rivumi.contracts import (
     Usage,
     VerificationCommand,
 )
-from rivumi.conversation import (
+from looplane.conversation import (
     ConversationEvent,
     ConversationEventKind,
     ConversationStore,
 )
-from rivumi.conversation_runtime import (
+from looplane.conversation_runtime import (
     ApprovalRequestedEvent,
     ApprovalResolvedEvent,
     CompactionCompletedEvent,
@@ -55,17 +55,17 @@ from rivumi.conversation_runtime import (
     TurnCompletedEvent,
     TurnStartedEvent,
 )
-from rivumi.events import RunEvent
-from rivumi.loop import AgentRunner
-from rivumi.models import ScriptedModel
-from rivumi.prompts import WORKSPACE_CONTEXT_REMINDER_VERSION
-from rivumi.runtime_semantics import (
+from looplane.events import RunEvent
+from looplane.loop import AgentRunner
+from looplane.models import ScriptedModel
+from looplane.prompts import WORKSPACE_CONTEXT_REMINDER_VERSION
+from looplane.runtime_semantics import (
     ContextTelemetry,
     PermissionMode,
     ProcessLocalGrant,
     RuntimeCapabilities,
 )
-from rivumi.tui import (
+from looplane.tui import (
     ApprovalModal,
     ConversationRuntimeEventMessage,
     InlineApprovalBlock,
@@ -74,7 +74,6 @@ from rivumi.tui import (
     MessageBlock,
     MessageComposer,
     OnboardingModal,
-    RivumiApp,
     RunEventMessage,
     RuntimeLoadingIndicator,
     RuntimeMetrics,
@@ -84,6 +83,7 @@ from rivumi.tui import (
     ToolActionBlock,
     ToolGroupBlock,
     format_token_count,
+    looplaneApp,
 )
 
 
@@ -204,7 +204,7 @@ async def test_runner_warmup_is_scheduled_on_mount(tmp_path: Path) -> None:
     async def warmup() -> None:
         started.set()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="claude-code", provider="anthropic", model="x"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
@@ -224,7 +224,7 @@ async def test_configured_tui_runs_task_and_projects_raw_events(tmp_path: Path) 
         runner = FakeRunner(approval_policy=approval_policy, event_sink=event_sink)
         return runner, FakeModel()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
@@ -250,7 +250,7 @@ async def test_persistent_resource_closes_on_textual_event_loop(tmp_path: Path) 
         resources.append(resource)
         return FakeRunner(), resource
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -270,8 +270,8 @@ async def test_onboarding_modal_saves_private_non_secret_config(
     tmp_path: Path, monkeypatch
 ) -> None:
     config_path = tmp_path / "config.json"
-    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
-    app = RivumiApp(
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(config_path))
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
@@ -290,7 +290,7 @@ async def test_onboarding_modal_saves_private_non_secret_config(
         await pilot.click("#save")
         await _wait_until(config_path.exists)
         assert load_cli_config(config_path) == CliConfig(
-            runtime="rivumi-agent", provider="ollama", model="qwen3:4b"
+            runtime="looplane-agent", provider="ollama", model="qwen3:4b"
         )
         assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
         assert "api_key" not in config_path.read_text()
@@ -299,7 +299,7 @@ async def test_onboarding_modal_saves_private_non_secret_config(
 async def test_onboarding_without_local_models_defers_model_until_main_screen(
     tmp_path: Path,
 ) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
@@ -327,11 +327,11 @@ async def test_onboarding_without_local_models_defers_model_until_main_screen(
 async def test_onboarding_external_runtime_uses_automatic_model(
     tmp_path: Path, runtime: str
 ) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(),
         runner_factory=lambda *_: (FakeRunner(), None),
-        runtimes=((runtime, runtime), ("rivumi-agent", "Rivumi")),
+        runtimes=((runtime, runtime), ("looplane-agent", "looplane")),
         providers=(("anthropic", "Anthropic API (API key billing)"),),
     )
 
@@ -357,7 +357,7 @@ async def test_external_runtime_model_can_be_changed_after_automatic_default(
         captured["request"] = request
         return FakeRunner(), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="claude-code"),
         runner_factory=factory,
@@ -394,9 +394,9 @@ async def test_api_runtime_can_enter_main_screen_then_choose_model(tmp_path: Pat
         captured["request"] = request
         return FakeRunner(), FakeModel()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="anthropic"),
+        config=CliConfig(runtime="looplane-agent", provider="anthropic"),
         runner_factory=factory,
         providers=(("anthropic", "Anthropic API (API key billing)"),),
     )
@@ -421,7 +421,7 @@ async def test_api_runtime_can_enter_main_screen_then_choose_model(tmp_path: Pat
         task.load_text("Fix one bug")
         app._submit_current_task()
         await _wait_until(lambda: app._result is not None)
-        assert captured["request"].runtime == "rivumi-agent"
+        assert captured["request"].runtime == "looplane-agent"
         assert captured["request"].provider == "anthropic"
         assert captured["request"].model == "claude-sonnet-test"
 
@@ -430,15 +430,15 @@ async def test_onboarding_overview_lists_configured_providers_with_status(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    from rivumi.native_credentials import save_native_credential
-    from rivumi.provider_verification import VerificationResult
+    from looplane.native_credentials import save_native_credential
+    from looplane.provider_verification import VerificationResult
 
     save_native_credential("anthropic", {"api_key": "sk-verified"})
     save_native_credential("groq", {"api_key": "sk-unverified"})
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        config=CliConfig(runtime="looplane-agent", provider="ollama"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("ollama", "Ollama local"),),
     )
@@ -460,13 +460,13 @@ async def test_onboarding_overview_selecting_existing_provider_jumps_to_credenti
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    from rivumi.native_credentials import save_native_credential
+    from looplane.native_credentials import save_native_credential
 
     save_native_credential("anthropic", {"api_key": "sk-existing"})
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        config=CliConfig(runtime="looplane-agent", provider="ollama"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("ollama", "Ollama local"),),
     )
@@ -484,16 +484,16 @@ async def test_onboarding_credential_step_verify_failure_disables_continue_butto
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    from rivumi.provider_verification import VerificationResult
+    from looplane.provider_verification import VerificationResult
 
     async def fake_verify(provider, fields, **_kwargs):
         return VerificationResult(ok=False, message="anthropic rejected the credential (401).")
 
-    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fake_verify)
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        config=CliConfig(runtime="looplane-agent", provider="ollama"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
     )
@@ -520,9 +520,9 @@ async def test_onboarding_credential_step_skip_verification_saves_and_marks_unve
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        config=CliConfig(runtime="looplane-agent", provider="ollama"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
     )
@@ -541,15 +541,15 @@ async def test_onboarding_credential_step_skip_verification_saves_and_marks_unve
         await _wait_until(lambda: modal._step == "model")
         assert modal.verified_providers["anthropic"].ok is False
 
-    from rivumi.native_credentials import resolve_native_field
+    from looplane.native_credentials import resolve_native_field
 
     assert resolve_native_field("anthropic", "api_key") == "sk-offline"
 
 
 async def test_onboarding_ollama_skips_credential_step(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="anthropic"),
+        config=CliConfig(runtime="looplane-agent", provider="anthropic"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(
             ("ollama", "Ollama local"),
@@ -570,7 +570,7 @@ async def test_onboarding_ollama_skips_credential_step(tmp_path: Path) -> None:
 
 
 def test_api_key_modal_was_removed_in_favor_of_onboarding_modal_wizard() -> None:
-    from rivumi import tui as tui_module
+    from looplane import tui as tui_module
 
     assert not hasattr(tui_module, "ApiKeyModal")
 
@@ -579,7 +579,7 @@ async def test_onboarding_model_step_uses_fetched_list_from_verification(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    from rivumi.provider_verification import VerificationResult
+    from looplane.provider_verification import VerificationResult
 
     async def fake_verify(provider, fields, **_kwargs):
         return VerificationResult(
@@ -588,11 +588,11 @@ async def test_onboarding_model_step_uses_fetched_list_from_verification(
             models=("claude-sonnet-5", "claude-opus-5"),
         )
 
-    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fake_verify)
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        config=CliConfig(runtime="looplane-agent", provider="ollama"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
     )
@@ -623,16 +623,16 @@ async def test_onboarding_model_step_falls_back_to_free_input_when_list_empty(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    from rivumi.provider_verification import VerificationResult
+    from looplane.provider_verification import VerificationResult
 
     async def fake_verify(provider, fields, **_kwargs):
         return VerificationResult(ok=True, message="Connected to anthropic.", models=())
 
-    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fake_verify)
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        config=CliConfig(runtime="looplane-agent", provider="ollama"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
     )
@@ -678,23 +678,23 @@ async def test_credential_verification_in_flight_can_be_cancelled_without_orphan
             calls.append("cancelled")
             raise
         calls.append("finished")
-        from rivumi.provider_verification import VerificationResult
+        from looplane.provider_verification import VerificationResult
 
         return VerificationResult(ok=True, message="Connected to anthropic.")
 
-    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", slow_verify)
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", slow_verify)
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli", provider="anthropic"),
         runner_factory=lambda *_: (FakeRunner(), None),
-        runtimes=(("codex-cli", "Codex CLI"), ("rivumi-agent", "Rivumi")),
+        runtimes=(("codex-cli", "Codex CLI"), ("looplane-agent", "looplane")),
         providers=(("anthropic", "Anthropic API"),),
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
         task = app.query_one("#task", MessageComposer)
-        task.load_text("/runtime rivumi-agent")
+        task.load_text("/runtime looplane-agent")
         await pilot.press("enter")
         await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
         app.screen.query_one("#field-api_key").value = "sk-test-secret"
@@ -723,7 +723,7 @@ async def test_external_runtime_submits_without_model_override(
         captured["request"] = request
         return FakeRunner(), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime=runtime),
         runner_factory=factory,
@@ -748,7 +748,7 @@ async def test_native_conversation_sends_only_each_new_turn_to_the_live_session(
         requests.append(request)
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -799,7 +799,7 @@ async def test_external_ask_projects_each_turn_once_without_raw_protocol(
     def factory(_request, approval_policy, event_sink):
         return ExternalRunner(approval_policy=approval_policy, event_sink=event_sink), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -851,7 +851,7 @@ async def test_conversation_layout_uses_full_timeline_and_reflows_without_draft_
         )
         assert transcript.height >= 4
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_args: (FakeRunner(), None),
@@ -885,7 +885,7 @@ async def test_conversation_layout_uses_full_timeline_and_reflows_without_draft_
 
 
 async def test_sparse_conversation_is_anchored_above_composer(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_args: (FakeRunner(), None),
@@ -926,7 +926,7 @@ async def test_sparse_conversation_is_anchored_above_composer(tmp_path: Path) ->
 def test_external_ask_prompt_retains_read_only_prefix_when_history_is_bounded(
     tmp_path: Path,
 ) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_args: (FakeRunner(), None),
@@ -952,7 +952,7 @@ async def test_pca_owned_conversation_resumes_after_tui_restart(tmp_path: Path) 
         requests.append(request)
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), None
 
-    first = RivumiApp(
+    first = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -971,7 +971,7 @@ async def test_pca_owned_conversation_resumes_after_tui_restart(tmp_path: Path) 
         assert "user.message" in persisted
         assert "turn.completed" in persisted
 
-    second = RivumiApp(
+    second = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -1011,7 +1011,7 @@ async def test_native_model_switch_retains_conversation_and_replays_completed_tu
         resources.append(resource)
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), resource
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -1075,7 +1075,7 @@ async def test_native_runtime_switch_retains_conversation_but_new_command_clears
         requests.append(request)
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="claude-code"),
         runner_factory=factory,
@@ -1120,24 +1120,24 @@ async def test_runtime_switch_to_native_prompts_for_missing_credential(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
-    from rivumi.provider_verification import VerificationResult
+    from looplane.provider_verification import VerificationResult
 
     async def fake_verify(provider, fields, **_kwargs):
         return VerificationResult(ok=True, message="Connected to anthropic.")
 
-    monkeypatch.setattr("rivumi.provider_verification.verify_native_credential", fake_verify)
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fake_verify)
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli", provider="anthropic"),
         runner_factory=lambda *_: (FakeRunner(), None),
-        runtimes=(("codex-cli", "Codex CLI"), ("rivumi-agent", "Rivumi")),
+        runtimes=(("codex-cli", "Codex CLI"), ("looplane-agent", "looplane")),
         providers=(("anthropic", "Anthropic API"),),
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
         task = app.query_one("#task", MessageComposer)
-        task.load_text("/runtime rivumi-agent")
+        task.load_text("/runtime looplane-agent")
         await pilot.press("enter")
         await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
         assert app.config.runtime == "codex-cli"
@@ -1145,12 +1145,10 @@ async def test_runtime_switch_to_native_prompts_for_missing_credential(
         key_input.value = "sk-test-secret"
         await pilot.click("#save")
         await _wait_until(lambda: not isinstance(app.screen, OnboardingModal))
-        await _wait_until(lambda: app.config.runtime == "rivumi-agent")
-        assert "Credentials saved" in "\n".join(
-            entry.title for entry in app.query(TimelineEntry)
-        )
+        await _wait_until(lambda: app.config.runtime == "looplane-agent")
+        assert "Credentials saved" in "\n".join(entry.title for entry in app.query(TimelineEntry))
 
-    from rivumi.native_credentials import resolve_native_field
+    from looplane.native_credentials import resolve_native_field
 
     assert resolve_native_field("anthropic", "api_key") == "sk-test-secret"
 
@@ -1161,17 +1159,17 @@ async def test_runtime_switch_to_native_cancelled_credential_prompt_leaves_runti
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli", provider="anthropic"),
         runner_factory=lambda *_: (FakeRunner(), None),
-        runtimes=(("codex-cli", "Codex CLI"), ("rivumi-agent", "Rivumi")),
+        runtimes=(("codex-cli", "Codex CLI"), ("looplane-agent", "looplane")),
         providers=(("anthropic", "Anthropic API"),),
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
         task = app.query_one("#task", MessageComposer)
-        task.load_text("/runtime rivumi-agent")
+        task.load_text("/runtime looplane-agent")
         await pilot.press("enter")
         await _wait_until(lambda: isinstance(app.screen, OnboardingModal))
         await pilot.click("#cancel")
@@ -1208,7 +1206,7 @@ async def test_resume_displays_persisted_failure_without_replaying_it(tmp_path: 
     finally:
         lease.release()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_args: (FakeRunner(), None),
@@ -1254,7 +1252,7 @@ async def test_tui_approval_is_attached_inline_and_maps_once_decision(tmp_path: 
     def factory(_request, approval_policy, event_sink):
         return ApprovalRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
@@ -1311,7 +1309,7 @@ async def test_approval_arrow_keys_work_without_option_list_focus(tmp_path: Path
     def factory(_request, approval_policy, event_sink):
         return ApprovalRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
@@ -1374,7 +1372,7 @@ async def test_blank_approval_preview_is_actionable_and_defaults_to_deny(
     def factory(_request, approval_policy, event_sink):
         return ApprovalRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
@@ -1477,7 +1475,6 @@ async def test_allow_session_is_reused_across_bounded_tasks() -> None:
     assert app.calls == 2
 
 
-
 async def test_run_check_allow_session_is_scoped_by_command_name() -> None:
     class ApprovalApp:
         calls = 0
@@ -1564,7 +1561,7 @@ async def test_ctrl_c_resolves_open_approval_as_cancel(tmp_path: Path) -> None:
     def factory(_request, approval_policy, event_sink):
         return ApprovalRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
@@ -1591,7 +1588,7 @@ async def test_later_factory_failure_clears_previous_success(tmp_path: Path) -> 
             raise RuntimeError("second failed")
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
@@ -1612,7 +1609,7 @@ async def test_later_factory_failure_clears_previous_success(tmp_path: Path) -> 
 
 
 async def test_provider_close_failure_still_cleans_worker_state(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -1651,7 +1648,7 @@ async def test_keyboard_shortcuts_request_cooperative_stop(tmp_path: Path, short
                 terminal_reason="user_cancelled",
             )
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -1672,11 +1669,9 @@ async def test_keyboard_shortcuts_request_cooperative_stop(tmp_path: Path, short
 
 
 @pytest.mark.parametrize("shortcut", ["ctrl+c", "ctrl+d"])
-async def test_idle_exit_requires_confirmed_second_press(
-    tmp_path: Path, shortcut: str
-) -> None:
+async def test_idle_exit_requires_confirmed_second_press(tmp_path: Path, shortcut: str) -> None:
     exits: list[RunResult | None] = []
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -1699,7 +1694,7 @@ async def test_idle_exit_requires_confirmed_second_press(
 
 async def test_mixed_exit_keys_do_not_confirm(tmp_path: Path) -> None:
     exits: list[RunResult | None] = []
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -1716,7 +1711,7 @@ async def test_mixed_exit_keys_do_not_confirm(tmp_path: Path) -> None:
 
 async def test_ctrl_c_with_draft_clears_draft_before_exiting(tmp_path: Path) -> None:
     exits: list[RunResult | None] = []
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -1741,7 +1736,7 @@ async def test_ctrl_c_with_draft_clears_draft_before_exiting(tmp_path: Path) -> 
 
 async def test_idle_escape_never_exits_and_is_invisible(tmp_path: Path) -> None:
     exits: list[RunResult | None] = []
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -1785,7 +1780,7 @@ async def test_second_escape_after_cancellation_does_not_exit(tmp_path: Path) ->
             )
 
     exits: list[RunResult | None] = []
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -1829,7 +1824,7 @@ async def test_active_escape_does_not_arm_idle_rewind(tmp_path: Path) -> None:
                 terminal_reason="user_cancelled",
             )
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -1869,7 +1864,7 @@ async def test_escape_on_inline_approval_dismisses_only_the_approval(
             return await super().run()
 
     exits: list[RunResult | None] = []
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -1909,7 +1904,7 @@ async def test_exit_command_stops_active_agent_then_closes(tmp_path: Path) -> No
                 terminal_reason="user_cancelled",
             )
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -1954,7 +1949,7 @@ async def test_textual_worker_cancel_is_translated_to_cooperative_stop(tmp_path:
                 terminal_reason="user_cancelled",
             )
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -1976,7 +1971,7 @@ async def test_textual_worker_cancel_is_translated_to_cooperative_stop(tmp_path:
 
 
 async def test_delayed_event_from_previous_generation_is_ignored(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
@@ -2014,7 +2009,7 @@ async def test_delayed_event_from_previous_generation_is_ignored(tmp_path: Path)
 
 
 async def test_tool_lifecycle_updates_one_inline_action_in_place(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
@@ -2063,7 +2058,7 @@ async def test_tool_lifecycle_updates_one_inline_action_in_place(tmp_path: Path)
 async def test_runtime_stream_projects_one_assistant_and_correlated_tool(
     tmp_path: Path,
 ) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2117,7 +2112,7 @@ async def test_runtime_stream_projects_one_assistant_and_correlated_tool(
 async def test_context_command_uses_runtime_token_telemetry_not_character_count(
     tmp_path: Path,
 ) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2157,7 +2152,7 @@ async def test_context_command_uses_runtime_token_telemetry_not_character_count(
 async def test_runtime_reported_model_updates_header_without_becoming_override(
     tmp_path: Path,
 ) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="claude-code"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2200,7 +2195,7 @@ async def test_runtime_reported_model_updates_header_without_becoming_override(
 
 
 async def test_multiline_composer_and_slash_palette_are_keyboard_driven(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2287,7 +2282,7 @@ async def test_multiline_composer_and_slash_palette_are_keyboard_driven(tmp_path
 
 
 async def test_inline_selector_escape_is_non_mutating_and_restores_focus(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2356,7 +2351,7 @@ async def test_follow_up_queue_runs_in_fifo_order(tmp_path: Path) -> None:
             event_sink=event_sink,
         ), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
@@ -2408,7 +2403,7 @@ async def test_auto_compaction_runs_before_queued_follow_up(tmp_path: Path) -> N
             event_sink=event_sink,
         ), resource
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -2447,7 +2442,7 @@ async def test_auto_compaction_runs_before_queued_follow_up(tmp_path: Path) -> N
 
 async def test_auto_compaction_failure_is_debounced_per_context(tmp_path: Path) -> None:
     resource = FailingCompactionResource()
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -2498,7 +2493,7 @@ async def test_native_compaction_completed_reinjects_workspace_context_on_next_t
         requests.append(request)
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), resource
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -2535,7 +2530,7 @@ async def test_active_turn_keeps_idle_only_slash_command_in_composer(tmp_path: P
             await gate.wait()
             return await super().run()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -2567,7 +2562,7 @@ async def test_escape_cancels_native_startup_before_runner_exists(tmp_path: Path
     release = asyncio.Event()
     factory_calls = 0
 
-    class SlowStartApp(RivumiApp):
+    class SlowStartApp(looplaneApp):
         async def _begin_conversation_turn(self, instruction: str) -> None:
             started.set()
             await release.wait()
@@ -2597,7 +2592,7 @@ async def test_escape_cancels_native_startup_before_runner_exists(tmp_path: Path
 
 
 async def test_read_search_actions_collapse_into_one_keyboard_group(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2621,7 +2616,7 @@ async def test_read_search_actions_collapse_into_one_keyboard_group(tmp_path: Pa
 
 
 async def test_tool_group_respects_manual_toggle_over_auto_state(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2656,7 +2651,7 @@ async def test_tool_group_respects_manual_toggle_over_auto_state(tmp_path: Path)
 
 
 async def test_ctrl_o_toggles_global_tool_verbose(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2690,8 +2685,9 @@ async def test_ctrl_o_toggles_global_tool_verbose(tmp_path: Path) -> None:
         detail = first.query_one(".tool-detail")
         assert detail.styles.max_height is not None
 
+
 async def test_scrolled_transcript_reports_deduplicated_new_items(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2733,7 +2729,7 @@ def test_runtime_loading_uses_fixed_width_swimming_otter_frames() -> None:
 
 
 async def test_runtime_loading_follows_runtime_attention_states(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2878,7 +2874,7 @@ async def test_runtime_loading_follows_runtime_attention_states(tmp_path: Path) 
 async def test_runtime_loading_status_glimmers_then_reveals_elapsed_time(
     tmp_path: Path,
 ) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -2908,7 +2904,7 @@ async def test_runtime_loading_status_glimmers_then_reveals_elapsed_time(
 
 
 async def test_runtime_loading_respects_reduced_motion(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=lambda *_: (FakeRunner(), None),
@@ -3002,7 +2998,7 @@ async def test_failed_native_turn_shows_exact_error_and_partial_changes(tmp_path
             event_sink=event_sink,
         ), FakeModel()
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -3170,7 +3166,7 @@ async def test_slash_rewind_forks_and_restores_prompt_without_submitting(
         requests.append(request)
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -3220,7 +3216,7 @@ async def test_idle_double_escape_opens_rewind_selector(tmp_path: Path) -> None:
     def factory(request, approval_policy, event_sink):
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(runtime="codex-cli"),
         runner_factory=factory,
@@ -3248,7 +3244,7 @@ async def test_double_escape_without_conversation_shows_nothing_to_rewind(
     def factory(request, approval_policy, event_sink):
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
@@ -3268,7 +3264,7 @@ async def test_double_escape_without_conversation_shows_nothing_to_rewind(
 async def test_rewindable_prompts_ignore_active_and_failed_only_turns(
     tmp_path: Path,
 ) -> None:
-    from rivumi.tui import _rewindable_prompts_from_events
+    from looplane.tui import _rewindable_prompts_from_events
 
     events = []
     # A completed turn plus a still-active turn without a terminal event.
@@ -3294,7 +3290,7 @@ async def test_final_transcript_exports_semantic_history(tmp_path: Path) -> None
     def factory(request, approval_policy, event_sink):
         return FakeRunner(approval_policy=approval_policy, event_sink=event_sink), None
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=factory,
@@ -3331,7 +3327,7 @@ async def test_cancelled_turn_leaves_useful_transcript(tmp_path: Path) -> None:
                 terminal_reason="user_cancelled",
             )
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda _request, approval_policy, event_sink: (
@@ -3357,20 +3353,16 @@ async def test_wizard_reports_fetch_failure_with_retry(tmp_path: Path, monkeypat
     to the manual model-ID input."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
-    from rivumi.provider_verification import VerificationResult
+    from looplane.provider_verification import VerificationResult
 
     async def fake_verify(provider, fields, **_kwargs):
-        return VerificationResult(
-            ok=False, message=f"{provider} rejected the credential (401)."
-        )
+        return VerificationResult(ok=False, message=f"{provider} rejected the credential (401).")
 
-    monkeypatch.setattr(
-        "rivumi.provider_verification.verify_native_credential", fake_verify
-    )
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fake_verify)
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        config=CliConfig(runtime="looplane-agent", provider="ollama"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
     )
@@ -3405,19 +3397,17 @@ async def test_onboarding_uses_disk_cached_catalog_without_network(
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-cached")
 
-    from rivumi import model_catalog
+    from looplane import model_catalog
 
     async def fail_if_called(*_args, **_kwargs):
         raise AssertionError("network verification must not run for a fresh catalog")
 
-    monkeypatch.setattr(
-        "rivumi.provider_verification.verify_native_credential", fail_if_called
-    )
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fail_if_called)
     model_catalog.store_models("anthropic", ("cached-a", "cached-b"))
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="ollama"),
+        config=CliConfig(runtime="looplane-agent", provider="ollama"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("ollama", "Ollama local"), ("anthropic", "Anthropic API")),
     )
@@ -3442,7 +3432,7 @@ async def test_onboarding_uses_disk_cached_catalog_without_network(
 async def test_session_model_selector_lists_catalog_models_and_refreshes_in_place(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import model_catalog
+    from looplane import model_catalog
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     model_catalog.store_models("openrouter", ("m/a", "m/b"))
@@ -3453,9 +3443,9 @@ async def test_session_model_selector_lists_catalog_models_and_refreshes_in_plac
     monkeypatch.setattr(model_catalog, "refresh", fake_refresh)
     monkeypatch.setattr(model_catalog, "CATALOG_TTL_SECONDS", -1.0)  # force SWR path
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/b"),
+        config=CliConfig(runtime="looplane-agent", provider="openrouter", model="m/b"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("openrouter", "OpenRouter"),),
     )
@@ -3468,8 +3458,9 @@ async def test_session_model_selector_lists_catalog_models_and_refreshes_in_plac
 
         selector = app.query_one(InlineSelectorBlock)
         await _wait_until(
-            lambda: [option.value for option in selector.options]
-            == ["__automatic__", "m/new", "m/b"]
+            lambda: (
+                [option.value for option in selector.options] == ["__automatic__", "m/new", "m/b"]
+            )
         )
 
 
@@ -3477,14 +3468,14 @@ async def test_session_model_selector_lists_catalog_models_and_refreshes_in_plac
 async def test_model_command_menu_prefix_matches_catalog_models(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import model_catalog
+    from looplane import model_catalog
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     model_catalog.store_models("openrouter", ("m/a", "m/b"))
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        config=CliConfig(runtime="looplane-agent", provider="openrouter", model="m/a"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("openrouter", "OpenRouter"),),
     )
@@ -3503,14 +3494,14 @@ async def test_model_command_menu_prefix_matches_catalog_models(
 async def test_provider_switch_updates_config_and_defaults_model(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import model_catalog
+    from looplane import model_catalog
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     model_catalog.store_models("deepseek", ("deepseek-chat",))
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        config=CliConfig(runtime="looplane-agent", provider="openrouter", model="m/a"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("openrouter", "OpenRouter"), ("deepseek", "DeepSeek")),
     )
@@ -3530,7 +3521,7 @@ async def test_provider_switch_updates_config_and_defaults_model(
     import json
     import os
 
-    saved = json.loads(Path(os.environ["RIVUMI_CONFIG"]).read_text())
+    saved = json.loads(Path(os.environ["LOOPLANE_CONFIG"]).read_text())
     assert saved["provider"] == "deepseek"
     assert saved["model"] == "deepseek-chat"
 
@@ -3539,9 +3530,9 @@ async def test_provider_switch_updates_config_and_defaults_model(
 async def test_provider_selector_lists_providers_and_rejects_unknown(
     tmp_path: Path,
 ) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        config=CliConfig(runtime="looplane-agent", provider="openrouter", model="m/a"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("openrouter", "OpenRouter"), ("groq", "Groq")),
     )
@@ -3566,9 +3557,9 @@ async def test_provider_selector_lists_providers_and_rejects_unknown(
 
 @pytest.mark.asyncio
 async def test_provider_command_menu_prefix_filters(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        config=CliConfig(runtime="looplane-agent", provider="openrouter", model="m/a"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("openrouter", "OpenRouter"), ("groq", "Groq")),
     )
@@ -3587,15 +3578,15 @@ async def test_provider_command_menu_prefix_filters(tmp_path: Path) -> None:
 async def test_provider_switch_defaults_to_preferred_model_not_first(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from rivumi import model_catalog
+    from looplane import model_catalog
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     # Alphabetically-first entry is a free variant; the known family wins.
     model_catalog.store_models("deepseek", ("aardvark/experimental:free", "deepseek-chat"))
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        config=CliConfig(runtime="looplane-agent", provider="openrouter", model="m/a"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("openrouter", "OpenRouter"), ("deepseek", "DeepSeek")),
     )
@@ -3613,7 +3604,7 @@ async def test_provider_switch_defaults_to_preferred_model_not_first(
 
 
 def test_openrouter_guardrail_error_gets_actionable_hint() -> None:
-    from rivumi.models import _apply_error_hint
+    from looplane.models import _apply_error_hint
 
     raw = (
         "openrouter request failed: Error code: 404 - {'error': {'message': "
@@ -3636,15 +3627,15 @@ async def test_model_switch_persists_and_auto_keeps_saved_default(
     import os
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-    config_path = Path(os.environ["RIVUMI_CONFIG"])
+    config_path = Path(os.environ["LOOPLANE_CONFIG"])
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
-        CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a").model_dump_json()
+        CliConfig(runtime="looplane-agent", provider="openrouter", model="m/a").model_dump_json()
     )
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        config=CliConfig(runtime="looplane-agent", provider="openrouter", model="m/a"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
         providers=(("openrouter", "OpenRouter"),),
     )
@@ -3663,8 +3654,10 @@ async def test_model_switch_persists_and_auto_keeps_saved_default(
         composer.load_text("/model auto")
         await pilot.press("enter")
         await _wait_until(
-            lambda: app.config.runtime_model is None
-            and any("Model switched" in item.title for item in app.query(TimelineEntry))
+            lambda: (
+                app.config.runtime_model is None
+                and any("Model switched" in item.title for item in app.query(TimelineEntry))
+            )
         )
         # "auto" is session-scoped: the persisted default keeps the last explicit model.
         saved = json.loads(config_path.read_text())
@@ -3676,17 +3669,17 @@ async def test_runtime_switch_persists(tmp_path: Path) -> None:
     import json
     import os
 
-    config_path = Path(os.environ["RIVUMI_CONFIG"])
+    config_path = Path(os.environ["LOOPLANE_CONFIG"])
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
-        CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a").model_dump_json()
+        CliConfig(runtime="looplane-agent", provider="openrouter", model="m/a").model_dump_json()
     )
 
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
-        config=CliConfig(runtime="rivumi-agent", provider="openrouter", model="m/a"),
+        config=CliConfig(runtime="looplane-agent", provider="openrouter", model="m/a"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
-        runtimes=(("rivumi-agent", "Rivumi"), ("codex-cli", "Codex CLI")),
+        runtimes=(("looplane-agent", "looplane"), ("codex-cli", "Codex CLI")),
         providers=(("openrouter", "OpenRouter"),),
     )
 
@@ -3710,7 +3703,7 @@ def test_format_token_count() -> None:
 
 
 async def test_runtime_metrics_renders_telemetry_model_and_elapsed(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
@@ -3737,8 +3730,7 @@ async def test_runtime_metrics_renders_telemetry_model_and_elapsed(tmp_path: Pat
         metrics.set_metrics(input_tokens=1_000, output_tokens=0, context_percent=50.0)
         rendered = metrics.render()
         assert not any(
-            "yellow" in str(span.style) or "red" in str(span.style)
-            for span in rendered.spans
+            "yellow" in str(span.style) or "red" in str(span.style) for span in rendered.spans
         )
 
         metrics.set_metrics(input_tokens=1_000, output_tokens=0, context_percent=75.0)
@@ -3749,7 +3741,7 @@ async def test_runtime_metrics_renders_telemetry_model_and_elapsed(tmp_path: Pat
 
 
 async def test_update_metrics_projects_telemetry_into_footer(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
@@ -3773,7 +3765,7 @@ async def test_update_metrics_projects_telemetry_into_footer(tmp_path: Path) -> 
 
 
 async def test_metrics_show_stream_estimate_hud_and_queued(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),
@@ -3782,9 +3774,7 @@ async def test_metrics_show_stream_estimate_hud_and_queued(tmp_path: Path) -> No
     async with app.run_test(size=(100, 30)):
         app._agent_running = True
         app._stream_char_count = 1024
-        app._tool_actions["a1"] = type(
-            "FakeAction", (), {"status": "running"}
-        )()
+        app._tool_actions["a1"] = type("FakeAction", (), {"status": "running"})()
         app._queued_prompts.append("follow-up")
         app._update_metrics()
         metrics = app.query_one("#metrics", RuntimeMetrics)
@@ -3792,7 +3782,7 @@ async def test_metrics_show_stream_estimate_hud_and_queued(tmp_path: Path) -> No
 
 
 async def test_usage_command_reports_session_totals(tmp_path: Path) -> None:
-    app = RivumiApp(
+    app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
         runner_factory=lambda *_: (FakeRunner(), FakeModel()),

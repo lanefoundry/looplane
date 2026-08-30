@@ -1,6 +1,6 @@
 # Approval Scope 診斷報告：每則訊息都跳「Run this command?」核准對話框
 
-日期：2026-08-25 · 範圍：`src/rivumi/`（TUI 對話、rivumi-agent runtime）
+日期：2026-08-25 · 範圍：`src/looplane/`（TUI 對話、looplane-agent runtime）
 驗證方式：程式碼追蹤 + 執行 `TextualApprovalPolicy._grant_scope` / `decide_permission` 實測腳本（結果見各節「實測」）。
 
 ---
@@ -9,7 +9,7 @@
 
 | # | 問題 | 結論 |
 |---|------|------|
-| 1 | 「Allow for this session」的 scope 是什麼？存在哪裡？ | TUI 層：process 內 `RivumiApp._approval_session_grants`（不落盤）；Runner 層：單一 run 的 `SessionManifest.granted_effects` |
+| 1 | 「Allow for this session」的 scope 是什麼？存在哪裡？ | TUI 層：process 內 `looplaneApp._approval_session_grants`（不落盤）；Runner 層：單一 run 的 `SessionManifest.granted_effects` |
 | 2 | 同一對話下一則訊息（新 run）還有效嗎？ | **驗證指令（final verification）：有效**（scope 穩定）。**模型呼叫的 `run_check`：無效——這是 bug**，grant 存在一次性 `action:<tool_call_id>` scope 下，永不匹配 |
 | 3 | 為什麼每則訊息都跑 `check-1`？ | 兩條路徑：harness 在**每個 run 結束前強制** `_verify_all`（設計如此）；加上 system prompt 鼓勵模型自行呼叫 `run_check`（模型選擇） |
 | 4 | `git diff --check` 有 allowlist 嗎？verification 核准路徑與一般 tool 相同嗎？ | 沒有 argv 內容判斷（唯讀指令也歸類 EXECUTE）；核准路徑相同（都走 `_approval`），只差 reason 與 scope 穩定性 |
@@ -21,15 +21,15 @@
 核准有**兩層**：
 
 ### 第一層：AgentRunner 內（per-run）
-- `src/rivumi/loop.py:259-338` `_approval()`：
+- `src/looplane/loop.py:259-338` `_approval()`：
   - `loop.py:278-293`：若 `self._manifest.granted_effects` 已含該 effect → 直接回 `ALLOW_ONCE`（事件 `approval.reused`），不再問。
   - `loop.py:310`：否則呼叫 `self.approvals.decide(request)`（即 TUI 傳入的 policy）。
   - `loop.py:313-314`：決策為 `ALLOW_SESSION` 時把 **effect** 加入 `manifest.granted_effects`。
 - manifest 是 per-run 的：`AgentRunner.__init__`（`loop.py:74-133`）每次建新 runner 都有新的 run_id / manifest。`resume()`（`loop.py:157+`）才會還原舊 grant。
 
 ### 第二層：TUI process 層（跨 run）
-- `src/rivumi/tui.py:1892-1894`：`self._approval_session_grants: set[ProcessLocalGrant]`，註解明言「ALLOW_SESSION lasts until this full-screen Rivumi process exits, including subsequent bounded tasks. It is never persisted to disk.」
-- `src/rivumi/tui.py:404-438` `TextualApprovalPolicy.decide()`：
+- `src/looplane/tui.py:1892-1894`：`self._approval_session_grants: set[ProcessLocalGrant]`，註解明言「ALLOW_SESSION lasts until this full-screen looplane process exits, including subsequent bounded tasks. It is never persisted to disk.」
+- `src/looplane/tui.py:404-438` `TextualApprovalPolicy.decide()`：
   - 先用 `decide_permission(mode, effect, scope, grants)` 查 process 層 grant（`tui.py:425-430`）；
   - `tui.py:436-437`：使用者選 ALLOW_SESSION → `self._session_grants.add(ProcessLocalGrant(effect, scope))`。
 - Grant 的 scope 計算：`tui.py:409-421` `_grant_scope()`：
@@ -37,10 +37,10 @@
   - `external_agent` tool → `external_agent:<backend>`;
   - **有 `command` → `"command:" + "\u0000".join(argv)`（驗證指令路徑，穩定）**;
   - 其他 → `None`，由 `tui.py:424` fallback 成 **`f"action:{request.action_id}"`**。
-- 匹配邏輯：`src/rivumi/runtime_semantics.py:173-203` `decide_permission()`——grant 需 effect 與 scope **完全相等** 才 ALLOW。
+- 匹配邏輯：`src/looplane/runtime_semantics.py:173-203` `decide_permission()`——grant 需 effect 與 scope **完全相等** 才 ALLOW。
 
 ### TUI 對話流程
-每則使用者訊息 → `_run_agent`（`tui.py:3187`）→ `runner_factory`（`tui.py:3241-3245`，每則訊息 new 一個 `TextualApprovalPolicy`，但共用同一個 `_approval_session_grants` set）→ `cli.py:615 make_runner` → `cli.py:689` **new 一個 `AgentRunner`**（新 run、新 manifest）。預設 runtime 是 `rivumi-agent`（`tui.py:2016-2019`）。TaskContract 的 verification 固定帶 `check-1 = git diff --check`（`cli.py:244-249 _commands`，`cli.py:649`）。
+每則使用者訊息 → `_run_agent`（`tui.py:3187`）→ `runner_factory`（`tui.py:3241-3245`，每則訊息 new 一個 `TextualApprovalPolicy`，但共用同一個 `_approval_session_grants` set）→ `cli.py:615 make_runner` → `cli.py:689` **new 一個 `AgentRunner`**（新 run、新 manifest）。預設 runtime 是 `looplane-agent`（`tui.py:2016-2019`）。TaskContract 的 verification 固定帶 `check-1 = git diff --check`（`cli.py:244-249 _commands`，`cli.py:649`）。
 
 ## 2. 「Allow for this session」在下一則訊息是否有效？
 

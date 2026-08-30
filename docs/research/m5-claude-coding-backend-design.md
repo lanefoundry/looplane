@@ -138,7 +138,7 @@ The coding backend needs a new coding-specific task rather than overloading the 
 ```python
 class ExternalCodingTask(ContractModel):
     repository: Path
-    base_sha: str                    # exact 40-char commit
+    base_sha: str  # exact 40-char commit
     instruction: str
     allowed_paths: tuple[str, ...]
     verification: tuple[VerificationCommand, ...]

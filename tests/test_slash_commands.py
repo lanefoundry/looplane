@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from rivumi.slash_commands import (
+from looplane.slash_commands import (
     DEFAULT_SLASH_COMMAND_REGISTRY,
     ArgumentExpectation,
     CommandMetadata,

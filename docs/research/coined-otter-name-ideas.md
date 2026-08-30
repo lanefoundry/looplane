@@ -45,7 +45,7 @@ Scores are brand judgments, not factual availability claims.
 | Lontri | 8 | 7 | 7 | 8 | 30 | From *Lontra*, the river-otter genus; compact but less obvious to general audiences. PyPI/npm 404. |
 | Lonami | 9 | 8 | 6 | 9 | 32 | `Lontra + ami`; warm companion signal but weaker otter recognition. PyPI/npm 404. |
 | Lonora | 9 | 8 | 5 | 9 | 31 | Warm and elegant, but may be perceived as a human name rather than an otter. PyPI/npm 404. |
-| **Rivumi** | 9 | 8 | 6 | 9 | **32** | River-rooted with a soft companion-character ending. PyPI/npm 404; needs deeper product search. |
+| **looplane** | 9 | 8 | 6 | 9 | **32** | River-rooted with a soft companion-character ending. PyPI/npm 404; needs deeper product search. |
 | Rivori | 9 | 8 | 6 | 8 | 31 | River/current impression; slightly more luxury-brand than companion. PyPI/npm 404. |
 | Rivulo | 9 | 8 | 6 | 8 | 31 | Suggests rivulet; fluid and compact but not distinctly otter. PyPI/npm 404. |
 | Rivami | 9 | 8 | 6 | 9 | 32 | `river + ami`; clear water-friend construction, but existing personal/company uses surfaced. |
@@ -82,7 +82,7 @@ Best mature alternative to Lutrimi. It sounds a little more like a complete prod
 
 ### Secondary directions
 
-- **Rivumi** if water-world mood matters more than literal otter recognition.
+- **looplane** if water-world mood matters more than literal otter recognition.
 - **Rillumi** if the brand should feel calm, bright, and broadly extensible.
 - **Covami** if “sheltered companion” is a stronger positioning idea than animal specificity.
 

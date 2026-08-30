@@ -46,7 +46,7 @@ const TEXT_EXTENSIONS = new Set([
   ".ini",
   ".cfg",
 ]);
-const FIXED_COMMAND = "/usr/local/bin/rivumi-sandbox-run";
+const FIXED_COMMAND = "/usr/local/bin/looplane-sandbox-run";
 const encoder = new TextEncoder();
 
 export interface Env extends Cloudflare.Env {
@@ -1086,24 +1086,24 @@ async function executeRunInSandbox(
       "write",
     );
     requireSdkSuccess(
-      await sandbox.writeFile("/workspace/.rivumi-run-token", run.runToken),
+      await sandbox.writeFile("/workspace/.looplane-run-token", run.runToken),
       "write",
     );
     requireSdkSuccess(
-      await sandbox.writeFile("/workspace/.rivumi-event-token", run.eventToken),
+      await sandbox.writeFile("/workspace/.looplane-event-token", run.eventToken),
       "write",
     );
     requireSdkSuccess(
-      await sandbox.writeFile("/workspace/.rivumi-approval-token", run.approvalToken),
+      await sandbox.writeFile("/workspace/.looplane-approval-token", run.approvalToken),
       "write",
     );
     const execution = await sandbox.exec(FIXED_COMMAND, {
       cwd: "/workspace",
       timeout: LIMITS.sandboxTimeoutMs,
       env: {
-        RIVUMI_MODEL_ID: run.input.model,
-        RIVUMI_MODEL_GATEWAY_URL: run.proxyUrl,
-        RIVUMI_MAX_BUNDLE_BYTES: "1000000",
+        LOOPLANE_MODEL_ID: run.input.model,
+        LOOPLANE_MODEL_GATEWAY_URL: run.proxyUrl,
+        LOOPLANE_MAX_BUNDLE_BYTES: "1000000",
       },
     });
     const terminalSuccess =
@@ -1496,7 +1496,7 @@ export async function handleRequest(
     const path = new URL(request.url).pathname;
     if (path === "/healthz") {
       if (request.method !== "GET") throw new RequestProblem(405, "method_not_allowed");
-      return json({ ok: true, service: "rivumi-control-plane" });
+      return json({ ok: true, service: "looplane-control-plane" });
     }
     if (path === "/v1/runs") {
       if (request.method !== "POST") throw new RequestProblem(405, "method_not_allowed");

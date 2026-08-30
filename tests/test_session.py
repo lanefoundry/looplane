@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.contracts import TaskContract, VerificationCommand
-from rivumi.events import RunEvent
-from rivumi.prompts import CODING_AGENT_PROMPT_VERSION
-from rivumi.session import (
+from looplane.contracts import TaskContract, VerificationCommand
+from looplane.events import RunEvent
+from looplane.prompts import CODING_AGENT_PROMPT_VERSION
+from looplane.session import (
     SessionBusyError,
     SessionManifest,
     SessionStore,
@@ -77,14 +77,17 @@ def test_legacy_manifest_does_not_claim_the_m3_prompt_version() -> None:
     )
 
     assert manifest.prompt_version == "m2-unversioned-patch"
-    assert SessionManifest.new(
-        run_id="new-run",
-        task_id="new-task",
-        provider_name="scripted",
-        model_id="fixture",
-        protocol="scripted",
-        base_sha="b" * 40,
-    ).prompt_version == CODING_AGENT_PROMPT_VERSION
+    assert (
+        SessionManifest.new(
+            run_id="new-run",
+            task_id="new-task",
+            provider_name="scripted",
+            model_id="fixture",
+            protocol="scripted",
+            base_sha="b" * 40,
+        ).prompt_version
+        == CODING_AGENT_PROMPT_VERSION
+    )
 
 
 @pytest.mark.asyncio
@@ -169,8 +172,9 @@ async def test_resume_rejects_ambiguous_in_flight_side_effect(
     manifest = manifest.model_copy(update={"last_event_sequence": 0})
     with store.acquire_writer() as lease:
         await store.initialize(manifest, lease)
-    with store.acquire_writer() as lease, pytest.raises(
-        SessionValidationError, match="cannot prove"
+    with (
+        store.acquire_writer() as lease,
+        pytest.raises(SessionValidationError, match="cannot prove"),
     ):
         await store.claim_and_validate_resume(lease)
 
@@ -183,8 +187,9 @@ async def test_resume_rejects_non_contiguous_event_log(tmp_path: Path) -> None:
     manifest = manifest.model_copy(update={"last_event_sequence": 1})
     with store.acquire_writer() as lease:
         await store.initialize(manifest, lease)
-    with store.acquire_writer() as lease, pytest.raises(
-        SessionValidationError, match="not contiguous"
+    with (
+        store.acquire_writer() as lease,
+        pytest.raises(SessionValidationError, match="not contiguous"),
     ):
         await store.claim_and_validate_resume(lease)
 
@@ -200,9 +205,7 @@ async def test_resume_rejects_workspace_at_wrong_commit(tmp_path: Path) -> None:
     git(workspace, "commit", "-qm", "other")
     with store.acquire_writer() as lease:
         await store.initialize(manifest, lease)
-    with store.acquire_writer() as lease, pytest.raises(
-        SessionValidationError, match="HEAD"
-    ):
+    with store.acquire_writer() as lease, pytest.raises(SessionValidationError, match="HEAD"):
         await store.claim_and_validate_resume(lease)
 
 

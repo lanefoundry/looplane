@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from rivumi.cli_config import (
+from looplane.cli_config import (
     CliConfig,
     default_cli_config_path,
     load_cli_config,
     save_cli_config,
 )
-from rivumi.policy_config import ProjectPolicyError, load_project_policy_config
+from looplane.policy_config import ProjectPolicyError, load_project_policy_config
 
 
 async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: Path) -> None:
@@ -81,29 +81,29 @@ def test_cli_config_rejects_credentials_unknown_fields_and_symlinks(tmp_path: Pa
         load_cli_config(link)
 
 
-def test_cli_config_uses_rivumi_path_and_normalizes_legacy_runtime(
+def test_cli_config_uses_looplane_path_and_normalizes_legacy_runtime(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("RIVUMI_CONFIG", raising=False)
+    monkeypatch.delenv("LOOPLANE_CONFIG", raising=False)
     monkeypatch.delenv("PCA_CONFIG", raising=False)
 
-    assert default_cli_config_path() == tmp_path / "rivumi" / "config.json"
-    assert CliConfig(runtime="pca-agent").runtime == "rivumi-agent"
+    assert default_cli_config_path() == tmp_path / "looplane" / "config.json"
+    assert CliConfig(runtime="pca-agent").runtime == "looplane-agent"
 
 
 def test_cli_config_reads_legacy_default_when_new_path_is_absent(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("RIVUMI_CONFIG", raising=False)
+    monkeypatch.delenv("LOOPLANE_CONFIG", raising=False)
     monkeypatch.delenv("PCA_CONFIG", raising=False)
     legacy = tmp_path / "python-coding-agent" / "config.json"
     legacy.parent.mkdir()
     legacy.write_text('{"runtime":"pca-agent","provider":"ollama","model":"qwen3:4b"}')
 
     assert load_cli_config() == CliConfig(
-        runtime="rivumi-agent", provider="ollama", model="qwen3:4b"
+        runtime="looplane-agent", provider="ollama", model="qwen3:4b"
     )
 
 
@@ -137,7 +137,7 @@ def test_project_policy_config_loads_missing_valid_and_invalid_policy(
 ) -> None:
     assert load_project_policy_config(tmp_path).deny_rules == ()
 
-    policy_dir = tmp_path / ".rivumi"
+    policy_dir = tmp_path / ".looplane"
     policy_dir.mkdir()
     policy_path = policy_dir / "policy.json"
     policy_path.write_text(
@@ -173,7 +173,7 @@ def test_implicit_cli_config_load_keeps_project_policy_out_of_config(
         ),
         encoding="utf-8",
     )
-    policy_dir = tmp_path / ".rivumi"
+    policy_dir = tmp_path / ".looplane"
     policy_dir.mkdir()
     (policy_dir / "policy.json").write_text(
         json.dumps(
@@ -185,7 +185,7 @@ def test_implicit_cli_config_load_keeps_project_policy_out_of_config(
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RIVUMI_CONFIG", str(config_path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(config_path))
 
     loaded = load_cli_config()
 
@@ -197,7 +197,7 @@ def test_implicit_cli_config_load_keeps_project_policy_out_of_config(
 def test_explicit_cli_config_load_does_not_validate_cwd_project_policy(
     tmp_path: Path, monkeypatch
 ) -> None:
-    policy_dir = tmp_path / ".rivumi"
+    policy_dir = tmp_path / ".looplane"
     policy_dir.mkdir()
     (policy_dir / "policy.json").write_text('{"allow_rules":["not valid"]}', encoding="utf-8")
     config_path = tmp_path / "config.json"

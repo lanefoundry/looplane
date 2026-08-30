@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.policy import PathPolicyError, SafePathPolicy
+from looplane.policy import PathPolicyError, SafePathPolicy
 
 
 @pytest.fixture

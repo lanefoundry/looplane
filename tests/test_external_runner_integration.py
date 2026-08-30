@@ -5,17 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.backends import (
+from looplane.backends import (
     ExternalAgentBackend,
     ExternalAgentResult,
     ExternalAgentTask,
     ExternalRunStatus,
 )
-from rivumi.contracts import Limits, RunStatus, TaskContract, VerificationCommand
-from rivumi.external_runner import ExternalCodingRunner
-from rivumi.omp_backend import OmpBackend
-from rivumi.opencode_backend import OpenCodeBackend
-from rivumi.pi_backend import PiBackend
+from looplane.contracts import Limits, RunStatus, TaskContract, VerificationCommand
+from looplane.external_runner import ExternalCodingRunner
+from looplane.omp_backend import OmpBackend
+from looplane.opencode_backend import OpenCodeBackend
+from looplane.pi_backend import PiBackend
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "m13"
 

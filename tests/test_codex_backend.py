@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from rivumi.backends import ExternalAgentEvent, ExternalAgentTask, ExternalRunStatus
-from rivumi.codex_backend import CodexCliBackend
+from looplane.backends import ExternalAgentEvent, ExternalAgentTask, ExternalRunStatus
+from looplane.codex_backend import CodexCliBackend
 
 
 def _fake_codex(tmp_path: Path, body: str) -> Path:

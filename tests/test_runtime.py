@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 from conftest import run_git
 
-from rivumi import landlock_run
-from rivumi.runtime import (
+from looplane import landlock_run
+from looplane.runtime import (
     CommandSandbox,
     LocalGitWorkspace,
     WorkspacePreparationError,
@@ -46,7 +46,7 @@ def test_bounded_command_delivers_complete_stdout_lines_before_exit(tmp_path: Pa
 def test_bounded_command_fails_closed_when_required_sandbox_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import rivumi.runtime as runtime
+    import looplane.runtime as runtime
 
     marker = tmp_path / "must-not-exist"
     monkeypatch.setattr(runtime.sys, "platform", "linux")
@@ -112,7 +112,7 @@ def test_sandboxed_command_rejects_unknown_profile_before_execution(tmp_path: Pa
 def test_sandboxed_command_wraps_linux_with_bubblewrap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import rivumi.runtime as runtime
+    import looplane.runtime as runtime
 
     workspace = tmp_path / "workspace"
     task_home = tmp_path / ".task-home"
@@ -142,7 +142,7 @@ def test_sandboxed_command_wraps_linux_with_bubblewrap(
 def test_sandboxed_command_wraps_linux_with_landlock_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import rivumi.runtime as runtime
+    import looplane.runtime as runtime
 
     workspace = tmp_path / "workspace"
     task_home = tmp_path / ".task-home"
@@ -175,7 +175,7 @@ def test_sandboxed_command_wraps_linux_with_landlock_backend(
 def test_sandboxed_command_can_require_bubblewrap_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import rivumi.runtime as runtime
+    import looplane.runtime as runtime
 
     monkeypatch.setattr(runtime.sys, "platform", "linux")
     monkeypatch.setattr(runtime.shutil, "which", lambda _name: None)

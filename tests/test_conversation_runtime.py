@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from rivumi.approvals import ApprovalDecision, ToolEffect
-from rivumi.conversation_runtime import (
+from looplane.approvals import ApprovalDecision, ToolEffect
+from looplane.conversation_runtime import (
     CONVERSATION_RUNTIME_EVENT_ADAPTER,
     ActionPreviewUpdatedEvent,
     ApprovalRequestedEvent,
@@ -21,7 +21,7 @@ from rivumi.conversation_runtime import (
     ToolStartedEvent,
     TurnCompletedEvent,
 )
-from rivumi.runtime_semantics import ContextTelemetry, ProposedChange
+from looplane.runtime_semantics import ContextTelemetry, ProposedChange
 
 
 def test_event_contract_is_strict_and_discriminated() -> None:

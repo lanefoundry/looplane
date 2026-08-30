@@ -11,10 +11,10 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-from rivumi.contracts import Limits, ModelTurn, TaskContract, ToolCall, VerificationCommand
-from rivumi.loop import AgentRunner
-from rivumi.models import ScriptedModel
-from rivumi.subagents import analyze_subagent_schedule_jsonl
+from looplane.contracts import Limits, ModelTurn, TaskContract, ToolCall, VerificationCommand
+from looplane.loop import AgentRunner
+from looplane.models import ScriptedModel
+from looplane.subagents import analyze_subagent_schedule_jsonl
 
 
 def _run_git(repository: Path, *args: str) -> str:
@@ -40,8 +40,8 @@ async def _run(output_root: Path) -> dict[str, object]:
         ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "*.pyc"),
     )
     _run_git(repository, "init", "-q")
-    _run_git(repository, "config", "user.name", "Rivumi Smoke")
-    _run_git(repository, "config", "user.email", "rivumi@example.invalid")
+    _run_git(repository, "config", "user.name", "looplane Smoke")
+    _run_git(repository, "config", "user.email", "looplane@example.invalid")
     _run_git(repository, "add", ".")
     _run_git(repository, "commit", "-q", "-m", "fixture: add tiny calculator bug")
     task = TaskContract(

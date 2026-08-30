@@ -7,7 +7,7 @@
 ## 2. 文件概覽
 - **建立日期**：2026-08-23
 - **作者**：Kevin Chiu (kai-chiu@opencode.ai)
-- **相關 PR**：[PR #1234](https://github.com/anomalyco/rivumi/pull/1234)
+- **相關 PR**：[PR #1234](https://github.com/anomalyco/looplane/pull/1234)
 - **驗證狀態**：實作完成並通過測試
 
 ## 3. 背景與需求
@@ -21,7 +21,7 @@ opencode-backend/pi-backend/omp-backend 的直接驗證
 
 ## 4. 實作目標
 ### 4.1 Rivera 設計目標
-1. 保持 `rivumi-agent` 核心設計原則：可「邊寫可執行程式碼、邊驗證可用性」
+1. 保持 `looplane-agent` 核心設計原則：可「邊寫可執行程式碼、邊驗證可用性」
 2. 為 M13 端到端驗證建立基礎框架
 3. 實時顯示 provider 連線狀態與可用模型列表
 
@@ -40,15 +40,15 @@ opencode-backend/pi-backend/omp-backend 的直接驗證
 
 ## 5. 實現重點
 ### 5.1 程式碼調整
-- `src/rivumi/provider_verification.py`: 增加 `verify_native_credential()` 和 `list_provider_models()`
-- `src/rivumi/cli.py`: 新增 `auth list` 指令與 `auth set-key` 的即時驗證
-- `src/rivumi/tui.py`: 重構 `OnboardingModal` 為 4 步驟流程  
+- `src/looplane/provider_verification.py`: 增加 `verify_native_credential()` 和 `list_provider_models()`
+- `src/looplane/cli.py`: 新增 `auth list` 指令與 `auth set-key` 的即時驗證
+- `src/looplane/tui.py`: 重構 `OnboardingModal` 為 4 步驟流程  
 
 ### 5.2 變更清單 (Git Diff 檔名)
-- `src/rivumi/provider_catalog.py` (161 行邏輯)
-- `src/rivumi/opencode_backend.py` (0+0/?? 行修改)
-- `src/rivumi/cli.py` (新增 `auth list` 命令)
-- `src/rivumi/cli_config.py` (1+3/?? 行修改)
+- `src/looplane/provider_catalog.py` (161 行邏輯)
+- `src/looplane/opencode_backend.py` (0+0/?? 行修改)
+- `src/looplane/cli.py` (新增 `auth list` 命令)
+- `src/looplane/cli_config.py` (1+3/?? 行修改)
 - `tests/test_provider_verification.py` (新增樞 testing 23 行)
 - `tests/test_cli.py` (新增驗證相關測試 120 行)
 

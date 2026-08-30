@@ -6,8 +6,8 @@ from urllib.request import urlopen
 
 import pytest
 
-from rivumi.codex_oauth import CodexAuthorization
-from rivumi.oauth_login import parse_codex_callback, wait_for_codex_callback
+from looplane.codex_oauth import CodexAuthorization
+from looplane.oauth_login import parse_codex_callback, wait_for_codex_callback
 
 
 def test_parse_codex_callback_validates_state_and_loopback() -> None:

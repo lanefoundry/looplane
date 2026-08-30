@@ -2,14 +2,14 @@
 
 ## Outcome
 
-Reduce the remaining semantic gap with Claude Code without widening Rivumi's trust boundary.
+Reduce the remaining semantic gap with Claude Code without widening looplane's trust boundary.
 
 ## Contracts
 
 - Context telemetry is provider-reported when available and explicitly estimated otherwise.
-- Native compaction is delegated only when the provider supports it. Rivumi never pretends local
+- Native compaction is delegated only when the provider supports it. looplane never pretends local
   trimming is model summarization; a provider may omit a portable checkpoint.
-- Permission mode is Rivumi-owned deterministic policy: ask, accept-edits, or read-only. Provider
+- Permission mode is looplane-owned deterministic policy: ask, accept-edits, or read-only. Provider
   prompt text is never treated as enforcement.
 - Approval remains correlated to one action. The choice surface is rendered adjacent to that
   pending action while the policy retains the final decision authority.

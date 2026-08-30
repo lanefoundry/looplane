@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import httpx
 import pytest
 
-from rivumi.contracts import (
+from looplane.contracts import (
     ConversationItem,
     Message,
     ModelCapabilities,
@@ -16,8 +16,8 @@ from rivumi.contracts import (
     ToolObservation,
     Usage,
 )
-from rivumi.gateway import ModelGateway
-from rivumi.models import ProviderError, ProviderErrorKind
+from looplane.gateway import ModelGateway
+from looplane.models import ProviderError, ProviderErrorKind
 
 
 class CapturingProvider:
@@ -130,9 +130,7 @@ async def test_lifespan_closes_provider_on_the_server_event_loop() -> None:
 @pytest.mark.asyncio
 async def test_tools_are_decoded_and_tool_calls_are_encoded() -> None:
     call = ToolCall(tool_call_id="call-1", name="read_file", arguments={"path": "README.md"})
-    provider, client = gateway_client(
-        ModelTurn(tool_calls=(call,), finish_reason="tool_calls")
-    )
+    provider, client = gateway_client(ModelTurn(tool_calls=(call,), finish_reason="tool_calls"))
     async with client:
         response = await client.post(
             "/v1/chat/completions",

@@ -1,7 +1,7 @@
 # M13 stage report — live capture of OpenCode / Pi / OMP
 
 Generated 2026-08-23 from real runs on this machine. Purpose: finalize the normalizers in
-`src/rivumi/{pi,omp,opencode}_backend.py` against real event streams and record versions,
+`src/looplane/{pi,omp,opencode}_backend.py` against real event streams and record versions,
 commands, event coverage, policy notes, and limitations.
 
 ## Capture harness
@@ -85,7 +85,7 @@ Artifacts:
 
 ## Policy / billing notes (from free-llm-models skill, 2026-08-23)
 
-- pi / omp / opencode own their logins; Rivumi never proxies their credentials (arch boundary held).
+- pi / omp / opencode own their logins; looplane never proxies their credentials (arch boundary held).
 - Free tiers used for capture: OpenRouter free routers, OpenCode Zen `hy3-free`, Google free tier.
   Coding-agent first-turn prompts are large (~25K–77K tokens); avoid Groq Free Tier (8K TPM) for
   agent runs. Do not send sensitive code to free-tier models that train on data (Zen default).
@@ -116,20 +116,20 @@ Cancellation is runtime-agnostic (same runner cooperative-stop path); it is exer
 to confirm the wiring. Live multi-turn agent sessions (the CLI's own internal loops) are out of scope
 for these deterministic proofs.
 
-## Headless CLI entrypoints (`rivumi backend <runtime>`)
+## Headless CLI entrypoints (`looplane backend <runtime>`)
 
-Added `rivumi backend opencode|pi|omp` subcommands (`src/rivumi/cli.py`) mapping to the registry
+Added `looplane backend opencode|pi|omp` subcommands (`src/looplane/cli.py`) mapping to the registry
 backends, each exposing `--model/-m`, `--check`, `--allowed-path`, `--run-root`, `--task-id`,
 `--timeout`, `--allow-external-modify`, and `--unsafe-local-exec`, plus `--task/-t` as a PROMPT alias.
 Approve/intent flags match the existing `claude-code`/`codex-cli` surface.
 
 Two latent runtime bugs were exposed by a live headless attempt and fixed:
 
-- `src/rivumi/runtime.py`: `run_bounded_command` unconditionally spawned a `_write_stdin` thread
+- `src/looplane/runtime.py`: `run_bounded_command` unconditionally spawned a `_write_stdin` thread
   whenever `stdin is not None`; for the default `subprocess.DEVNULL` sentinel (an `int`) this crashed
   with `AttributeError: 'int' object has no attribute 'encode'`. The writer is now spawned only for a
   real `str` payload (`isinstance(stdin, str)`).
-- `src/rivumi/external_runner.py`: both post-delegation source-integrity audits reused the (possibly
+- `src/looplane/external_runner.py`: both post-delegation source-integrity audits reused the (possibly
   exhausted) backend wall-clock deadline via `self._remaining(deadline)`. When the external CLI ran
   out of time, the audit immediately timed out itself and **masked** the real `timeout` terminal
   reason as `source_repository_changed`. The audit now uses a dedicated `_SOURCE_INVARIANT_TIMEOUT`
@@ -143,6 +143,6 @@ Full suite: **511 passed**; `ruff check` clean.
 A real `opencode` headless edit task (`ollama/gemma4`) completes a trivial prompt but hangs on an
 edit-then-approve workload when stdin is `/dev/null` (OpenCode's headless edit path expects
 interactive permission approval / its own autonomous flag). Wiring OpenCode's autonomous/approve flag
-into `OpenCodeBackend._argv` is a follow-up so `rivumi backend opencode` can make file edits
+into `OpenCodeBackend._argv` is a follow-up so `looplane backend opencode` can make file edits
 non-interactively; the audit pipeline itself is verified correct by the recorded-stream tests above.
 

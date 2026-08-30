@@ -6,11 +6,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from rivumi.approvals import ApprovalDecision, ApprovalReason, ApprovalRequest, ToolEffect
-from rivumi.contracts import ModelTurn, ToolCall
-from rivumi.events import RunEvent
-from rivumi.models import ScriptedModel
-from rivumi.sandbox_entry import (
+from looplane.approvals import ApprovalDecision, ApprovalReason, ApprovalRequest, ToolEffect
+from looplane.contracts import ModelTurn, ToolCall
+from looplane.events import RunEvent
+from looplane.models import ScriptedModel
+from looplane.sandbox_entry import (
     SandboxControlPlaneApprovalPolicy,
     SandboxControlPlaneEventSink,
     SandboxEntrypointError,
@@ -73,9 +73,7 @@ async def test_sandbox_entry_runs_existing_agent_and_bundles_artifacts(
     root, request = _workspace(tmp_path)
     model = ScriptedModel(
         [
-            ModelTurn(
-                tool_calls=(ToolCall(name="apply_patch", arguments={"patch": PATCH}),)
-            ),
+            ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": PATCH}),)),
             ModelTurn(content="fixed and verified"),
         ]
     )
@@ -87,8 +85,10 @@ async def test_sandbox_entry_runs_existing_agent_and_bundles_artifacts(
     assert response["result"]["changed_files"] == ["src/example/calculator.py"]
     assert "return left + right" in response["artifacts"]["patch"]
     assert json.loads(response["artifacts"]["result"])["status"] == "completed"
-    assert not (root / "source/src/example/calculator.py").read_text().endswith(
-        "return left + right\n"
+    assert (
+        not (root / "source/src/example/calculator.py")
+        .read_text()
+        .endswith("return left + right\n")
     )
 
 
@@ -132,7 +132,7 @@ async def test_sandbox_entry_rejects_oversized_request(tmp_path: Path) -> None:
 
 
 def test_run_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> None:
-    token_path = tmp_path / ".rivumi-run-token"
+    token_path = tmp_path / ".looplane-run-token"
     token_path.write_text("signed-run-capability", encoding="utf-8")
     token_path.chmod(0o600)
 
@@ -143,7 +143,7 @@ def test_run_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> None:
 
 
 def test_event_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> None:
-    token_path = tmp_path / ".rivumi-event-token"
+    token_path = tmp_path / ".looplane-event-token"
     token_path.write_text("signed-event-capability", encoding="utf-8")
     token_path.chmod(0o600)
 
@@ -154,7 +154,7 @@ def test_event_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> Non
 
 
 def test_approval_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> None:
-    token_path = tmp_path / ".rivumi-approval-token"
+    token_path = tmp_path / ".looplane-approval-token"
     token_path.write_text("signed-approval-capability", encoding="utf-8")
     token_path.chmod(0o600)
 
@@ -165,7 +165,7 @@ def test_approval_capability_is_owner_only_and_consumed_once(tmp_path: Path) -> 
 
 
 def test_run_capability_rejects_loose_permissions(tmp_path: Path) -> None:
-    token_path = tmp_path / ".rivumi-run-token"
+    token_path = tmp_path / ".looplane-run-token"
     token_path.write_text("signed-run-capability", encoding="utf-8")
     token_path.chmod(0o644)
 
@@ -175,7 +175,7 @@ def test_run_capability_rejects_loose_permissions(tmp_path: Path) -> None:
 
 
 def test_event_capability_rejects_loose_permissions(tmp_path: Path) -> None:
-    token_path = tmp_path / ".rivumi-event-token"
+    token_path = tmp_path / ".looplane-event-token"
     token_path.write_text("signed-event-capability", encoding="utf-8")
     token_path.chmod(0o644)
 
@@ -205,7 +205,7 @@ async def test_control_plane_event_sink_posts_jsonl_lines(monkeypatch: pytest.Mo
             calls.append({"url": url, "headers": headers, "json": json, "timeout": self.timeout})
             return FakeResponse()
 
-    monkeypatch.setattr("rivumi.sandbox_entry.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("looplane.sandbox_entry.httpx.AsyncClient", FakeAsyncClient)
     sink = SandboxControlPlaneEventSink(
         base_url="https://control.example/internal/v1",
         run_id="task-1",
@@ -270,8 +270,8 @@ async def test_control_plane_approval_policy_polls_until_decision(
             calls.append({"url": url, "headers": headers, "timeout": self.timeout})
             return self.responses.pop(0)
 
-    monkeypatch.setattr("rivumi.sandbox_entry.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("rivumi.sandbox_entry.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("looplane.sandbox_entry.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("looplane.sandbox_entry.httpx.AsyncClient", FakeAsyncClient)
     policy = SandboxControlPlaneApprovalPolicy(
         base_url="https://control.example/internal/v1",
         run_id="task-1",
@@ -316,10 +316,10 @@ async def test_main_returns_only_a_bounded_entrypoint_failure_code(tmp_path: Pat
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "rivumi.sandbox_entry.Path",
+            "looplane.sandbox_entry.Path",
             lambda value: response_path if value == "/workspace/response.json" else Path(value),
         )
-        monkeypatch.setattr("rivumi.sandbox_entry.run_sandbox_request", fail_entrypoint)
+        monkeypatch.setattr("looplane.sandbox_entry.run_sandbox_request", fail_entrypoint)
         exit_code = await _main(["sandbox_entry", "request.json"])
 
     assert exit_code == 1

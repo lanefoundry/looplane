@@ -8,15 +8,13 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-from rivumi import cli
-from rivumi.cli_config import CliConfig, load_cli_config
-from rivumi.contracts import ModelTurn, RunResult, RunStatus
-from rivumi.models import ScriptedModel
+from looplane import cli
+from looplane.cli_config import CliConfig, load_cli_config
+from looplane.contracts import ModelTurn, RunResult, RunStatus
+from looplane.models import ScriptedModel
 
 
-def test_discovers_bounded_unique_models_from_loopback_ollama(
-    monkeypatch, tmp_path
-) -> None:
+def test_discovers_bounded_unique_models_from_loopback_ollama(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     entries = [{"name": "qwen3:4b"}, {"model": "qwen3:4b"}, {"name": "qwen3:0.6b"}]
     original_client = httpx.Client
@@ -30,9 +28,7 @@ def test_discovers_bounded_unique_models_from_loopback_ollama(
     assert cli._discover_local_ollama_models() == ("qwen3:4b", "qwen3:0.6b")
 
 
-def test_ollama_discovery_ignores_proxy_env_and_control_characters(
-    monkeypatch, tmp_path
-) -> None:
+def test_ollama_discovery_ignores_proxy_env_and_control_characters(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     entries = [
         {"name": " qwen3:4b "},
@@ -90,7 +86,7 @@ def test_first_time_setup_selects_ollama_model_and_saves_private_config(
 ) -> None:
     path = tmp_path / "config.json"
     answers = iter(("1", "1"))
-    monkeypatch.setenv("RIVUMI_CONFIG", str(path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(path))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(
         cli,
@@ -101,7 +97,7 @@ def test_first_time_setup_selects_ollama_model_and_saves_private_config(
 
     configured = cli._interactive_setup()
 
-    assert configured == CliConfig(runtime="rivumi-agent", provider="ollama", model="qwen3:4b")
+    assert configured == CliConfig(runtime="looplane-agent", provider="ollama", model="qwen3:4b")
     assert load_cli_config(path) == configured
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert "qwen3:4b" in capsys.readouterr().out
@@ -110,7 +106,7 @@ def test_first_time_setup_selects_ollama_model_and_saves_private_config(
 
 def test_cancelled_setup_never_writes_partial_config(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "config.json"
-    monkeypatch.setenv("RIVUMI_CONFIG", str(path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(path))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_discover_local_ollama_models", lambda: ("qwen3:4b",))
     monkeypatch.setattr(
@@ -127,13 +123,13 @@ def test_cancelled_setup_never_writes_partial_config(tmp_path: Path, monkeypatch
 
 def test_non_tty_missing_model_has_actionable_setup_error(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "missing.json"
-    monkeypatch.setenv("RIVUMI_CONFIG", str(path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(path))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
 
     result = CliRunner().invoke(cli.app, ["-p", "Explain this repository"])
 
     assert result.exit_code == 2
-    assert "rivumi config --interactive" in result.output
+    assert "looplane config --interactive" in result.output
     assert "--provider PROVIDER --model MODEL" in result.output
     assert not path.exists()
 
@@ -142,7 +138,7 @@ def test_config_interactive_wires_current_config_into_setup(tmp_path: Path, monk
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"provider": "ollama", "model": "qwen3:4b"}))
     captured: dict[str, CliConfig] = {}
-    monkeypatch.setenv("RIVUMI_CONFIG", str(path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(path))
 
     def fake_setup(*, current: CliConfig, locked_provider: str | None = None) -> CliConfig:
         captured["current"] = current
@@ -178,7 +174,7 @@ def test_configured_bare_cli_shows_context_and_natural_task_prompt(
                 artifacts={"patch": str(tmp_path / "changes.patch")},
             )
 
-    monkeypatch.setenv("RIVUMI_CONFIG", str(path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(path))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(
         cli,
@@ -190,7 +186,7 @@ def test_configured_bare_cli_shows_context_and_natural_task_prompt(
         "_model_from_env",
         lambda **_: ScriptedModel([ModelTurn(content="unused")]),
     )
-    monkeypatch.setattr("rivumi.loop.AgentRunner", FakeRunner)
+    monkeypatch.setattr("looplane.loop.AgentRunner", FakeRunner)
 
     result = CliRunner().invoke(
         cli.app,
@@ -199,7 +195,7 @@ def test_configured_bare_cli_shows_context_and_natural_task_prompt(
     )
 
     assert result.exit_code == 0, result.output
-    assert "Rivumi  ·  ollama/qwen3:4b  ·" in result.output
+    assert "looplane  ·  ollama/qwen3:4b  ·" in result.output
     assert "What would you like me to do in this repository?" in result.output
     assert "Model:" not in result.output
     assert captured["task"].instruction == "Explain what you can do."
@@ -224,7 +220,7 @@ def test_positional_prompt_is_retained_after_first_time_setup(
                 artifacts={"patch": str(tmp_path / "changes.patch")},
             )
 
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(
         cli,
@@ -236,7 +232,7 @@ def test_positional_prompt_is_retained_after_first_time_setup(
         "_model_from_env",
         lambda **_: ScriptedModel([ModelTurn(content="unused")]),
     )
-    monkeypatch.setattr("rivumi.loop.AgentRunner", FakeRunner)
+    monkeypatch.setattr("looplane.loop.AgentRunner", FakeRunner)
 
     result = CliRunner().invoke(
         cli.app,
@@ -249,7 +245,7 @@ def test_positional_prompt_is_retained_after_first_time_setup(
 
 def test_print_mode_never_runs_setup_when_tty_is_attached(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "missing.json"
-    monkeypatch.setenv("RIVUMI_CONFIG", str(path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(path))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(
         cli,
@@ -260,13 +256,13 @@ def test_print_mode_never_runs_setup_when_tty_is_attached(tmp_path: Path, monkey
     result = CliRunner().invoke(cli.app, ["-p", "Explain this repository"])
 
     assert result.exit_code == 2
-    assert "rivumi config --interactive" in result.output
+    assert "looplane config --interactive" in result.output
 
 
 def test_print_mode_never_prompts_for_missing_task_on_tty(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"provider": "ollama", "model": "qwen3:4b"}))
-    monkeypatch.setenv("RIVUMI_CONFIG", str(path))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(path))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(
         cli.typer,
@@ -290,7 +286,7 @@ def test_explicit_provider_is_locked_during_setup(
         captured["locked_provider"] = locked_provider
         return CliConfig(provider="anthropic", model="claude-sonnet-4-5")
 
-    monkeypatch.setenv("RIVUMI_CONFIG", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing.json"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_interactive_setup", fake_setup)
@@ -300,7 +296,7 @@ def test_explicit_provider_is_locked_during_setup(
         lambda **_: ScriptedModel([ModelTurn(content="unused")]),
     )
     monkeypatch.setattr(
-        "rivumi.loop.AgentRunner",
+        "looplane.loop.AgentRunner",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop after setup")),
     )
 

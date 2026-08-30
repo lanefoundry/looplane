@@ -6,7 +6,7 @@ Status: preliminary naming research, not legal clearance; no repository rename p
 
 ## Conclusion
 
-### New recommended short name: Rivumi
+### New recommended short name: looplane
 
 - Length: **6 letters**, one letter shorter than Lutrilo.
 - Pronunciation: **rih-VOO-mee** (`ri-VU-mi`).
@@ -20,13 +20,13 @@ Status: preliminary naming research, not legal clearance; no repository rename p
 
 Suggested first-use lockup:
 
-> **Rivumi** *(rih-VOO-mee)* — a little otter who stays afloat while you build.
+> **looplane** *(rih-VOO-mee)* — a little otter who stays afloat while you build.
 
 ## Comparison
 
 | Name | Letters | Suggested pronunciation | Spoken appeal | Brand character | Decision |
 |---|---:|---|---|---|---|
-| **Rivumi** | 6 | rih-VOO-mee | Best | Fluid, friendly, water-led | New recommendation |
+| **looplane** | 6 | rih-VOO-mee | Best | Fluid, friendly, water-led | New recommendation |
 | **Lutrilo** | 7 | loo-TREE-lo | Very good | More mature, strongest zoological otter story | Keep as mature alternative |
 | Lutrimi | 7 | loo-TREE-mee | Good | Softest/cutest | Backup only |
 | Nuvimi | 6 | noo-VEE-mee | Good | Cute, weak water/otter story | Reject: crowded `NUVI-` software mark space |
@@ -67,7 +67,7 @@ The evidence supports a practical boundary: **six letters is currently the short
 - `ultrashort-name-brand-ideas.md`
 - `short-name-namespace-scout.md`
 - `five-letter-name-project-screen.md`
-- `rivumi-nuvimi-language-screen.md`
-- `rivumi-nuvimi-trademark-tw.md`
-- `rivumi-nuvimi-trademark-global.md`
+- `looplane-nuvimi-language-screen.md`
+- `looplane-nuvimi-trademark-tw.md`
+- `looplane-nuvimi-trademark-global.md`
 

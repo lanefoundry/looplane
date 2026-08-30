@@ -65,10 +65,10 @@ Classifier 的 decision + reason 進 `approval.resolved` 事件與 manifest
 
 ## 實作落點（對應現有程式碼）
 
-- `src/rivumi/permissions.py`：`ApprovalMode` 加 `AUTO`；`PermissionGuard.pre_decision`
+- `src/looplane/permissions.py`：`ApprovalMode` 加 `AUTO`；`PermissionGuard.pre_decision`
   在 deny 層之後插入靜態升級檢查與 classifier hook
-- `src/rivumi/approvals.py`：`ApprovalDecision` 可能需加 `ESCALATE`（或沿用回 None 落到 fallback）
-- `src/rivumi/cli.py`：`--classifier-model`、`--on-classifier-error` 旗標
+- `src/looplane/approvals.py`：`ApprovalDecision` 可能需加 `ESCALATE`（或沿用回 None 落到 fallback）
+- `src/looplane/cli.py`：`--classifier-model`、`--on-classifier-error` 旗標
 - 靜態升級規則的輸入來源：`ApprovalRequest.preview` 已有 bounded patch 文本；
   刪除檔案數需從 apply_patch / replace_text 參數統計
 

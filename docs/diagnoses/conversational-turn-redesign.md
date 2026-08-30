@@ -1,7 +1,7 @@
 # Conversational turn redesign — greetings must not trigger the coding pipeline
 
 Date: 2026-08-25
-Scope: native rivumi-agent path (`src/rivumi/loop.py`, `prompts.py`, `tui.py` approval scope).
+Scope: native looplane-agent path (`src/looplane/loop.py`, `prompts.py`, `tui.py` approval scope).
 
 ## Problem
 
@@ -37,7 +37,7 @@ edit-tool-called machine check anywhere. Conditionality lives entirely in prose:
 codex `prompt_with_apply_patch_instructions.md:151` gates on "If the codebase has tests or
 the ability to build or run"; `gpt-5.2-codex_instructions_template.md:35` asks the model to
 disclose skips. OpenCode `default.txt:74-75` conditions lint/typecheck on having "completed
-a task". Rivumi keeps its stronger harness-owned gate (a project invariant) but makes it
+a task". looplane keeps its stronger harness-owned gate (a project invariant) but makes it
 conditional on actual changes — a deliberate improvement over the references, not a copy.
 
 ### Session approval scope
@@ -52,12 +52,12 @@ conditional on actual changes — a deliberate improvement over the references, 
   tools keyed by `(server, tool)` name (`mcp_tool_call.rs:1978-1986`).
 - **oh-my-pi / pi-mono**: no session-persistent grants at all.
 
-Rivumi's fix follows the opencode/codex-MCP pattern: key the grant by tool name + stable
+looplane's fix follows the opencode/codex-MCP pattern: key the grant by tool name + stable
 argument (`run_check:<name>`).
 
 ## 2. Changes
 
-### Prompt guidance (`src/rivumi/prompts.py`)
+### Prompt guidance (`src/looplane/prompts.py`)
 - `CODING_AGENT_PROMPT_VERSION`: `m3-exact-edit-v1` → `m3-exact-edit-v2`.
 - Added (modeled on kimi.txt's conditional rule and codex's chit-chat wording): "A final
   answer is accepted only after the harness reruns every check that could be affected by a
@@ -66,7 +66,7 @@ argument (`run_check:<name>`).
   reply: do not call tools or touch the repository when the user has not asked for any
   change to the code."
 
-### Conditional verification (`src/rivumi/loop.py`)
+### Conditional verification (`src/looplane/loop.py`)
 - New `AgentRunner._made_changes` flag (init `False`).
 - Set to `True` after any **modify-effect** tool succeeds (`effect is ToolEffect.MODIFY and
   observation.ok`) — mirrors the ticket's suggested semantics; `_collect_patch` emptiness is
@@ -79,7 +79,7 @@ argument (`run_check:<name>`).
   `external_runner.py:731`; consumers compare equality only (`contracts.py:258` free string;
   `tui.py` uses f-strings/replace; tests assert literals). No switch to break.
 
-### run_check approval scope (`src/rivumi/tui.py:_grant_scope`)
+### run_check approval scope (`src/looplane/tui.py:_grant_scope`)
 - When `request.tool_call.name == "run_check"` and arguments contain a non-blank `name`,
   return `f"run_check:{name.strip()}"[:4_096]`. Missing name falls back to previous
   behavior (`action:{tool_call_id}` via caller). "Allow for this session" now matches every
@@ -125,9 +125,9 @@ uv run ruff check src/ tests/ → All checks passed!
 
 ## Changed files (this task)
 
-- `src/rivumi/prompts.py` — version bump + conversational guidance
-- `src/rivumi/loop.py` — `_made_changes` tracking, conditional verification, resume arming
-- `src/rivumi/tui.py` — `run_check:<name>` grant scope
+- `src/looplane/prompts.py` — version bump + conversational guidance
+- `src/looplane/loop.py` — `_made_changes` tracking, conditional verification, resume arming
+- `src/looplane/tui.py` — `run_check:<name>` grant scope
 - `docs/progress.md` — security invariant rewording
 - `tests/test_prompts.py`, `tests/test_loop_e2e.py`, `tests/test_tui.py`
 

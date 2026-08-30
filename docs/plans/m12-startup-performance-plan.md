@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Make Rivumi feel immediately interactive while preserving every runtime, security, and verification
+Make looplane feel immediately interactive while preserving every runtime, security, and verification
 boundary. Optimize the lifecycle rather than changing language or hiding work. Every optimization
 must have paired before/after evidence for user-visible time to first editable composer.
 
@@ -16,12 +16,12 @@ Primary metric:
 
 Guardrail scenarios:
 
-- `rivumi --help`;
-- `rivumi config` with an existing config;
-- bare `rivumi` with real `~/.rivumi`/XDG state and an ordinary repository;
-- bare `rivumi` with Claude Code and Codex installed;
-- one representative `rivumi exec` preparation path;
-- import graph for `import rivumi.cli`.
+- `looplane --help`;
+- `looplane config` with an existing config;
+- bare `looplane` with real `~/.looplane`/XDG state and an ordinary repository;
+- bare `looplane` with Claude Code and Codex installed;
+- one representative `looplane exec` preparation path;
+- import graph for `import looplane.cli`.
 
 Record median, p90, min/max, sample count, command, revision, Python version, machine/OS metadata,
 and whether the filesystem cache was warm. Do not compare absolute results across unlike machines.
@@ -38,7 +38,7 @@ and whether the filesystem cache was warm. Do not compare absolute results acros
 
 ## Startup telemetry
 
-- Accept `RIVUMI_STARTUP_LOG` only as an explicit output path; telemetry is disabled otherwise.
+- Accept `LOOPLANE_STARTUP_LOG` only as an explicit output path; telemetry is disabled otherwise.
 - Record monotonic timestamps for process entry, CLI routing, config loaded, runtime discovery,
   application mounted, and composer editable.
 - Write a bounded machine-readable record without prompts, repository paths, model credentials,
@@ -60,7 +60,7 @@ and whether the filesystem cache was warm. Do not compare absolute results acros
 - Move Codex OAuth/OpenAI SDK, Claude/Codex backends, conversation implementations, gateway,
   uvicorn, and other route-specific modules behind narrow loader functions.
 - Use `TYPE_CHECKING` guards and local imports without weakening runtime validation.
-- Ensure `rivumi --help`, shell completion, and unrelated config commands do not load provider SDKs,
+- Ensure `looplane --help`, shell completion, and unrelated config commands do not load provider SDKs,
   Textual, external runtime implementations, or gateway server dependencies.
 - Cache an imported factory only where repeated lookup is measured and safe; do not cache live
   clients, credentials, or sessions globally.
@@ -111,7 +111,7 @@ and whether the filesystem cache was warm. Do not compare absolute results acros
 
 ## Explicitly out of scope
 
-- Rewriting Rivumi in another language.
+- Rewriting looplane in another language.
 - Fabricating an absolute cross-machine startup SLA.
 - Eager authentication or MCP/tool-server initialization to make readiness badges look immediate.
 - Caching credentials, live clients, workspace state, prompts, repository content, or failures.

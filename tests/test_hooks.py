@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from rivumi.hooks import (
+from looplane.hooks import (
     HookError,
     HookEventName,
     HookRunner,
@@ -15,7 +15,7 @@ from rivumi.hooks import (
 
 
 def test_project_hook_config_loads_strict_exact_argv(tmp_path) -> None:
-    hooks_dir = tmp_path / ".rivumi"
+    hooks_dir = tmp_path / ".looplane"
     hooks_dir.mkdir()
     (hooks_dir / "hooks.json").write_text(
         json.dumps(
@@ -45,17 +45,17 @@ def test_project_hook_config_loads_strict_exact_argv(tmp_path) -> None:
 
 
 def test_project_hook_runner_is_disabled_without_explicit_env(tmp_path, monkeypatch) -> None:
-    hooks_dir = tmp_path / ".rivumi"
+    hooks_dir = tmp_path / ".looplane"
     hooks_dir.mkdir()
     (hooks_dir / "hooks.json").write_text(
         '{"pre_tool_use":[{"command":["false"]}]}',
         encoding="utf-8",
     )
-    monkeypatch.delenv("RIVUMI_ENABLE_PROJECT_HOOKS", raising=False)
+    monkeypatch.delenv("LOOPLANE_ENABLE_PROJECT_HOOKS", raising=False)
 
     assert load_project_hook_runner(tmp_path).enabled is False
 
-    monkeypatch.setenv("RIVUMI_ENABLE_PROJECT_HOOKS", "1")
+    monkeypatch.setenv("LOOPLANE_ENABLE_PROJECT_HOOKS", "1")
     assert load_project_hook_runner(tmp_path).enabled is True
 
 
@@ -78,8 +78,8 @@ else:
     )
     config = load_project_hook_config(tmp_path)
     assert config.pre_tool_use == ()
-    (tmp_path / ".rivumi").mkdir()
-    (tmp_path / ".rivumi" / "hooks.json").write_text(
+    (tmp_path / ".looplane").mkdir()
+    (tmp_path / ".looplane" / "hooks.json").write_text(
         json.dumps({"pre_tool_use": [{"command": [sys.executable, str(hook)]}]}),
         encoding="utf-8",
     )
@@ -105,8 +105,8 @@ def test_hook_runner_fails_closed_on_nonzero_and_rejects_invalid_output(tmp_path
     failing.write_text("import sys\nprint('nope', file=sys.stderr)\nsys.exit(7)\n")
     invalid = tmp_path / "invalid.py"
     invalid.write_text("print('not json')\n")
-    (tmp_path / ".rivumi").mkdir()
-    config_path = tmp_path / ".rivumi" / "hooks.json"
+    (tmp_path / ".looplane").mkdir()
+    config_path = tmp_path / ".looplane" / "hooks.json"
 
     config_path.write_text(
         json.dumps({"pre_tool_use": [{"command": [sys.executable, str(failing)]}]}),

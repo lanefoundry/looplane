@@ -16,7 +16,7 @@ operator-managed model profile.
 Unauthenticated liveness only:
 
 ```json
-{"ok":true,"service":"rivumi-control-plane"}
+{"ok":true,"service":"looplane-control-plane"}
 ```
 
 This proves Worker routing, not Sandbox or model execution.
@@ -96,7 +96,7 @@ and rely on replayed stored lines.
 Python callers can use the lightweight attach client:
 
 ```python
-from rivumi.cloudflare_client import CloudflareRunClient
+from looplane.cloudflare_client import CloudflareRunClient
 
 client = CloudflareRunClient(base_url="https://control.example", token=token)
 profiles = await client.model_profiles()
@@ -146,11 +146,11 @@ Accepted check argv must exactly equal one of:
 No shell parsing is used for these checks. The only Worker-to-Sandbox exec command is:
 
 ```text
-/usr/local/bin/rivumi-sandbox-run
+/usr/local/bin/looplane-sandbox-run
 ```
 
 The root-owned, mode `0555` wrapper validates the staged workspace and token files, changes the
-workspace owner to the image's non-root `rivumi` user, sets the tokens to owner-only mode `0600`,
+workspace owner to the image's non-root `looplane` user, sets the tokens to owner-only mode `0600`,
 and uses `setpriv --no-new-privs` before invoking the fixed Python module. Caller data is never
 inserted into a shell command.
 
@@ -233,7 +233,7 @@ secret values in `wrangler.jsonc`, Docker build arguments, or container environm
 
 Operators do not need to edit an escaped `MODEL_PROFILES_JSON` value or upload provider keys one at
 a time. Copy `providers.example.json`, keep the catalog non-secret, and list every desired profile
-in one file. Known OpenAI-compatible providers need only a provider and model; Rivumi pins their
+in one file. Known OpenAI-compatible providers need only a provider and model; looplane pins their
 catalog endpoint and derives the Worker secret binding.
 
 Run these commands from the repository root after installing the Python environment. Install the
@@ -260,7 +260,7 @@ GROQ_API_KEY=replace-me
 
 ```sh
 chmod 600 cloudflare/.env.cloudflare
-uv run rivumi cloudflare providers apply cloudflare/providers.json \
+uv run looplane cloudflare providers apply cloudflare/providers.json \
   --secrets-env cloudflare/.env.cloudflare
 ```
 
@@ -356,7 +356,7 @@ The image pins pytest 8.4.2 and pytest-asyncio 1.4.0 for the fixed Python check 
 uploaded project dependencies are not installed automatically.
 
 Two clean builds from the same source and lockfiles must produce the same image ID. The image also
-retains a sorted `/opt/rivumi/python-packages.txt` inventory for later provenance checks.
+retains a sorted `/opt/looplane/python-packages.txt` inventory for later provenance checks.
 
 The M6 live evidence retains one completed Worker to Sandbox to Groq coding run with a verified
 patch and check. The current endpoint now starts runs asynchronously and exposes durable status,

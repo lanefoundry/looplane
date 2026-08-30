@@ -18,6 +18,6 @@
 
 - `uv run pytest tests/test_tui.py -q`: 37 passed.
 - `uv run pytest -q`: passed (complete suite).
-- `uv run ruff check src/rivumi/tui.py tests/test_tui.py scripts/render_tui_screenshot.py`: passed.
+- `uv run ruff check src/looplane/tui.py tests/test_tui.py scripts/render_tui_screenshot.py`: passed.
 - `git diff --check`: passed.
 - Visually inspected all six thinking frames plus wide responding and narrow tool screenshots under `.artifacts/tui/loading-copy-*`.

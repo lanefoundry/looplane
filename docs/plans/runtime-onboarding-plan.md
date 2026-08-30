@@ -2,9 +2,9 @@
 
 ## Outcome
 
-Make daily `rivumi` onboarding distinguish execution runtime, authentication source, and model.
+Make daily `looplane` onboarding distinguish execution runtime, authentication source, and model.
 Local Claude/Codex subscriptions must remain delegated external backends; API/local providers
-remain the Rivumi AgentRunner path.
+remain the looplane AgentRunner path.
 
 ## Work
 
