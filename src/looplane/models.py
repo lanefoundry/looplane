@@ -636,9 +636,14 @@ class OpenAICompatibleModel:
             ) from exc
         choices = getattr(response, "choices", None)
         if not choices:
+            # HTTP succeeded (no APIStatusError raised above) but the body arrived
+            # without a usable ``choices`` field. OpenRouter and other gateways
+            # occasionally emit half-formed SSE trailers that parse as valid
+            # JSON with an empty/missing choices array; treat that as transient
+            # so the retry layer gets a chance to recover on the next attempt.
             raise ProviderError(
                 "openai-compatible response contained no choices",
-                kind=ProviderErrorKind.PROVIDER,
+                kind=ProviderErrorKind.RETRYABLE,
                 provider_name=self.provider_name,
             )
         choice = choices[0]

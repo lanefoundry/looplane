@@ -1107,3 +1107,44 @@ def test_x_should_retry_does_not_override_auth() -> None:
     error = _http_error("test", _response(401, {"x-should-retry": "true"}))
     assert error.kind is ProviderErrorKind.AUTH
     assert error.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_empty_choices_are_classified_as_retryable() -> None:
+    """Half-formed SSE trailers from OpenRouter and similar gateways parse as
+    valid JSON with ``choices`` absent or empty. The HTTP request succeeded,
+    so the loop's retry layer should get a chance to recover on the next
+    attempt instead of failing the run immediately."""
+    response = SimpleNamespace(choices=[], usage=None)
+    completions = FakeCompletions(response)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model = OpenAICompatibleModel(
+        model="fake-model",
+        client=client,
+        supports_tool_calling=True,
+    )
+
+    with pytest.raises(ProviderError) as caught:
+        await model.complete(MESSAGES)
+
+    assert caught.value.kind is ProviderErrorKind.RETRYABLE
+    assert caught.value.retryable is True
+    assert "no choices" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_missing_choices_are_classified_as_retryable() -> None:
+    response = SimpleNamespace(usage=None)  # no ``choices`` attribute at all
+    completions = FakeCompletions(response)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model = OpenAICompatibleModel(
+        model="fake-model",
+        client=client,
+        supports_tool_calling=True,
+    )
+
+    with pytest.raises(ProviderError) as caught:
+        await model.complete(MESSAGES)
+
+    assert caught.value.kind is ProviderErrorKind.RETRYABLE
+    assert caught.value.retryable is True

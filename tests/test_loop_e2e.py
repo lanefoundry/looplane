@@ -2329,3 +2329,71 @@ def test_retry_delay_uses_jitter_and_caps() -> None:
     hint = retry_delay_seconds(1, 120.0)
     assert hint == 120.0
     assert retry_delay_seconds(1, 9999.0) == RETRY_SERVER_HINT_MAX_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_openai_no_choices_error_is_retried_until_success(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    """``OpenAICompatibleModel`` raises ``RETRYABLE`` when the response body is
+    valid JSON but ``choices`` is empty/missing — a known failure mode for
+    half-formed SSE trailers from OpenRouter and similar gateways. The retry
+    layer must treat that as transient and recover on a later attempt."""
+    task = _clean_check_task(tiny_bug_repo)
+    no_choices_error = ProviderError(
+        "openai-compatible response contained no choices",
+        kind=ProviderErrorKind.RETRYABLE,
+        provider_name="openai-compatible",
+    )
+    model = ScriptedModel(
+        [
+            no_choices_error,
+            no_choices_error,
+            ModelTurn(content="The repository is clean; no change is needed."),
+        ]
+    )
+    runner = AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True)
+    runner.model_retry_delay = lambda attempt, retry_after_seconds: 0.0
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert len(model.calls) == 3
+    retries = [event for event in read_events(result) if event["event_type"] == "model.retry"]
+    assert [event["data"]["attempt"] for event in retries] == [1, 2]
+    assert all(event["data"]["provider"] == "openai-compatible" for event in retries)
+    assert all("no choices" in event["data"]["error"] for event in retries)
+
+
+@pytest.mark.asyncio
+async def test_openai_no_choices_exhaustion_fails_with_provider_retryable(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    """Sustained empty-choices responses must surface as a readable provider
+    failure rather than getting masked by a different terminal_reason."""
+    task = _clean_check_task(tiny_bug_repo)
+    no_choices_error = ProviderError(
+        "openai-compatible response contained no choices",
+        kind=ProviderErrorKind.RETRYABLE,
+        provider_name="openai-compatible",
+    )
+    model = ScriptedModel([no_choices_error] * 5)
+    runner = AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True)
+    runner.model_retry_delay = lambda attempt, retry_after_seconds: 0.0
+
+    result = await runner.run()
+
+    assert result.status == RunStatus.FAILED
+    assert result.terminal_reason == "provider_retryable"
+    assert len(model.calls) == 5
+    # ``error`` summarises the retryable burst by status code; the original
+    # "no choices" message is preserved on ``summary`` for the run transcript.
+    assert result.error is not None
+    assert "openai-compatible" in result.error
+    assert "5 consecutive" in result.error
+    assert "no choices" in result.summary
+    events = read_events(result)
+    retry_events = [e for e in events if e["event_type"] == "model.retry"]
+    assert [e["data"]["attempt"] for e in retry_events] == [1, 2, 3, 4]
+    failed = [e for e in events if e["event_type"] == "model.failed"]
+    assert failed and failed[0]["data"]["retryable"] is True
