@@ -2065,6 +2065,7 @@ class looplaneApp(App[RunResult | None]):
         self.last_error: str | None = None
         self._agent_running = False
         self._projection = LiveEventProjection()
+        self._projection_errors = 0
         self._generation = 0
         # ALLOW_SESSION lasts until this full-screen looplane process exits, including
         # subsequent bounded tasks. It is never persisted to disk.
@@ -3640,6 +3641,7 @@ class looplaneApp(App[RunResult | None]):
         self._stream_char_count = 0
         self._refresh_statusline()
         self._projection = LiveEventProjection()
+        self._projection_errors = 0
         self._generation += 1
         generation = self._generation
         self._result = None
@@ -4239,7 +4241,17 @@ class looplaneApp(App[RunResult | None]):
     def event_received(self, message: RunEventMessage) -> None:
         if message.generation != self._generation or not self.query("#activity"):
             return
-        projected = self._projection.apply(message.event)
+        try:
+            projected = self._projection.apply(message.event)
+        except ValueError as exc:
+            # Display layer is best-effort: never let a single malformed event
+            # end the Textual app. Same contract as CompositeEventSink —
+            # secondary failures must not corrupt durable state.
+            self._projection_errors += 1
+            log = self.query("#activity")
+            if log is not None:
+                log.write_line(f"[projection error: {type(exc).__name__}: {exc}]")
+            return
         for line in projected:
             self.query_one("#activity", RichLog).write(line)
         event = message.event

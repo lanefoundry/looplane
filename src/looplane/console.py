@@ -47,7 +47,15 @@ class CompositeEventSink:
 
 
 class LiveEventProjection:
-    """Validate event order and turn audit events into short human-readable lines."""
+    """Project audit events into short human-readable lines for the TUI.
+
+    The display layer is best-effort and must never terminate the UI on a
+    benign redelivery (Textual replays the last event after widget rebind) or
+    on out-of-order arrival (session resume replays history ahead of the live
+    producer). The authoritative sequence is enforced by `EventWriter` and
+    `JsonlEventSink`; this projection only renders lines and must stay alive
+    even when the live stream hiccups.
+    """
 
     def __init__(
         self,
@@ -55,21 +63,33 @@ class LiveEventProjection:
         max_preview_bytes: int = 2_000,
         run_id: str | None = None,
         last_sequence: int = -1,
+        seen_event_ids: set[str] | None = None,
     ) -> None:
         self.max_preview_bytes = max_preview_bytes
         self.run_id = run_id
         self.last_sequence = last_sequence
+        self.seen_event_ids: set[str] = seen_event_ids or set()
+        self.dropped_duplicates = 0
+        self.out_of_order = 0
 
     def apply(self, event: RunEvent) -> tuple[str, ...]:
         if self.run_id is None:
             self.run_id = event.run_id
         if event.run_id != self.run_id:
             raise ValueError("event stream changed run_id")
-        if event.sequence != self.last_sequence + 1:
-            raise ValueError(
-                f"event sequence is not contiguous: expected {self.last_sequence + 1}, "
-                f"got {event.sequence}"
-            )
+        # Redelivery of the same event (Textual rebind, session resume replay)
+        # is a benign replay; silently skip the duplicate projection.
+        if event.event_id in self.seen_event_ids:
+            self.dropped_duplicates += 1
+            return ()
+        self.seen_event_ids.add(event.event_id)
+        # Out-of-order arrival (e.g. resume replay catches up to live) is
+        # best-effort: skip the projection rather than corrupt the running
+        # `last_sequence` cursor. The authoritative append-only log still has
+        # the events in order; only the TUI line list drops the late one.
+        if event.sequence <= self.last_sequence:
+            self.out_of_order += 1
+            return ()
         self.last_sequence = event.sequence
 
         data = event.data
