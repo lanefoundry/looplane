@@ -25,14 +25,23 @@ def _force_tty_width(monkeypatch: pytest.MonkeyPatch) -> None:
     typer 0.26's help formatter into a boxed layout where option names
     get hidden inside border padding, so assertions like ``--api-url in
     result.output`` silently fail even though the option is present.
-    typer reads ``TERMINAL_WIDTH`` (not ``COLUMNS``) for its ``MAX_WIDTH``
-    when computing rich table layouts, so we have to set the typer-native
-    env var, not the click/termcap one.
+
+    typer 0.26 freezes ``MAX_WIDTH`` (driven by ``TERMINAL_WIDTH``) at
+    module import time, so a plain env-var setenv is too late: the
+    value must be patched on the live module too, and restored so other
+    tests that legitimately want a wide layout (e.g. some Textual
+    screenshots) are not affected.
     """
+
+    import typer.rich_utils as typer_rich_utils
 
     monkeypatch.setenv("TERMINAL_WIDTH", "80")
     monkeypatch.setenv("COLUMNS", "80")
     monkeypatch.setenv("LINES", "40")
+    monkeypatch.setattr(typer_rich_utils, "_TERMINAL_WIDTH", "80")
+    monkeypatch.setattr(typer_rich_utils, "MAX_WIDTH", 80)
+
+
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "evals" / "fixtures" / "tiny-python-bug"
 
 
