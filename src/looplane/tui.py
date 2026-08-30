@@ -4090,6 +4090,11 @@ class looplaneApp(App[RunResult | None]):
     def _track_transcript_item(self, item_id: str) -> None:
         if not self.query("#transcript"):
             return
+        # Don't auto-scroll while the user is deciding on an approval —
+        # pending tool-action events mount widgets after the approval block,
+        # and auto-scroll would push the approval choices out of the viewport.
+        if self.query("InlineApprovalBlock"):
+            return
         transcript = self.query_one("#transcript", TranscriptScroll)
         if transcript.is_vertical_scroll_end:
             self.call_after_refresh(
@@ -4552,6 +4557,17 @@ class looplaneApp(App[RunResult | None]):
         block = InlineApprovalBlock(request)
         messages = self.query_one("#messages", Vertical)
         action = self._tool_actions.get(request.action_id)
+        # The tool.requested event that creates the ToolActionBlock is still
+        # queued — it hasn't been processed yet.  Create the action eagerly so
+        # the approval block mounts AFTER it (correct visual order) and
+        # auto-scroll can't push the choices out of view.
+        if action is None and request.tool_call is not None:
+            action = self._ensure_tool_action(
+                request.action_id,
+                self._tool_title(request.tool_call.name, request.tool_call.arguments),
+                detail_kind=self._tool_detail_kind(request.tool_call.name),
+            )
+            action.set_state("waiting", detail="Waiting for permission")
         reference: ToolActionBlock | ToolGroupBlock | None = action
         if action is not None:
             for ancestor in action.ancestors:
