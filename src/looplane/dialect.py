@@ -83,6 +83,14 @@ class Dialect(ABC):
         """
         ...
 
+    @property
+    def excluded_tools(self) -> frozenset[str]:
+        """Tool names too complex for weak models to use via in-band XML.
+
+        These are filtered out of the tool catalog sent to the model.
+        """
+        return frozenset()
+
 
 # ── Constants ───────────────────────────────────────────────────
 
@@ -314,6 +322,11 @@ class XmlDialect(Dialect):
     @property
     def response_open_tokens(self) -> tuple[str, ...]:
         return _RESPONSE_OPEN_TOKENS
+
+    @property
+    def excluded_tools(self) -> frozenset[str]:
+        # Weak models cannot reliably generate unified text diffs.
+        return frozenset({"apply_patch"})
 
 
 # ── Dialect resolution ──────────────────────────────────────────

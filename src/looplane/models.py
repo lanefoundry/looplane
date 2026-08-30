@@ -617,7 +617,11 @@ class OpenAICompatibleModel:
         # the conversation so the model sees tool calls/results as XML text
         # and receives tool definitions inside the system prompt instead of
         # the native ``tools`` request field.
-        inband_tools = tools if (self._dialect is not None and tools) else ()
+        if self._dialect is not None and tools:
+            excluded = self._dialect.excluded_tools
+            inband_tools = tuple(t for t in tools if t.name not in excluded)
+        else:
+            inband_tools = ()
         if inband_tools:
             encoded_messages = encode_inband_history(messages, self._dialect)
             native_messages = _openai_messages(encoded_messages)
