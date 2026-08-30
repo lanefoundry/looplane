@@ -4092,7 +4092,11 @@ class looplaneApp(App[RunResult | None]):
             return
         transcript = self.query_one("#transcript", TranscriptScroll)
         if transcript.is_vertical_scroll_end:
-            self.call_after_refresh(lambda: transcript.scroll_end(animate=False))
+            self.call_after_refresh(
+                lambda: transcript.scroll_end(animate=False)
+                if transcript.is_vertical_scroll_end
+                else None
+            )
             return
         self._unseen_item_ids.add(item_id)
         button = self.query_one("#new-items", Button)
