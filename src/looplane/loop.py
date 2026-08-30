@@ -1686,7 +1686,10 @@ class AgentRunner:
     ) -> tuple[ApprovalDecision, ToolEffect, str | None]:
         if self._record_fingerprint(call):
             raise ToolExecutionError("repeated_action")
-        effect = effect_for_tool_definition(call.name, self._tool_definition_by_name(call.name))
+        try:
+            effect = effect_for_tool_definition(call.name, self._tool_definition_by_name(call.name))
+        except ValueError:
+            raise ToolExecutionError(f"unknown_tool:{call.name}")
         await self._event(
             "tool.requested",
             tool_call_id=call.tool_call_id,
@@ -2299,12 +2302,39 @@ class AgentRunner:
                         try:
                             decision, effect, request_id = await self._prepare_tool_call(call)
                         except ToolExecutionError as exc:
-                            if str(exc) == "repeated_action":
+                            exc_str = str(exc)
+                            if exc_str == "repeated_action":
                                 return await self._finish(
                                     status=RunStatus.FAILED,
                                     terminal_reason="repeated_action",
                                     summary=turn.content or final_summary,
                                 )
+                            if exc_str.startswith("unknown_tool:"):
+                                unknown_name = exc_str.removeprefix("unknown_tool:")
+                                available = ", ".join(
+                                    sorted(
+                                        t.name for t in self._provider_tool_definitions()
+                                    )
+                                )
+                                observation = ToolObservation(
+                                    tool_call_id=call.tool_call_id,
+                                    name=call.name,
+                                    ok=False,
+                                    error=(
+                                        f"Unknown tool '{unknown_name}'. "
+                                        f"Available tools: {available}"
+                                    ),
+                                )
+                                self._messages.append(observation)
+                                await self._event(
+                                    "tool.completed",
+                                    tool_call_id=call.tool_call_id,
+                                    name=call.name,
+                                    ok=False,
+                                    error=observation.error,
+                                )
+                                call_index += 1
+                                continue
                             raise
                         if effect is not ToolEffect.READ:
                             turn_had_non_read = True
@@ -2366,7 +2396,10 @@ class AgentRunner:
                                         candidate_request_id,
                                     ) = await self._prepare_tool_call(candidate)
                                 except ToolExecutionError as exc:
-                                    if str(exc) == "repeated_action":
+                                    exc_str = str(exc)
+                                    if exc_str == "repeated_action" or exc_str.startswith(
+                                        "unknown_tool:"
+                                    ):
                                         break
                                     raise
                                 if candidate_decision == ApprovalDecision.CANCEL:

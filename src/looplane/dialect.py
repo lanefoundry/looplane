@@ -130,7 +130,31 @@ never `a &amp; b`; `<`/`>` stay literal too). Only the body's own \
 yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER \
 announce a tool then stop. Write the complete call, THEN the stop sequence, \
-THEN halt."""
+THEN halt.
+
+## Usage examples
+
+### Reading a file (always read before editing):
+<invoke name="read_file"><parameter name="path">src/main.py</parameter></invoke>
+
+### Editing with replace_text (preferred for small changes):
+<invoke name="replace_text"><parameter name="path">src/main.py</parameter><parameter name="old_text">old exact text</parameter><parameter name="new_text">new text</parameter></invoke>
+
+### Editing with apply_patch (for multi-hunk or new files):
+<invoke name="apply_patch"><parameter name="patch">--- a/src/main.py
++++ b/src/main.py
+@@ -1,3 +1,3 @@
+ line before
+-old line
++new line
+ line after
+</parameter></invoke>
+
+## Important rules
+- ALWAYS read a file before editing it — never guess the content
+- replace_text: the old_text must EXACTLY match existing file content (character-for-character)
+- apply_patch: content MUST be a unified text diff (starting with --- a/ and +++ b/)
+- Only use tools listed above — do NOT invent tool names"""
 
 # Regex to match <invoke name="...">...</invoke> blocks.
 # Uses re.DOTALL so `.` matches newlines inside parameter values.
@@ -252,6 +276,8 @@ class XmlDialect(Dialect):
             body = invoke_match.group(2)
             arguments: dict[str, Any] = {}
             tool_def = tool_map.get(name)
+            if tool_map and tool_def is None:
+                continue  # Skip hallucinated / unknown tool names
             for param_match in _PARAM_RE.finditer(body):
                 param_name = param_match.group(1).strip()
                 raw_value = param_match.group(2)
