@@ -21,15 +21,18 @@ def _isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _force_tty_width(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin terminal width so typer/click help rendering matches across
     local dev, CI runners, and bare ``CliRunner`` invocations. GitHub
-    Actions runners expose a wide default ``COLUMNS`` that pushes typer
-    0.26's help formatter into a boxed layout where option names get
-    hidden inside border padding, so assertions like ``--api-url in
+    Actions runners expose a wide default terminal width that pushes
+    typer 0.26's help formatter into a boxed layout where option names
+    get hidden inside border padding, so assertions like ``--api-url in
     result.output`` silently fail even though the option is present.
+    typer reads ``TERMINAL_WIDTH`` (not ``COLUMNS``) for its ``MAX_WIDTH``
+    when computing rich table layouts, so we have to set the typer-native
+    env var, not the click/termcap one.
     """
 
+    monkeypatch.setenv("TERMINAL_WIDTH", "80")
     monkeypatch.setenv("COLUMNS", "80")
     monkeypatch.setenv("LINES", "40")
-
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "evals" / "fixtures" / "tiny-python-bug"
 
 

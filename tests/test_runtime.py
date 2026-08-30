@@ -51,6 +51,7 @@ def test_bounded_command_fails_closed_when_required_sandbox_is_unavailable(
     marker = tmp_path / "must-not-exist"
     monkeypatch.setattr(runtime.sys, "platform", "linux")
     monkeypatch.setattr(runtime.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(runtime, "landlock_available", lambda: False)
 
     result = run_bounded_command(
         (sys.executable, "-c", f"open({str(marker)!r}, 'w').write('ran')"),
