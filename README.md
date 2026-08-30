@@ -283,6 +283,97 @@ provider credential，Sandbox 收到的是 bounded text-source-map 和 run-scope
 capability。它不接受 Git URL、archive、shell string、caller provider credential、
 subscription token、任意 upstream 或任意 model ID。
 
+### Hosted provider 快速設定
+
+Hosted control plane 使用 operator-managed profiles。使用者呼叫 run 時只能選
+`modelProfile`，不能指定 endpoint、API key 或任意 model。管理者則可以用一份
+manifest 和一份 secrets 檔，一次設定全部 providers，不必逐筆回答問題或執行多次
+`wrangler secret put`。
+
+先安裝 Cloudflare 子專案依賴；建置 Sandbox image 時也需要可用的 Docker runtime，
+正式套用前則要先完成 Wrangler authentication：
+
+```bash
+npm --prefix cloudflare ci
+(cd cloudflare && npx wrangler whoami)
+cp cloudflare/providers.example.json cloudflare/providers.json
+```
+
+`cloudflare/providers.json` 是可追蹤的非機密設定。已知 provider 只需填
+`provider` 和 `model`：
+
+```json
+{
+  "default": "openrouter-primary",
+  "profiles": {
+    "openrouter-primary": {
+      "provider": "openrouter",
+      "model": "your-openrouter-model-id"
+    },
+    "groq-fast": {
+      "provider": "groq",
+      "model": "your-groq-model-id"
+    }
+  }
+}
+```
+
+把所有 keys 集中放進已由 `.gitignore` 排除的 `cloudflare/.env.cloudflare`：
+
+```dotenv
+# 新 Worker 第一次設定時一併提供；既有部署可以省略這兩項。
+CONTROL_PLANE_TOKEN=replace-with-at-least-16-bytes
+RUN_TOKEN_SECRET=replace-with-at-least-32-bytes
+
+OPENROUTER_API_KEY=replace-me
+GROQ_API_KEY=replace-me
+```
+
+限制檔案權限後，先 dry-run，再用相同 manifest 一次套用：
+
+```bash
+chmod 600 cloudflare/.env.cloudflare
+
+uv run rivumi cloudflare providers apply cloudflare/providers.json \
+  --secrets-env cloudflare/.env.cloudflare \
+  --dry-run
+
+uv run rivumi cloudflare providers apply cloudflare/providers.json \
+  --secrets-env cloudflare/.env.cloudflare
+```
+
+`apply` 會先完整驗證 manifest 與所有必要 keys，再透過 stdin 執行一次
+`wrangler secret bulk`，接著建置 runtime 並部署 profile catalog。Secret 不會寫進
+manifest、process arguments 或暫存檔。缺少多個 keys 時會一次列出全部缺項，而且不會
+先做部分遠端修改。`--dry-run` 仍會讀取並檢查 manifest 中所有 provider keys，但不會
+把它們送到 Cloudflare。
+
+內建快速格式支援 `openrouter`、`deepseek`、`groq`、`moonshotai`、`zai`、
+`xai`、`nvidia-nim`、`opencode-zen`、`ollama-cloud`；endpoint 與 Worker binding
+會由 Rivumi 固定推導。自訂 OpenAI-compatible endpoint 必須提供完整 routing 欄位，
+並明確加上 `--allow-custom-endpoint`。Hosted phase 1 僅支援 OpenAI-compatible
+Chat Completions；Anthropic Messages、Gemini native API 和 Responses API 仍需要個別
+protocol adapter。
+
+| `provider` | dotenv key |
+| --- | --- |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `deepseek` | `DEEPSEEK_API_KEY` |
+| `groq` | `GROQ_API_KEY` |
+| `moonshotai` | `MOONSHOT_API_KEY` |
+| `zai` | `ZAI_API_KEY` |
+| `xai` | `XAI_API_KEY` |
+| `nvidia-nim` | `NVIDIA_API_KEY` |
+| `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
+| `ollama-cloud` | `OLLAMA_CLOUD_API_KEY` |
+
+部署後先呼叫 authenticated `GET /v1/model-profiles`，確認選用的 profile 顯示
+`ready: true`。這只代表 secret binding 非空；仍需再送一個實際 `/v1/runs` smoke run，
+才能確認 API key、model ID 與 provider endpoint 確實可用。
+
+完整 API、named Wrangler environment 與安全邊界見
+[cloudflare/README.md](cloudflare/README.md)。
+
 ## Development Checks / 開發檢查
 
 General checks:

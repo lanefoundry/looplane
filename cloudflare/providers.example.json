@@ -1,0 +1,13 @@
+{
+  "default": "openrouter-primary",
+  "profiles": {
+    "openrouter-primary": {
+      "provider": "openrouter",
+      "model": "replace-with-openrouter-model-id"
+    },
+    "groq-fast": {
+      "provider": "groq",
+      "model": "replace-with-groq-model-id"
+    }
+  }
+}

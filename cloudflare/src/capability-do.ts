@@ -1,7 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 
-interface CapabilityRecord {
+export interface CapabilityIdentity {
+  modelProfile: string;
+  provider: string;
   model: string;
+  profileFingerprint: string;
+}
+
+interface CapabilityRecord extends CapabilityIdentity {
   expiresAt: number;
   maxRequests: number;
   usedRequests: number;
@@ -18,6 +24,43 @@ function json(value: unknown, status = 200): Response {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const IDENTITY_KEYS = ["modelProfile", "provider", "model", "profileFingerprint"] as const;
+
+function isBoundedString(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= maxLength &&
+    value.trim() === value &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+function isCapabilityIdentity(
+  value: Record<string, unknown>,
+): value is CapabilityIdentity & Record<string, unknown> {
+  return (
+    isBoundedString(value.modelProfile, 128) &&
+    isBoundedString(value.provider, 64) &&
+    isBoundedString(value.model, 256) &&
+    isBoundedString(value.profileFingerprint, 128)
+  );
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && keys.every((key) => expected.includes(key));
+}
+
+function identityMatches(record: CapabilityRecord, identity: CapabilityIdentity): boolean {
+  return (
+    record.modelProfile === identity.modelProfile &&
+    record.provider === identity.provider &&
+    record.model === identity.model &&
+    record.profileFingerprint === identity.profileFingerprint
+  );
 }
 
 async function parseBody(request: Request): Promise<Record<string, unknown> | null> {
@@ -44,9 +87,7 @@ export class RunCapability extends DurableObject<unknown> {
       const now = Date.now();
       if (
         body === null ||
-        typeof body.model !== "string" ||
-        body.model.length < 1 ||
-        body.model.length > 256 ||
+        !isCapabilityIdentity(body) ||
         typeof body.expiresAt !== "number" ||
         !Number.isInteger(body.expiresAt) ||
         body.expiresAt <= now ||
@@ -55,7 +96,7 @@ export class RunCapability extends DurableObject<unknown> {
         !Number.isInteger(body.maxRequests) ||
         body.maxRequests < 1 ||
         body.maxRequests > 64 ||
-        Object.keys(body).some((key) => !["model", "expiresAt", "maxRequests"].includes(key))
+        !hasExactKeys(body, [...IDENTITY_KEYS, "expiresAt", "maxRequests"])
       ) {
         return json({ error: "invalid_activation" }, 400);
       }
@@ -67,7 +108,10 @@ export class RunCapability extends DurableObject<unknown> {
           return;
         }
         await transaction.put<CapabilityRecord>("capability", {
-          model: body.model as string,
+          modelProfile: body.modelProfile,
+          provider: body.provider,
+          model: body.model,
+          profileFingerprint: body.profileFingerprint,
           expiresAt: body.expiresAt as number,
           maxRequests: body.maxRequests as number,
           usedRequests: 0,
@@ -81,8 +125,8 @@ export class RunCapability extends DurableObject<unknown> {
       const body = await parseBody(request);
       if (
         body === null ||
-        typeof body.model !== "string" ||
-        Object.keys(body).some((key) => key !== "model")
+        !isCapabilityIdentity(body) ||
+        !hasExactKeys(body, IDENTITY_KEYS)
       ) {
         return json({ error: "invalid_consume" }, 400);
       }
@@ -91,7 +135,7 @@ export class RunCapability extends DurableObject<unknown> {
       let remaining = 0;
       await this.ctx.storage.transaction(async (transaction) => {
         const record = await transaction.get<CapabilityRecord>("capability");
-        if (record === undefined || record.model !== body.model) return;
+        if (record === undefined || !identityMatches(record, body)) return;
         if (record.expiresAt <= now) {
           outcome = "expired";
           await transaction.delete("capability");
@@ -116,14 +160,16 @@ export class RunCapability extends DurableObject<unknown> {
       const body = await parseBody(request);
       if (
         body === null ||
-        typeof body.model !== "string" ||
-        Object.keys(body).some((key) => key !== "model")
+        !isCapabilityIdentity(body) ||
+        !hasExactKeys(body, IDENTITY_KEYS)
       ) {
         return json({ error: "invalid_check" }, 400);
       }
       const now = Date.now();
       const record = await this.ctx.storage.get<CapabilityRecord>("capability");
-      if (record === undefined || record.model !== body.model) return json({ error: "inactive" }, 401);
+      if (record === undefined || !identityMatches(record, body)) {
+        return json({ error: "inactive" }, 401);
+      }
       if (record.expiresAt <= now) {
         await this.ctx.storage.delete("capability");
         return json({ error: "expired" }, 401);
@@ -148,14 +194,14 @@ function stub(namespace: DurableObjectNamespace<RunCapability>, runId: string): 
 export async function activateCapability(
   namespace: DurableObjectNamespace<RunCapability>,
   runId: string,
-  model: string,
+  identity: CapabilityIdentity,
   expiresAt: number,
   maxRequests: number,
 ): Promise<void> {
   const response = await stub(namespace, runId).fetch("https://capability.internal/activate", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model, expiresAt, maxRequests }),
+    body: JSON.stringify({ ...identity, expiresAt, maxRequests }),
   });
   if (response.status !== 201) throw new Error("run capability activation failed");
 }
@@ -163,12 +209,12 @@ export async function activateCapability(
 export async function consumeCapability(
   namespace: DurableObjectNamespace<RunCapability>,
   runId: string,
-  model: string,
+  identity: CapabilityIdentity,
 ): Promise<CapabilityConsumeResult> {
   const response = await stub(namespace, runId).fetch("https://capability.internal/consume", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model }),
+    body: JSON.stringify(identity),
   });
   if (response.status === 200) return "ok";
   if (response.status === 429) return "exhausted";
@@ -187,12 +233,12 @@ export async function consumeCapability(
 export async function checkCapability(
   namespace: DurableObjectNamespace<RunCapability>,
   runId: string,
-  model: string,
+  identity: CapabilityIdentity,
 ): Promise<CapabilityConsumeResult> {
   const response = await stub(namespace, runId).fetch("https://capability.internal/check", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model }),
+    body: JSON.stringify(identity),
   });
   if (response.status === 200) return "ok";
   if (response.status === 429) return "exhausted";

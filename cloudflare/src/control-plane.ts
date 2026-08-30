@@ -1,10 +1,8 @@
-import type { Sandbox } from "@cloudflare/sandbox";
 import type {
+  CapabilityIdentity,
   CapabilityConsumeResult,
-  RunCapability as RunCapabilityDO,
 } from "./capability-do";
 import type {
-  RunSession as RunSessionDO,
   RunSessionExecution,
   RunSessionRequestSummary,
 } from "./run-session-do";
@@ -51,15 +49,10 @@ const TEXT_EXTENSIONS = new Set([
 const FIXED_COMMAND = "/usr/local/bin/rivumi-sandbox-run";
 const encoder = new TextEncoder();
 
-export interface Env {
-  Sandbox: DurableObjectNamespace<Sandbox>;
-  RUN_CAPABILITIES: DurableObjectNamespace<RunCapabilityDO>;
-  RUN_SESSIONS: DurableObjectNamespace<RunSessionDO>;
+export interface Env extends Cloudflare.Env {
   CONTROL_PLANE_TOKEN: string;
   RUN_TOKEN_SECRET: string;
-  OPENAI_API_KEY: string;
-  OPENAI_MODEL: string;
-  MODEL_API_URL: string;
+  MODEL_PROFILES_JSON: string;
 }
 
 interface SourceFile {
@@ -67,9 +60,24 @@ interface SourceFile {
   content: string;
 }
 
+interface ModelProfileRoute extends CapabilityIdentity {
+  modelApiUrl: string;
+  apiKeyBinding: string;
+}
+
+interface ModelProfileCatalog {
+  defaultProfile: string;
+  profiles: ReadonlyMap<string, ModelProfileRoute>;
+}
+
 interface ValidatedRun {
   instruction: string;
+  modelProfile: string;
+  provider: string;
   model: string;
+  profileFingerprint: string;
+  modelApiUrl: string;
+  apiKeyBinding: string;
   files: SourceFile[];
   allowedPaths: string[];
   checks: string[][];
@@ -95,12 +103,20 @@ export interface WorkerDependencies {
   activateCapability(
     env: Env,
     runId: string,
-    model: string,
+    identity: CapabilityIdentity,
     expiresAt: number,
     maxRequests: number,
   ): Promise<void>;
-  checkCapability(env: Env, runId: string, model: string): Promise<CapabilityConsumeResult>;
-  consumeCapability(env: Env, runId: string, model: string): Promise<CapabilityConsumeResult>;
+  checkCapability(
+    env: Env,
+    runId: string,
+    identity: CapabilityIdentity,
+  ): Promise<CapabilityConsumeResult>;
+  consumeCapability(
+    env: Env,
+    runId: string,
+    identity: CapabilityIdentity,
+  ): Promise<CapabilityConsumeResult>;
   revokeCapability(env: Env, runId: string): Promise<void>;
   createRunSession(
     env: Env,
@@ -163,6 +179,134 @@ function rejectUnknownKeys(value: Record<string, unknown>, allowed: readonly str
 
 function utf8Bytes(value: string): number {
   return encoder.encode(value).byteLength;
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function invalidModelProfiles(): never {
+  throw new Error("MODEL_PROFILES_JSON is invalid");
+}
+
+async function profileFingerprint(
+  modelProfile: string,
+  provider: string,
+  model: string,
+  modelApiUrl: string,
+  apiKeyBinding: string,
+): Promise<string> {
+  const canonical = JSON.stringify([
+    modelProfile,
+    provider,
+    model,
+    modelApiUrl,
+    apiKeyBinding,
+  ]);
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(canonical));
+  return bytesToBase64Url(new Uint8Array(digest));
+}
+
+export async function parseModelProfiles(raw: string): Promise<ModelProfileCatalog> {
+  if (utf8Bytes(raw) > 64_000) invalidModelProfiles();
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    invalidModelProfiles();
+  }
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(value, ["default", "profiles"]) ||
+    typeof value.default !== "string" ||
+    !/^[a-z0-9][a-z0-9._-]{0,63}$/u.test(value.default) ||
+    !isObject(value.profiles)
+  ) {
+    invalidModelProfiles();
+  }
+  const entries = Object.entries(value.profiles);
+  if (entries.length < 1 || entries.length > 16) invalidModelProfiles();
+  const profiles = new Map<string, ModelProfileRoute>();
+  for (const [modelProfile, candidate] of entries) {
+    if (
+      !/^[a-z0-9][a-z0-9._-]{0,63}$/u.test(modelProfile) ||
+      !isObject(candidate) ||
+      !hasOnlyKeys(candidate, ["provider", "protocol", "model", "apiUrl", "apiKeyBinding"]) ||
+      typeof candidate.provider !== "string" ||
+      !/^[a-z0-9][a-z0-9._-]{0,63}$/u.test(candidate.provider) ||
+      candidate.protocol !== "openai-chat" ||
+      typeof candidate.model !== "string" ||
+      candidate.model.length < 1 ||
+      candidate.model.length > 256 ||
+      candidate.model.trim() !== candidate.model ||
+      /[\u0000-\u001f\u007f]/u.test(candidate.model) ||
+      typeof candidate.apiUrl !== "string" ||
+      typeof candidate.apiKeyBinding !== "string" ||
+      !/^MODEL_PROVIDER_KEY_[A-Z0-9_]{1,64}$/u.test(candidate.apiKeyBinding)
+    ) {
+      invalidModelProfiles();
+    }
+    let modelApiUrl: string;
+    try {
+      modelApiUrl = validatedModelApiUrl(candidate.apiUrl);
+    } catch {
+      invalidModelProfiles();
+    }
+    profiles.set(modelProfile, {
+      modelProfile,
+      provider: candidate.provider,
+      model: candidate.model,
+      modelApiUrl,
+      apiKeyBinding: candidate.apiKeyBinding,
+      profileFingerprint: await profileFingerprint(
+        modelProfile,
+        candidate.provider,
+        candidate.model,
+        modelApiUrl,
+        candidate.apiKeyBinding,
+      ),
+    });
+  }
+  if (!profiles.has(value.default)) invalidModelProfiles();
+  return { defaultProfile: value.default, profiles };
+}
+
+function capabilityIdentity(profile: ModelProfileRoute | RunCapability): CapabilityIdentity {
+  return {
+    modelProfile: profile.modelProfile,
+    provider: profile.provider,
+    model: profile.model,
+    profileFingerprint: profile.profileFingerprint,
+  };
+}
+
+function modelProfileSecret(env: Env, profile: ModelProfileRoute): string {
+  const value: unknown = Reflect.get(env, profile.apiKeyBinding);
+  if (typeof value !== "string" || value.length < 1 || value.includes("\0")) {
+    throw new Error("model provider credential is not configured");
+  }
+  return value;
+}
+
+function modelProfileReady(env: Env, profile: ModelProfileRoute): boolean {
+  const value: unknown = Reflect.get(env, profile.apiKeyBinding);
+  return typeof value === "string" && value.length > 0 && !value.includes("\0");
+}
+
+function resolveCapabilityProfile(
+  catalog: ModelProfileCatalog,
+  capability: RunCapability,
+): ModelProfileRoute {
+  const profile = catalog.profiles.get(capability.modelProfile);
+  if (
+    profile === undefined ||
+    profile.provider !== capability.provider ||
+    profile.model !== capability.model ||
+    profile.profileFingerprint !== capability.profileFingerprint
+  ) {
+    throw new RequestProblem(401, "inactive_run_token");
+  }
+  return profile;
 }
 
 function validateRelativeFilePath(value: unknown): string {
@@ -283,9 +427,9 @@ function validateEventAppendBody(value: unknown, expectedRunId: string): string[
   return lines;
 }
 
-export function validateRunRequest(value: unknown, expectedModel: string): ValidatedRun {
+export function validateRunRequest(value: unknown, catalog: ModelProfileCatalog): ValidatedRun {
   if (!isObject(value)) throw new RequestProblem(400, "invalid_json_object");
-  rejectUnknownKeys(value, ["instruction", "model", "files", "allowedPaths", "checks", "limits"]);
+  rejectUnknownKeys(value, ["instruction", "modelProfile", "files", "allowedPaths", "checks", "limits"]);
   if (
     typeof value.instruction !== "string" ||
     !value.instruction.trim() ||
@@ -294,9 +438,11 @@ export function validateRunRequest(value: unknown, expectedModel: string): Valid
   ) {
     throw new RequestProblem(400, "invalid_instruction");
   }
-  if (typeof value.model !== "string" || value.model !== expectedModel) {
-    throw new RequestProblem(400, "model_not_allowed");
+  if (typeof value.modelProfile !== "string") {
+    throw new RequestProblem(400, "model_profile_not_allowed");
   }
+  const profile = catalog.profiles.get(value.modelProfile);
+  if (profile === undefined) throw new RequestProblem(400, "model_profile_not_allowed");
   if (!Array.isArray(value.files) || value.files.length < 1 || value.files.length > LIMITS.fileCount) {
     throw new RequestProblem(400, "invalid_files");
   }
@@ -355,7 +501,12 @@ export function validateRunRequest(value: unknown, expectedModel: string): Valid
   }
   return {
     instruction: value.instruction.trim(),
-    model: value.model,
+    modelProfile: profile.modelProfile,
+    provider: profile.provider,
+    model: profile.model,
+    profileFingerprint: profile.profileFingerprint,
+    modelApiUrl: profile.modelApiUrl,
+    apiKeyBinding: profile.apiKeyBinding,
     files,
     allowedPaths,
     checks,
@@ -409,11 +560,10 @@ type RunTokenAudience =
   | "/internal/v1/runs/events"
   | "/internal/v1/runs/approvals";
 
-interface RunCapability {
-  v: 1;
+interface RunCapability extends CapabilityIdentity {
+  v: 2;
   aud: RunTokenAudience;
   runId: string;
-  model: string;
   iat: number;
   exp: number;
 }
@@ -421,15 +571,15 @@ interface RunCapability {
 export async function createRunToken(
   secret: string,
   runId: string,
-  model: string,
+  identity: CapabilityIdentity,
   nowSeconds: number,
   audience: RunTokenAudience = "/internal/v1/chat/completions",
 ): Promise<string> {
   const payload: RunCapability = {
-    v: 1,
+    v: 2,
     aud: audience,
     runId,
-    model,
+    ...identity,
     iat: nowSeconds,
     exp: nowSeconds + LIMITS.runTokenSeconds,
   };
@@ -457,16 +607,47 @@ export async function verifyRunToken(
   }
   if (!isObject(value)) throw new RequestProblem(401, "invalid_run_token");
   if (
-    value.v !== 1 ||
+    !hasOnlyKeys(value, [
+      "v",
+      "aud",
+      "runId",
+      "modelProfile",
+      "provider",
+      "model",
+      "profileFingerprint",
+      "iat",
+      "exp",
+    ]) ||
+    value.v !== 2 ||
     value.aud !== expectedAudience ||
     typeof value.runId !== "string" ||
+    typeof value.modelProfile !== "string" ||
+    !/^[a-z0-9][a-z0-9._-]{0,63}$/u.test(value.modelProfile) ||
+    typeof value.provider !== "string" ||
+    !/^[a-z0-9][a-z0-9._-]{0,63}$/u.test(value.provider) ||
     typeof value.model !== "string" ||
+    value.model.length < 1 ||
+    value.model.length > 256 ||
+    typeof value.profileFingerprint !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(value.profileFingerprint) ||
+    typeof value.iat !== "number" ||
     !Number.isInteger(value.iat) ||
+    typeof value.exp !== "number" ||
     !Number.isInteger(value.exp)
   ) {
     throw new RequestProblem(401, "invalid_run_token");
   }
-  const capability = value as unknown as RunCapability;
+  const capability: RunCapability = {
+    v: 2,
+    aud: expectedAudience,
+    runId: value.runId,
+    modelProfile: value.modelProfile,
+    provider: value.provider,
+    model: value.model,
+    profileFingerprint: value.profileFingerprint,
+    iat: value.iat,
+    exp: value.exp,
+  };
   if (
     capability.iat > nowSeconds + 5 ||
     capability.exp <= nowSeconds ||
@@ -582,7 +763,7 @@ export function validatedModelApiUrl(value: string): string {
   try {
     url = new URL(value);
   } catch {
-    throw new Error("MODEL_API_URL must be an absolute HTTPS URL");
+    throw new Error("model profile apiUrl must be an absolute HTTPS URL");
   }
   if (
     url.protocol !== "https:" ||
@@ -595,7 +776,7 @@ export function validatedModelApiUrl(value: string): string {
     url.pathname.includes("//") ||
     url.pathname.endsWith("/")
   ) {
-    throw new Error("MODEL_API_URL must be a credential-free HTTPS chat-completions endpoint");
+    throw new Error("model profile apiUrl must be a credential-free HTTPS chat-completions endpoint");
   }
   return url.toString();
 }
@@ -874,7 +1055,7 @@ async function executeRunInSandbox(
     await dependencies.activateCapability(
       env,
       run.runId,
-      run.input.model,
+      capabilityIdentity(run.input),
       run.expiresAt,
       run.input.limits.maxSteps + 2,
     );
@@ -985,28 +1166,36 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
   if (!secretsEqual(env.CONTROL_PLANE_TOKEN, bearer(request))) {
     throw new RequestProblem(401, "unauthorized");
   }
-  const input = validateRunRequest(await readJsonBounded(request, LIMITS.requestBytes), env.OPENAI_MODEL);
+  const catalog = await parseModelProfiles(env.MODEL_PROFILES_JSON);
+  const input = validateRunRequest(
+    await readJsonBounded(request, LIMITS.requestBytes),
+    catalog,
+  );
+  modelProfileSecret(env, input);
   const runId = dependencies.randomUUID();
   const nowSeconds = Math.floor(dependencies.now() / 1000);
   const requestSummary: RunSessionRequestSummary = {
     instruction: input.instruction,
+    modelProfile: input.modelProfile,
+    provider: input.provider,
     model: input.model,
     allowedPaths: input.allowedPaths,
     checks: input.checks,
     fileCount: input.files.length,
   };
-  const runToken = await createRunToken(env.RUN_TOKEN_SECRET, runId, input.model, nowSeconds);
+  const identity = capabilityIdentity(input);
+  const runToken = await createRunToken(env.RUN_TOKEN_SECRET, runId, identity, nowSeconds);
   const eventToken = await createRunToken(
     env.RUN_TOKEN_SECRET,
     runId,
-    input.model,
+    identity,
     nowSeconds,
     "/internal/v1/runs/events",
   );
   const approvalToken = await createRunToken(
     env.RUN_TOKEN_SECRET,
     runId,
-    input.model,
+    identity,
     nowSeconds,
     "/internal/v1/runs/approvals",
   );
@@ -1047,6 +1236,25 @@ async function handleRun(request: Request, env: Env, dependencies: WorkerDepende
     },
     202,
   );
+}
+
+async function handleModelProfiles(request: Request, env: Env): Promise<Response> {
+  if (!secretsEqual(env.CONTROL_PLANE_TOKEN, bearer(request))) {
+    throw new RequestProblem(401, "unauthorized");
+  }
+  const catalog = await parseModelProfiles(env.MODEL_PROFILES_JSON);
+  return json({
+    default: catalog.defaultProfile,
+    profiles: [...catalog.profiles.values()]
+      .map((profile) => ({
+        id: profile.modelProfile,
+        provider: profile.provider,
+        protocol: "openai-chat",
+        model: profile.model,
+        ready: modelProfileReady(env, profile),
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+  });
 }
 
 async function handleRunResource(
@@ -1123,10 +1331,10 @@ async function handleRunResource(
   throw new RequestProblem(404, "not_found");
 }
 
-function validateModelBody(value: unknown, capability: RunCapability, expectedModel: string): Record<string, unknown> {
+function validateModelBody(value: unknown, capability: RunCapability): Record<string, unknown> {
   if (!isObject(value)) throw new RequestProblem(400, "invalid_model_request");
   rejectUnknownKeys(value, ["model", "messages", "tools"]);
-  if (value.model !== capability.model || value.model !== expectedModel) {
+  if (value.model !== capability.model) {
     throw new RequestProblem(400, "model_not_allowed");
   }
   if (!Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 64) {
@@ -1152,15 +1360,13 @@ async function handleModelProxy(request: Request, env: Env, dependencies: Worker
     Math.floor(dependencies.now() / 1000),
     "/internal/v1/chat/completions",
   );
-  const body = validateModelBody(
-    await readJsonBounded(request, LIMITS.modelBodyBytes),
-    capability,
-    env.OPENAI_MODEL,
-  );
+  const catalog = await parseModelProfiles(env.MODEL_PROFILES_JSON);
+  const profile = resolveCapabilityProfile(catalog, capability);
+  const body = validateModelBody(await readJsonBounded(request, LIMITS.modelBodyBytes), capability);
   const consumption = await dependencies.consumeCapability(
     env,
     capability.runId,
-    capability.model,
+    capabilityIdentity(capability),
   );
   if (consumption === "inactive" || consumption === "expired") {
     throw new RequestProblem(401, "inactive_run_token");
@@ -1168,10 +1374,10 @@ async function handleModelProxy(request: Request, env: Env, dependencies: Worker
   if (consumption === "exhausted") {
     throw new RequestProblem(429, "model_request_budget_exhausted");
   }
-  if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
-  const upstream = await dependencies.fetch(validatedModelApiUrl(env.MODEL_API_URL), {
+  const providerSecret = modelProfileSecret(env, profile);
+  const upstream = await dependencies.fetch(profile.modelApiUrl, {
     method: "POST",
-    headers: { authorization: `Bearer ${env.OPENAI_API_KEY}`, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${providerSecret}`, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const declared = upstream.headers.get("content-length");
@@ -1225,9 +1431,7 @@ async function handleInternalRunEvents(
   if (match === null || match[1] !== capability.runId) {
     throw new RequestProblem(401, "invalid_run_token");
   }
-  if (capability.model !== env.OPENAI_MODEL) {
-    throw new RequestProblem(400, "model_not_allowed");
-  }
+  resolveCapabilityProfile(await parseModelProfiles(env.MODEL_PROFILES_JSON), capability);
   const lines = validateEventAppendBody(
     await readJsonBounded(request, LIMITS.eventAppendBodyBytes),
     capability.runId,
@@ -1235,7 +1439,7 @@ async function handleInternalRunEvents(
   const capabilityStatus = await dependencies.checkCapability(
     env,
     capability.runId,
-    capability.model,
+    capabilityIdentity(capability),
   );
   if (capabilityStatus === "inactive" || capabilityStatus === "expired") {
     throw new RequestProblem(401, "inactive_run_token");
@@ -1267,14 +1471,12 @@ async function handleInternalRunApproval(
   if (match === null || match[1] !== capability.runId) {
     throw new RequestProblem(401, "invalid_run_token");
   }
-  if (capability.model !== env.OPENAI_MODEL) {
-    throw new RequestProblem(400, "model_not_allowed");
-  }
+  resolveCapabilityProfile(await parseModelProfiles(env.MODEL_PROFILES_JSON), capability);
   const approvalId = validateRunIdPathSegment(match[2]!);
   const capabilityStatus = await dependencies.checkCapability(
     env,
     capability.runId,
-    capability.model,
+    capabilityIdentity(capability),
   );
   if (capabilityStatus === "inactive" || capabilityStatus === "expired") {
     throw new RequestProblem(401, "inactive_run_token");
@@ -1299,6 +1501,10 @@ export async function handleRequest(
     if (path === "/v1/runs") {
       if (request.method !== "POST") throw new RequestProblem(405, "method_not_allowed");
       return await handleRun(request, env, dependencies);
+    }
+    if (path === "/v1/model-profiles") {
+      if (request.method !== "GET") throw new RequestProblem(405, "method_not_allowed");
+      return await handleModelProfiles(request, env);
     }
     if (path.startsWith("/v1/runs/")) {
       return await handleRunResource(request, env, dependencies);

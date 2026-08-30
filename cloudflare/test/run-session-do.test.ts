@@ -41,10 +41,14 @@ function get(path: string, init?: RequestInit): Request {
 function createBody(): Record<string, unknown> {
   return {
     runId: "run-1",
+    modelProfile: "openrouter-primary",
+    provider: "openrouter",
     model: "gpt-5-mini",
     createdAt: now,
     request: {
       instruction: "Fix hello.py",
+      modelProfile: "openrouter-primary",
+      provider: "openrouter",
       model: "gpt-5-mini",
       allowedPaths: ["hello.py"],
       checks: [["git", "diff", "--check"]],
@@ -135,6 +139,8 @@ describe("RunSession Durable Object", () => {
     expect(status).toMatchObject({
       runId: "run-1",
       status: "completed",
+      modelProfile: "openrouter-primary",
+      provider: "openrouter",
       model: "gpt-5-mini",
       summary: "fixed",
       terminalReason: "verified",
@@ -148,6 +154,49 @@ describe("RunSession Durable Object", () => {
     expect(await (await session.fetch(get("/artifacts/patch"))).text()).toBe(
       "diff --git a/hello.py b/hello.py\n",
     );
+  });
+
+  it("rejects missing model routing identity and never persists provider secrets", async () => {
+    const missingProfile = createBody();
+    delete missingProfile.modelProfile;
+    expect((await durableObject().fetch(post("/create", missingProfile))).status).toBe(400);
+
+    const missingProvider = createBody();
+    delete missingProvider.provider;
+    expect((await durableObject().fetch(post("/create", missingProvider))).status).toBe(400);
+
+    for (const field of ["modelProfile", "provider", "model"] as const) {
+      const mismatched = createBody();
+      (mismatched.request as Record<string, unknown>)[field] = "different";
+      expect((await durableObject().fetch(post("/create", mismatched))).status).toBe(400);
+    }
+
+    const session = durableObject();
+    const body = createBody();
+    body.endpoint = "https://secret-provider.example/v1/chat/completions";
+    body.apiKeyBinding = "OPENROUTER_API_KEY";
+    body.secret = "top-level-secret";
+    const request = body.request as Record<string, unknown>;
+    request.endpoint = "https://nested-secret-provider.example";
+    request.apiKeyBinding = "NESTED_PROVIDER_KEY";
+    request.secret = "nested-secret";
+
+    expect((await session.fetch(post("/create", body))).status).toBe(201);
+    const status = (await (await session.fetch(get("/status"))).json()) as Record<string, unknown>;
+    expect(status).toMatchObject({
+      modelProfile: "openrouter-primary",
+      provider: "openrouter",
+      request: {
+        modelProfile: "openrouter-primary",
+        provider: "openrouter",
+        model: "gpt-5-mini",
+      },
+    });
+    expect(JSON.stringify(status)).not.toContain("secret-provider.example");
+    expect(JSON.stringify(status)).not.toContain("OPENROUTER_API_KEY");
+    expect(JSON.stringify(status)).not.toContain("NESTED_PROVIDER_KEY");
+    expect(JSON.stringify(status)).not.toContain("top-level-secret");
+    expect(JSON.stringify(status)).not.toContain("nested-secret");
   });
 
   it("marks cancel requested and keeps terminal cancellation idempotent", async () => {

@@ -10,3 +10,5 @@ build/
 *.egg-info/
 .artifacts/
 .agent-work/
+.env.cloudflare
+cloudflare/.env.cloudflare

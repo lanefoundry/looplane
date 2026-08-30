@@ -4,6 +4,8 @@ export type RunSessionStatus = "queued" | "running" | "completed" | "failed" | "
 
 export interface RunSessionRequestSummary {
   instruction: string;
+  modelProfile: string;
+  provider: string;
   model: string;
   allowedPaths: string[];
   checks: string[][];
@@ -34,6 +36,8 @@ export interface RunSessionApprovalDecision {
 export interface RunSessionSnapshot {
   runId: string;
   status: RunSessionStatus;
+  modelProfile: string;
+  provider: string;
   model: string;
   createdAt: number;
   updatedAt: number;
@@ -127,12 +131,20 @@ function recordFromCreateBody(body: Record<string, unknown>): RunSessionRecord |
   const checks = request === null ? null : stringMatrix(request.checks);
   if (
     typeof body.runId !== "string" ||
+    typeof body.modelProfile !== "string" ||
+    body.modelProfile.length < 1 ||
+    typeof body.provider !== "string" ||
+    body.provider.length < 1 ||
     typeof body.model !== "string" ||
+    body.model.length < 1 ||
     typeof body.createdAt !== "number" ||
     !Number.isInteger(body.createdAt) ||
     request === null ||
     typeof request.instruction !== "string" ||
     request.instruction.length > 32_000 ||
+    request.modelProfile !== body.modelProfile ||
+    request.provider !== body.provider ||
+    request.model !== body.model ||
     allowedPaths === null ||
     checks === null ||
     typeof request.fileCount !== "number" ||
@@ -144,11 +156,15 @@ function recordFromCreateBody(body: Record<string, unknown>): RunSessionRecord |
   return {
     runId: body.runId,
     status: "queued",
+    modelProfile: body.modelProfile,
+    provider: body.provider,
     model: body.model,
     createdAt: body.createdAt,
     updatedAt: body.createdAt,
     request: {
       instruction: request.instruction,
+      modelProfile: body.modelProfile,
+      provider: body.provider,
       model: body.model,
       allowedPaths,
       checks,
@@ -718,7 +734,14 @@ export async function createRunSession(
   const response = await stub(namespace, runId).fetch("https://run-session.internal/create", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ runId, model: request.model, request, createdAt }),
+    body: JSON.stringify({
+      runId,
+      modelProfile: request.modelProfile,
+      provider: request.provider,
+      model: request.model,
+      request,
+      createdAt,
+    }),
   });
   if (response.status !== 201) throw new Error("run session creation failed");
 }

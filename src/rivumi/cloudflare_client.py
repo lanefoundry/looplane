@@ -54,6 +54,14 @@ class CloudflareRunClient:
         )
         return self._json_response(response)
 
+    async def model_profiles(self) -> dict[str, Any]:
+        """Return the authenticated operator-managed model profile catalog."""
+        response = await self._client.get(
+            self._url("/v1/model-profiles"),
+            headers=self._headers(),
+        )
+        return self._json_response(response)
+
     async def status(self, run_id: str) -> dict[str, Any]:
         response = await self._client.get(
             self._url(f"/v1/runs/{run_id}"),

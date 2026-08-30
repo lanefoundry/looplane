@@ -225,10 +225,14 @@ auth_app = typer.Typer(help="Manage provider credentials owned by this applicati
 backend_app = typer.Typer(help="Run a clearly separated external agent backend.")
 policy_app = typer.Typer(help="Inspect effective permission policy.")
 plugin_app = typer.Typer(help="Install and inspect repository-local plugin packages.")
+cloudflare_app = typer.Typer(help="Operate the Cloudflare-hosted control plane.")
+cloudflare_providers_app = typer.Typer(help="Batch-configure hosted model providers.")
 app.add_typer(auth_app, name="auth")
 app.add_typer(backend_app, name="backend")
 app.add_typer(policy_app, name="policy")
 app.add_typer(plugin_app, name="plugin")
+cloudflare_app.add_typer(cloudflare_providers_app, name="providers")
+app.add_typer(cloudflare_app, name="cloudflare")
 
 
 def _default_run_root() -> Path:
@@ -2095,6 +2099,65 @@ def auth_list(
             typer.secho(f"✓ {provider:<18} verified", fg=typer.colors.GREEN)
         else:
             typer.secho(f"✗ {provider:<18} invalid · {result.message}", fg=typer.colors.RED)
+
+
+@cloudflare_providers_app.command("apply")
+def cloudflare_providers_apply(
+    manifest: Annotated[
+        Path,
+        typer.Argument(help="Non-secret JSON manifest containing every hosted provider profile."),
+    ],
+    secrets_env: Annotated[
+        Path | None,
+        typer.Option(
+            "--secrets-env",
+            help="Private mode-0600 dotenv file containing all referenced provider keys.",
+        ),
+    ] = None,
+    cloudflare_dir: Annotated[
+        Path,
+        typer.Option(
+            "--cloudflare-dir",
+            help="Directory containing wrangler.jsonc and the Cloudflare package scripts.",
+        ),
+    ] = Path("cloudflare"),
+    wrangler_env: Annotated[
+        str | None,
+        typer.Option("--env", help="Optional named Wrangler environment."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Validate and build without changing Cloudflare state."),
+    ] = False,
+    allow_custom_endpoint: Annotated[
+        bool,
+        typer.Option(
+            "--allow-custom-endpoint",
+            help="Allow a manifest to send its named credential to an unbundled HTTPS endpoint.",
+        ),
+    ] = False,
+) -> None:
+    """Upload all provider keys and deploy their hosted profiles in one batch."""
+
+    from rivumi.cloudflare_provider_setup import ProviderSetupError, setup_cloudflare_providers
+
+    try:
+        result = setup_cloudflare_providers(
+            manifest,
+            cloudflare_dir=cloudflare_dir,
+            secrets_env_file=secrets_env,
+            allow_custom_endpoint=allow_custom_endpoint,
+            wrangler_env=wrangler_env,
+            dry_run=dry_run,
+        )
+    except ProviderSetupError as exc:
+        typer.echo(f"error: Cloudflare provider setup failed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    action = "Validated" if result.dry_run else "Applied"
+    typer.secho(
+        f"✓ {action} {result.profile_count} Cloudflare provider profile(s) in one batch.",
+        fg=typer.colors.GREEN,
+    )
 
 
 async def _exchange_codex_code(

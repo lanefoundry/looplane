@@ -31,11 +31,12 @@ const dependencies: Omit<WorkerDependencies, "queueBackgroundRun"> = {
   fetch: (input, init) => fetch(input, init),
   now: () => Date.now(),
   randomUUID: () => crypto.randomUUID(),
-  activateCapability: (env, runId, model, expiresAt, maxRequests) =>
-    activateCapability(env.RUN_CAPABILITIES, runId, model, expiresAt, maxRequests),
-  checkCapability: (env, runId, model) => checkCapability(env.RUN_CAPABILITIES, runId, model),
-  consumeCapability: (env, runId, model) =>
-    consumeCapability(env.RUN_CAPABILITIES, runId, model),
+  activateCapability: (env, runId, identity, expiresAt, maxRequests) =>
+    activateCapability(env.RUN_CAPABILITIES, runId, identity, expiresAt, maxRequests),
+  checkCapability: (env, runId, identity) =>
+    checkCapability(env.RUN_CAPABILITIES, runId, identity),
+  consumeCapability: (env, runId, identity) =>
+    consumeCapability(env.RUN_CAPABILITIES, runId, identity),
   revokeCapability: (env, runId) => revokeCapability(env.RUN_CAPABILITIES, runId),
   createRunSession: (env, runId, request, createdAt) =>
     createRunSession(env.RUN_SESSIONS, runId, request, createdAt),

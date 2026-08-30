@@ -47,6 +47,42 @@ async def test_cloudflare_run_client_starts_run_and_fetches_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cloudflare_run_client_lists_model_profiles() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/model-profiles"
+        assert request.headers["authorization"] == "Bearer control-token"
+        return httpx.Response(
+            200,
+            json={
+                "default": "openrouter-primary",
+                "profiles": [
+                    {
+                        "id": "openrouter-primary",
+                        "provider": "openrouter",
+                        "protocol": "openai-chat",
+                        "model": "gpt-5-mini",
+                        "ready": True,
+                    }
+                ],
+            },
+            request=request,
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = CloudflareRunClient(
+        base_url="https://control.example",
+        token="control-token",
+        client=http,
+    )
+
+    profiles = await client.model_profiles()
+
+    assert profiles["default"] == "openrouter-primary"
+    assert profiles["profiles"][0]["provider"] == "openrouter"
+    assert profiles["profiles"][0]["ready"] is True
+
+
+@pytest.mark.asyncio
 async def test_cloudflare_run_client_attaches_to_sse_with_resume_cursor() -> None:
     seen_last_event_id: str | None = None
 

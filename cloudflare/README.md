@@ -6,7 +6,8 @@ Python entrypoint, reads the bounded result bundle, persists terminal run metada
 destroys the Sandbox in `finally`.
 
 It does not accept Git URLs, archives, shell strings, provider credentials, consumer subscription
-tokens, custom model IDs, or caller-selected upstream URLs.
+tokens, caller-selected model IDs, or caller-selected upstream URLs. Callers select only an
+operator-managed model profile.
 
 ## Routes
 
@@ -20,6 +21,31 @@ Unauthenticated liveness only:
 
 This proves Worker routing, not Sandbox or model execution.
 
+### `GET /v1/model-profiles`
+
+Requires `Authorization: Bearer <CONTROL_PLANE_TOKEN>`. Returns the default profile plus the safe
+operator-managed profile list:
+
+```json
+{
+  "default": "openrouter-primary",
+  "profiles": [
+    {
+      "id": "openrouter-primary",
+      "provider": "openrouter",
+      "protocol": "openai-chat",
+      "model": "operator-approved-model-id",
+      "ready": true
+    }
+  ]
+}
+```
+
+`ready` reports only whether the configured secret binding currently contains a non-empty value.
+Endpoint, secret-binding name, profile fingerprint, and provider key are never returned. Python
+callers can use `await client.model_profiles()` and select a ready profile before constructing a run
+request.
+
 ### `POST /v1/runs`
 
 Requires `Authorization: Bearer <CONTROL_PLANE_TOKEN>` and `Content-Type: application/json`.
@@ -27,7 +53,7 @@ Requires `Authorization: Bearer <CONTROL_PLANE_TOKEN>` and `Content-Type: applic
 ```json
 {
   "instruction": "Change hello.py and keep the check green.",
-  "model": "the exact operator-configured model",
+  "modelProfile": "openrouter-primary",
   "files": [{"path": "hello.py", "content": "print('hello')\n"}],
   "allowedPaths": ["hello.py"],
   "checks": [["git", "diff", "--check"]],
@@ -49,8 +75,9 @@ Capability revocation and Sandbox teardown run after terminal result validation.
 ### `GET /v1/runs/:runId`
 
 Requires `Authorization: Bearer <CONTROL_PLANE_TOKEN>`. Returns durable run metadata only:
-status, model, timestamps, request summary, terminal summary/reason, execution result, cancellation
-flag, and artifact key names. Artifact bodies are not included in this response.
+status, model profile, provider, model, timestamps, request summary, terminal summary/reason,
+execution result, cancellation flag, and artifact key names. Artifact bodies are not included in
+this response.
 
 ### `GET /v1/runs/:runId/events`
 
@@ -72,6 +99,7 @@ Python callers can use the lightweight attach client:
 from rivumi.cloudflare_client import CloudflareRunClient
 
 client = CloudflareRunClient(base_url="https://control.example", token=token)
+profiles = await client.model_profiles()
 accepted = await client.start_run(request)
 async for event in client.attach_events(accepted["runId"], last_event_id=0):
     print(event.event, event.data)
@@ -128,17 +156,19 @@ inserted into a shell command.
 
 ## Model capability boundary
 
-The Sandbox receives two five-minute HMAC capabilities containing only route audience, run ID,
-model, issued time, and expiry. The Worker writes the model-proxy token to
-`/workspace/.rivumi-run-token` and the event-append token to `/workspace/.rivumi-event-token`; the
-non-root Python entrypoint opens both without following links and immediately unlinks them. These
-capabilities are never present in the Sandbox exec environment.
+The Sandbox receives three five-minute HMAC capabilities containing only route audience, run ID,
+model profile, provider, model, an opaque profile fingerprint, issued time, and expiry. The Worker
+writes the model-proxy, event-append, and approval tokens to owner-only files; the non-root Python
+entrypoint opens them without following links and immediately unlinks them. These capabilities are
+never present in the Sandbox exec environment. Endpoint and secret-binding names are not included
+in the token.
 
 Each run also owns a strongly consistent `RunCapability` Durable Object. The Worker activates it
 with a `maxSteps + 2` model-request budget, atomically consumes one unit before each upstream call,
 and revokes it before Sandbox teardown. A correctly signed token is therefore rejected after
-teardown, after expiry, after budget exhaustion, or for a different model. This state is backed by
-Durable Object SQLite rather than an isolate-local map.
+teardown, after expiry, after budget exhaustion, for a different profile/provider/model, or after
+the selected profile's routing configuration changes. This state is backed by Durable Object
+SQLite rather than an isolate-local map.
 
 Each run also owns a `RunSession` Durable Object keyed by run ID. It records
 `queued | running | completed | failed | cancelled` state, bounded request metadata, terminal
@@ -146,32 +176,138 @@ summary, artifact key names, and explicit cleanup/cancellation markers. Full art
 available only through authenticated artifact routes.
 
 The Sandbox calls `/internal/v1/chat/completions`; that route verifies both the HMAC and active DO
-state, pins the operator model, rejects extra request fields/streaming, caps output tokens, and
-bounds request and response bodies while streaming them into memory.
+state, resolves the signed operator profile, pins its provider and model, rejects extra request
+fields/streaming, caps output tokens, and bounds request and response bodies while streaming them
+into memory.
 
 The Sandbox also posts live event JSONL batches to `/internal/v1/runs/:runId/events` with the
 event-append token. The route verifies the event audience, requires `task_id` to match the
 Cloudflare run ID, validates each line as one JSON object, and checks the run capability without
 consuming model-request budget. `RunSession` caps stored live events by line count and UTF-8 bytes.
 
-`OPENAI_API_KEY` remains in Worker env and is added only to the Worker-to-provider request. It is
-never written to a source file, runner request, Sandbox exec env, result, or error response.
+`MODEL_PROFILES_JSON` is an operator-owned, non-secret catalog. Each profile fixes a provider,
+protocol, model, exact HTTPS chat-completions endpoint, and the name of a separate secret binding.
+HTTP URLs, credentials, query strings, fragments, caller overrides, non-`/chat/completions` paths,
+unknown fields, and unknown profiles are rejected. Phase 1 accepts only the `openai-chat` protocol.
 
-`MODEL_API_URL` is operator-owned and must be the exact HTTPS chat-completions endpoint. HTTP URLs,
-credentials, query strings, fragments, caller overrides, and non-`/chat/completions` paths are
-rejected. This supports OpenAI-compatible providers such as Groq or OpenRouter without weakening
-the caller boundary.
+```json
+{
+  "default": "openrouter-primary",
+  "profiles": {
+    "openrouter-primary": {
+      "provider": "openrouter",
+      "protocol": "openai-chat",
+      "model": "operator-approved-model-id",
+      "apiUrl": "https://openrouter.ai/api/v1/chat/completions",
+      "apiKeyBinding": "MODEL_PROVIDER_KEY_OPENROUTER"
+    },
+    "nvidia-nim": {
+      "provider": "nvidia-nim",
+      "protocol": "openai-chat",
+      "model": "operator-approved-model-id",
+      "apiUrl": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "apiKeyBinding": "MODEL_PROVIDER_KEY_NVIDIA_NIM"
+    }
+  }
+}
+```
+
+The caller sends only `modelProfile`. It cannot supply a provider, model, endpoint, binding name,
+credential, or extra upstream header. The Worker resolves the profile again on every internal model
+request and selects only its configured secret.
 
 Required Worker environment bindings:
 
 - `CONTROL_PLANE_TOKEN` — at least 16 UTF-8 bytes
 - `RUN_TOKEN_SECRET` — at least 32 UTF-8 bytes
-- `OPENAI_API_KEY` — commercial/provider API credential
-- `OPENAI_MODEL` — the single accepted model ID
-- `MODEL_API_URL` — validated operator-owned HTTPS endpoint
+- `MODEL_PROFILES_JSON` — non-secret profile catalog, normally configured as an environment-specific
+  Worker variable
+- every profile's `apiKeyBinding` — an independent commercial/provider API credential; the batch
+  setup below creates all bindings with one `wrangler secret bulk` request, while manual operations
+  may use `wrangler secret put`
 
 Use Wrangler secrets or another Cloudflare-managed secret injection path for credentials. Do not put
 secret values in `wrangler.jsonc`, Docker build arguments, or container environment configuration.
+
+### Batch provider setup
+
+Operators do not need to edit an escaped `MODEL_PROFILES_JSON` value or upload provider keys one at
+a time. Copy `providers.example.json`, keep the catalog non-secret, and list every desired profile
+in one file. Known OpenAI-compatible providers need only a provider and model; Rivumi pins their
+catalog endpoint and derives the Worker secret binding.
+
+Run these commands from the repository root after installing the Python environment. Install the
+Cloudflare package, confirm Wrangler authentication, and ensure a Docker-compatible container
+runtime is available before building the Sandbox image:
+
+```sh
+npm --prefix cloudflare ci
+(cd cloudflare && npx wrangler whoami)
+```
+
+```sh
+cp cloudflare/providers.example.json cloudflare/providers.json
+```
+
+Put the referenced provider keys in a local dotenv file and restrict it to the current user:
+
+```dotenv
+CONTROL_PLANE_TOKEN=replace-with-at-least-16-bytes
+RUN_TOKEN_SECRET=replace-with-at-least-32-bytes
+OPENROUTER_API_KEY=replace-me
+GROQ_API_KEY=replace-me
+```
+
+```sh
+chmod 600 cloudflare/.env.cloudflare
+uv run rivumi cloudflare providers apply cloudflare/providers.json \
+  --secrets-env cloudflare/.env.cloudflare
+```
+
+The command validates the complete manifest first, uploads all referenced keys in one
+`wrangler secret bulk` stdin request, builds the pinned runtime, and deploys the catalog. It never
+writes provider keys into the catalog or passes them in process arguments. Use `--dry-run` to
+validate and build without uploading secrets or deploying, and `--env NAME` for a named Wrangler
+environment. `wrangler.jsonc` keeps remotely managed variables so a later regular runtime deploy
+does not erase the applied catalog. `CONTROL_PLANE_TOKEN` and `RUN_TOKEN_SECRET` are optional in an
+existing deployment; include them in the same dotenv file to bootstrap a new Worker without two
+additional secret commands. Dry-run still reads and validates every provider key named by the
+manifest; each real apply also requires all of those provider keys, even when bindings already
+exist remotely.
+
+Known shorthand profiles and their required dotenv names:
+
+| Provider | Dotenv key |
+| --- | --- |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `deepseek` | `DEEPSEEK_API_KEY` |
+| `groq` | `GROQ_API_KEY` |
+| `moonshotai` | `MOONSHOT_API_KEY` |
+| `zai` | `ZAI_API_KEY` |
+| `xai` | `XAI_API_KEY` |
+| `nvidia-nim` | `NVIDIA_API_KEY` |
+| `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
+| `ollama-cloud` | `OLLAMA_CLOUD_API_KEY` |
+
+Custom providers require all three routing fields in addition to provider and model:
+
+```json
+{
+  "provider": "trusted-gateway",
+  "model": "operator-approved-model-id",
+  "apiUrl": "https://models.example/v1/chat/completions",
+  "apiKeyBinding": "MODEL_PROVIDER_KEY_TRUSTED_GATEWAY",
+  "apiKeyEnv": "TRUSTED_GATEWAY_API_KEY"
+}
+```
+
+Apply such a manifest only with `--allow-custom-endpoint`. The endpoint must be credential-free
+HTTPS without a query or fragment and must end in `/chat/completions`; enabling it sends the named
+credential to that host, so use it only for a trusted upstream.
+
+After deployment, call authenticated `GET /v1/model-profiles` and check that the selected profile
+reports `ready: true`. This proves only that its secret binding is non-empty. A real `/v1/runs`
+smoke is still required to validate the credential, model ID, and upstream behavior.
 
 ## Enforced limits
 
@@ -234,6 +370,7 @@ events, and terminal artifacts, but it is still not a full hostile-code containm
 - `RUN_CAPABILITIES` / class `RunCapability`, registered as a new SQLite class by migration `v2`
 - `RUN_SESSIONS` / class `RunSession`, registered as a new SQLite class by migration `v3`
 
-The capability object stores only model, expiry, maximum requests, and consumed count. It stores no
-provider key, source, prompt, artifact, or raw run token. Run status and terminal artifacts are
-persisted through `RunSession`.
+The capability object stores only model profile, provider, model, profile fingerprint, expiry,
+maximum requests, and consumed count. It stores no endpoint, secret-binding name, provider key,
+source, prompt, artifact, or raw run token. Run status and terminal artifacts are persisted through
+`RunSession`.

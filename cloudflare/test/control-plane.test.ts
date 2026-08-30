@@ -4,6 +4,7 @@ import {
   destroySandboxBounded,
   handleRequest,
   LIMITS,
+  parseModelProfiles,
   revokeCapabilityBounded,
   validatedModelApiUrl,
   verifyRunToken,
@@ -17,18 +18,39 @@ const controlToken = "control-plane-token-with-enough-bytes";
 const runSecret = "run-token-secret-with-at-least-thirty-two-bytes";
 const providerSecret = "provider-secret-must-stay-in-worker";
 const model = "gpt-5-mini";
+const modelProfile = "openrouter-primary";
+const provider = "openrouter";
+const apiKeyBinding = "MODEL_PROVIDER_KEY_OPENROUTER";
+const modelApiUrl = "https://openrouter.ai/api/v1/chat/completions";
+const profileFingerprint = "3QG5IK1SUpLgTSiglYLrOSFXP8A-jzCFzw_qdec7wgM";
+const identity = { modelProfile, provider, model, profileFingerprint };
+const modelProfilesJson = JSON.stringify({
+  default: modelProfile,
+  profiles: {
+    [modelProfile]: {
+      provider,
+      protocol: "openai-chat",
+      model,
+      apiUrl: modelApiUrl,
+      apiKeyBinding,
+    },
+  },
+});
 
-function env(): Env {
-  return {
+function env(
+  profilesJson = modelProfilesJson,
+  secrets: Readonly<Record<string, string>> = { [apiKeyBinding]: providerSecret },
+): Env {
+  const bindings: Env = {
     Sandbox: {} as Env["Sandbox"],
     RUN_CAPABILITIES: {} as Env["RUN_CAPABILITIES"],
     RUN_SESSIONS: {} as Env["RUN_SESSIONS"],
     CONTROL_PLANE_TOKEN: controlToken,
     RUN_TOKEN_SECRET: runSecret,
-    OPENAI_API_KEY: providerSecret,
-    OPENAI_MODEL: model,
-    MODEL_API_URL: "https://api.openai.com/v1/chat/completions",
+    MODEL_PROFILES_JSON: profilesJson,
   };
+  for (const [binding, secret] of Object.entries(secrets)) Reflect.set(bindings, binding, secret);
+  return bindings;
 }
 
 const runId = "11111111-1111-4111-8111-111111111111";
@@ -85,7 +107,7 @@ function validSandboxResponse(status: "completed" | "failed" | "cancelled" = "co
 function requestBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     instruction: "Change hello.py without touching other files.",
-    model,
+    modelProfile,
     files: [{ path: "hello.py", content: "print('hello')\n" }],
     allowedPaths: ["hello.py"],
     checks: [["git", "diff", "--check"]],
@@ -178,6 +200,8 @@ function dependencies(handle: SandboxHandle): TestDependencies {
       sessions.set(id, {
         runId: id,
         status: "queued",
+        modelProfile: summary.modelProfile,
+        provider: summary.provider,
         model: summary.model,
         createdAt,
         updatedAt: createdAt,
@@ -351,6 +375,53 @@ async function completeRun(
   return response;
 }
 
+describe("GET /v1/model-profiles", () => {
+  it("returns only safe operator-managed profile metadata", async () => {
+    const response = await handleRequest(
+      getRequest("/v1/model-profiles"),
+      env(),
+      dependencies(sandbox()),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      default: modelProfile,
+      profiles: [{ id: modelProfile, provider, protocol: "openai-chat", model, ready: true }],
+    });
+    expect(JSON.stringify(body)).not.toContain(modelApiUrl);
+    expect(JSON.stringify(body)).not.toContain(apiKeyBinding);
+    expect(JSON.stringify(body)).not.toContain(providerSecret);
+    expect(JSON.stringify(body)).not.toContain(profileFingerprint);
+  });
+
+  it("requires control-plane authentication", async () => {
+    const response = await handleRequest(
+      getRequest("/v1/model-profiles", "wrong"),
+      env(),
+      dependencies(sandbox()),
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("marks a configured profile unready without exposing its missing binding", async () => {
+    const response = await handleRequest(
+      getRequest("/v1/model-profiles"),
+      env(modelProfilesJson, {}),
+      dependencies(sandbox()),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      default: modelProfile,
+      profiles: [{ id: modelProfile, provider, protocol: "openai-chat", model, ready: false }],
+    });
+    expect(JSON.stringify(body)).not.toContain(apiKeyBinding);
+  });
+});
+
 describe("POST /v1/runs", () => {
   it("exposes a minimal unauthenticated health route", async () => {
     const response = await handleRequest(
@@ -368,6 +439,34 @@ describe("POST /v1/runs", () => {
     const response = await handleRequest(request("/v1/runs", requestBody(), "wrong"), env(), deps);
 
     expect(response.status).toBe(401);
+    expect(deps.getSandbox).not.toHaveBeenCalled();
+  });
+
+  it("fails before creating a run when the selected profile secret is missing", async () => {
+    const deps = dependencies(sandbox());
+    const response = await handleRequest(
+      request("/v1/runs", requestBody()),
+      env(modelProfilesJson, {}),
+      deps,
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "internal_error" });
+    expect(deps.createRunSession).not.toHaveBeenCalled();
+    expect(deps.getSandbox).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on a malformed operator profile catalog", async () => {
+    const deps = dependencies(sandbox());
+    const response = await handleRequest(
+      request("/v1/runs", requestBody()),
+      env('{"default":"missing","profiles":{}}'),
+      deps,
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "internal_error" });
+    expect(deps.createRunSession).not.toHaveBeenCalled();
     expect(deps.getSandbox).not.toHaveBeenCalled();
   });
 
@@ -427,13 +526,17 @@ describe("POST /v1/runs", () => {
       Buffer.from((approvalTokenWrite?.[1] as string).split(".")[0]!, "base64url").toString("utf8"),
     ) as Record<string, unknown>;
     expect(modelCapability.aud).toBe("/internal/v1/chat/completions");
+    expect(modelCapability).toMatchObject(identity);
+    expect(JSON.stringify(modelCapability)).not.toContain(modelApiUrl);
+    expect(JSON.stringify(modelCapability)).not.toContain(apiKeyBinding);
+    expect(JSON.stringify(modelCapability)).not.toContain(providerSecret);
     expect(eventCapability.aud).toBe("/internal/v1/runs/events");
     expect(approvalCapability.aud).toBe("/internal/v1/runs/approvals");
     expect(handle.readFileStream).toHaveBeenCalledWith("/workspace/response.json");
     expect(deps.activateCapability).toHaveBeenCalledWith(
       expect.anything(),
       runId,
-      model,
+      identity,
       now + LIMITS.runTokenSeconds * 1_000,
       14,
     );
@@ -445,7 +548,9 @@ describe("POST /v1/runs", () => {
     { files: [{ path: "../escape.py", content: "x = 1" }] },
     { allowedPaths: ["missing.py"] },
     { checks: [["sh", "-c", "pytest"]] },
-    { model: "another-model" },
+    { modelProfile: "unknown-profile" },
+    { model },
+    { apiUrl: "https://attacker.example/v1/chat/completions" },
   ])("rejects an unsafe contract before sandbox allocation: %j", async (override) => {
     const handle = sandbox();
     const deps = dependencies(handle);
@@ -828,6 +933,8 @@ describe("RunSession APIs", () => {
     expect(body).toMatchObject({
       runId,
       status: "completed",
+      modelProfile,
+      provider,
       model,
       summary: "fixed",
       terminalReason: "verified",
@@ -878,6 +985,8 @@ describe("RunSession APIs", () => {
     const deps = dependencies(handle);
     await deps.createRunSession(env(), runId, {
       instruction: "running",
+      modelProfile,
+      provider,
       model,
       allowedPaths: ["hello.py"],
       checks: [["git", "diff", "--check"]],
@@ -909,6 +1018,8 @@ describe("RunSession APIs", () => {
     const deps = dependencies(handle);
     await deps.createRunSession(env(), runId, {
       instruction: "running",
+      modelProfile,
+      provider,
       model,
       allowedPaths: ["hello.py"],
       checks: [["git", "diff", "--check"]],
@@ -948,6 +1059,8 @@ describe("RunSession APIs", () => {
     const deps = dependencies(handle);
     await deps.createRunSession(env(), runId, {
       instruction: "running",
+      modelProfile,
+      provider,
       model,
       allowedPaths: ["hello.py"],
       checks: [["git", "diff", "--check"]],
@@ -957,7 +1070,7 @@ describe("RunSession APIs", () => {
     const token = await createRunToken(
       runSecret,
       runId,
-      model,
+      identity,
       Math.floor(now / 1000),
       "/internal/v1/runs/events",
     );
@@ -989,7 +1102,7 @@ describe("RunSession APIs", () => {
     const token = await createRunToken(
       runSecret,
       runId,
-      model,
+      identity,
       Math.floor(now / 1000),
       "/internal/v1/runs/events",
     );
@@ -1009,7 +1122,7 @@ describe("RunSession APIs", () => {
     const token = await createRunToken(
       runSecret,
       runId,
-      model,
+      identity,
       Math.floor(now / 1000),
       "/internal/v1/runs/events",
     );
@@ -1049,7 +1162,7 @@ describe("RunSession APIs", () => {
     const token = await createRunToken(
       runSecret,
       runId,
-      model,
+      identity,
       Math.floor(now / 1000),
       "/internal/v1/runs/events",
     );
@@ -1067,6 +1180,8 @@ describe("RunSession APIs", () => {
     const deps = dependencies(handle);
     await deps.createRunSession(env(), runId, {
       instruction: "running",
+      modelProfile,
+      provider,
       model,
       allowedPaths: ["hello.py"],
       checks: [["git", "diff", "--check"]],
@@ -1076,7 +1191,7 @@ describe("RunSession APIs", () => {
     const token = await createRunToken(
       runSecret,
       runId,
-      model,
+      identity,
       Math.floor(now / 1000),
       "/internal/v1/runs/approvals",
     );
@@ -1102,7 +1217,7 @@ describe("RunSession APIs", () => {
     const token = await createRunToken(
       runSecret,
       runId,
-      model,
+      identity,
       Math.floor(now / 1000),
       "/internal/v1/runs/events",
     );
@@ -1117,7 +1232,7 @@ describe("RunSession APIs", () => {
   });
 
   it("rejects the model-proxy token on internal live event appends", async () => {
-    const token = await createRunToken(runSecret, runId, model, Math.floor(now / 1000));
+    const token = await createRunToken(runSecret, runId, identity, Math.floor(now / 1000));
     const response = await handleRequest(
       request(
         `/internal/v1/runs/${runId}/events`,
@@ -1142,7 +1257,7 @@ describe("RunSession APIs", () => {
   });
 
   it("rejects wrong event audience before parsing the event body", async () => {
-    const token = await createRunToken(runSecret, runId, model, Math.floor(now / 1000));
+    const token = await createRunToken(runSecret, runId, identity, Math.floor(now / 1000));
     const response = await handleRequest(
       request(`/internal/v1/runs/${runId}/events`, { lines: ["not-json\n"] }, token),
       env(),
@@ -1157,6 +1272,8 @@ describe("RunSession APIs", () => {
     const deps = dependencies(handle);
     await deps.createRunSession(env(), runId, {
       instruction: "running",
+      modelProfile,
+      provider,
       model,
       allowedPaths: ["hello.py"],
       checks: [["git", "diff", "--check"]],
@@ -1250,6 +1367,8 @@ describe("RunSession APIs", () => {
     const deps = dependencies(handle);
     await deps.createRunSession(env(), runId, {
       instruction: "pending",
+      modelProfile,
+      provider,
       model,
       allowedPaths: ["hello.py"],
       checks: [["git", "diff", "--check"]],
@@ -1294,18 +1413,18 @@ describe("RunSession APIs", () => {
 describe("internal model proxy", () => {
   it("enforces run-token audiences independently of routes", async () => {
     const issuedAt = Math.floor(now / 1000);
-    const chatToken = await createRunToken(runSecret, "run-1", model, issuedAt);
+    const chatToken = await createRunToken(runSecret, "run-1", identity, issuedAt);
     const eventToken = await createRunToken(
       runSecret,
       "run-1",
-      model,
+      identity,
       issuedAt,
       "/internal/v1/runs/events",
     );
     const approvalToken = await createRunToken(
       runSecret,
       "run-1",
-      model,
+      identity,
       issuedAt,
       "/internal/v1/runs/approvals",
     );
@@ -1341,7 +1460,7 @@ describe("internal model proxy", () => {
       }),
     );
     deps.fetch = upstream;
-    const token = await createRunToken(runSecret, "run-1", model, Math.floor(now / 1000));
+    const token = await createRunToken(runSecret, "run-1", identity, Math.floor(now / 1000));
     const capability = JSON.parse(
       Buffer.from(token.split(".")[0]!, "base64url").toString("utf8"),
     ) as Record<string, unknown>;
@@ -1363,10 +1482,125 @@ describe("internal model proxy", () => {
     expect(response.status).toBe(200);
     expect(upstream).toHaveBeenCalledTimes(1);
     const [url, init] = upstream.mock.calls[0]!;
-    expect(url).toBe("https://api.openai.com/v1/chat/completions");
+    expect(url).toBe(modelApiUrl);
     expect(init.headers.authorization).toBe(`Bearer ${providerSecret}`);
     expect(JSON.parse(init.body)).toMatchObject({ model, stream: false, max_tokens: 4096 });
     expect(await response.text()).not.toContain(providerSecret);
+  });
+
+  it("routes a second profile to only its configured endpoint and secret", async () => {
+    const secondProfile = "nvidia-nim";
+    const secondProvider = "nvidia-nim";
+    const secondApiUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+    const secondBinding = "MODEL_PROVIDER_KEY_NVIDIA_NIM";
+    const secondSecret = "second-provider-secret";
+    const profilesJson = JSON.stringify({
+      default: modelProfile,
+      profiles: {
+        [modelProfile]: {
+          provider,
+          protocol: "openai-chat",
+          model,
+          apiUrl: modelApiUrl,
+          apiKeyBinding,
+        },
+        [secondProfile]: {
+          provider: secondProvider,
+          protocol: "openai-chat",
+          model,
+          apiUrl: secondApiUrl,
+          apiKeyBinding: secondBinding,
+        },
+      },
+    });
+    const catalog = await parseModelProfiles(profilesJson);
+    const route = catalog.profiles.get(secondProfile)!;
+    const secondIdentity = {
+      modelProfile: route.modelProfile,
+      provider: route.provider,
+      model: route.model,
+      profileFingerprint: route.profileFingerprint,
+    };
+    const deps = dependencies(sandbox());
+    deps.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const token = await createRunToken(
+      runSecret,
+      "run-2",
+      secondIdentity,
+      Math.floor(now / 1000),
+    );
+
+    const response = await handleRequest(
+      request(
+        "/internal/v1/chat/completions",
+        { model, messages: [{ role: "user", content: "hello" }] },
+        token,
+      ),
+      env(profilesJson, {
+        [apiKeyBinding]: providerSecret,
+        [secondBinding]: secondSecret,
+      }),
+      deps,
+    );
+
+    expect(response.status).toBe(200);
+    const [url, init] = (deps.fetch as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(url).toBe(secondApiUrl);
+    expect(init.headers.authorization).toBe(`Bearer ${secondSecret}`);
+    expect(JSON.stringify(init)).not.toContain(providerSecret);
+  });
+
+  it("rejects a capability after its operator profile route changes", async () => {
+    const changedProfiles = JSON.stringify({
+      default: modelProfile,
+      profiles: {
+        [modelProfile]: {
+          provider,
+          protocol: "openai-chat",
+          model,
+          apiUrl: "https://api.groq.com/openai/v1/chat/completions",
+          apiKeyBinding,
+        },
+      },
+    });
+    const deps = dependencies(sandbox());
+    const token = await createRunToken(runSecret, "run-1", identity, Math.floor(now / 1000));
+
+    const response = await handleRequest(
+      request(
+        "/internal/v1/chat/completions",
+        { model, messages: [{ role: "user", content: "hello" }] },
+        token,
+      ),
+      env(changedProfiles),
+      deps,
+    );
+
+    expect(response.status).toBe(401);
+    expect(deps.fetch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed without leaking details when the selected provider secret is missing", async () => {
+    const deps = dependencies(sandbox());
+    const token = await createRunToken(runSecret, "run-1", identity, Math.floor(now / 1000));
+
+    const response = await handleRequest(
+      request(
+        "/internal/v1/chat/completions",
+        { model, messages: [{ role: "user", content: "hello" }] },
+        token,
+      ),
+      env(modelProfilesJson, {}),
+      deps,
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "internal_error" });
+    expect(deps.fetch).not.toHaveBeenCalled();
   });
 
   it("rejects an event-append token on the model proxy", async () => {
@@ -1374,7 +1608,7 @@ describe("internal model proxy", () => {
     const token = await createRunToken(
       runSecret,
       "run-1",
-      model,
+      identity,
       Math.floor(now / 1000),
       "/internal/v1/runs/events",
     );
@@ -1398,7 +1632,7 @@ describe("internal model proxy", () => {
     const token = await createRunToken(
       runSecret,
       "run-1",
-      model,
+      identity,
       Math.floor(now / 1000) - LIMITS.runTokenSeconds - 1,
     );
     const response = await handleRequest(
@@ -1431,7 +1665,7 @@ describe("internal model proxy", () => {
         { headers: { "content-type": "application/json" } },
       ),
     );
-    const token = await createRunToken(runSecret, "run-1", model, Math.floor(now / 1000));
+    const token = await createRunToken(runSecret, "run-1", identity, Math.floor(now / 1000));
 
     const response = await handleRequest(
       request(
@@ -1450,7 +1684,7 @@ describe("internal model proxy", () => {
   it("rejects extra OpenAI fields and model substitution", async () => {
     const handle = sandbox();
     const deps = dependencies(handle);
-    const token = await createRunToken(runSecret, "run-1", model, Math.floor(now / 1000));
+    const token = await createRunToken(runSecret, "run-1", identity, Math.floor(now / 1000));
     const response = await handleRequest(
       request(
         "/internal/v1/chat/completions",
