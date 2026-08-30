@@ -114,7 +114,16 @@
 2. **過濾幻覺工具名** (`dialect.py`) — `parse_tool_calls()` 增加 `if tool_map and tool_def is None: continue`，跳過不在工具列表中的 `<invoke>` 區塊。
 3. **未知工具錯誤處理** (`loop.py`) — `_prepare_tool_call()` 捕捉 `ValueError` 轉為 `ToolExecutionError('unknown_tool:name')`；主迴圈返回 `ToolObservation(ok=False)` 含可用工具列表，讓模型自我修正而非 crash。
 
-**結果：** 待驗證。
+**結果：** 模型已能成功使用 replace_text（3 次成功修改 README.md），但仍嘗試 apply_patch 導致錯誤，進入第三輪修復。
+
+### 第三輪修復（commit 0cf76de）
+
+針對弱模型持續無法正確使用 apply_patch 的問題：
+
+1. **過濾 apply_patch** — `XmlDialect.excluded_tools` 返回 `frozenset({"apply_patch"})`，弱模型的 tool catalog 不再包含 apply_patch
+2. **models.py** — `inband_tools` 建構時過濾 `excluded_tools`，模型只看到 replace_text、write_file 等較簡單的工具
+
+**觀察：** 第二輪修復後，模型已能成功使用 replace_text（3 次成功修改 README.md），但仍然嘗試 apply_patch 導致錯誤。移除 apply_patch 後模型應不再嘗試。首次回應延遲 30s+ 是 OpenRouter 免費模型排隊問題，需 streaming 才能根本解決（暫不處理）。
 
 ## 狀態
 
@@ -123,4 +132,5 @@
 - [x] P0-2 Graceful step limit — wind-down summary call at max_steps
 - [x] P0-3 Stall guard / recovery — read-only stall nudge after 4 consecutive read-only steps
 - [x] 第二輪修復 — tool instructions 範例、幻覺工具過濾、unknown tool 錯誤處理
-- [ ] 實際用免費模型 smoke test 驗證第二輪修復效果
+- [x] 第三輪修復 — 過濾 apply_patch，弱模型只用簡單工具
+- [ ] 實際用免費模型 smoke test 驗證第三輪修復效果
