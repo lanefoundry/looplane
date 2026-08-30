@@ -717,7 +717,8 @@ def _permission_guard_from_config(
             extra_user_deny_rules=deny_tool or (),
         )
     except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     mode = _enter_dangerous_mode(dangerous)
     return (
         PermissionGuard(
