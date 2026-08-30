@@ -122,6 +122,7 @@ RETRY_BACKOFF_BASE_SECONDS = 1.0
 RETRY_MAX_DELAY_SECONDS = 30.0
 RETRY_SERVER_HINT_MAX_SECONDS = 300.0
 RETRY_JITTER_FRACTION = 0.15
+READ_ONLY_STALL_THRESHOLD = 4
 
 
 def retry_delay_seconds(attempt: int, retry_after_seconds: float | None) -> float:
@@ -215,6 +216,7 @@ class AgentRunner:
         self._last_fingerprint: str | None = None
         self._repeat_count = 0
         self._made_changes = False
+        self._consecutive_read_only_steps = 0
         self._test_log: list[str] = []
         self._executor: ToolExecutor | None = None
         self._last_verification: tuple[VerificationOutcome, ...] = ()
@@ -1613,6 +1615,45 @@ class AgentRunner:
             raise last_error
         raise AssertionError("unreachable: retry loop must return or raise")
 
+    async def _complete_model_wind_down(self, deadline: float) -> ModelTurn | None:
+        """One toolless model call for the wind-down summary.
+
+        Similar to ``_complete_model_or_cancel`` but passes an empty tools
+        list so the model can only produce a text response.  Retries once on
+        transient errors; anything else is silently swallowed by the caller.
+        """
+
+        remaining = self._remaining(deadline)
+        model_task = asyncio.create_task(
+            self.model.complete(self._messages, tools=())
+        )
+        cancel_task = asyncio.create_task(self._cancel_requested.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (model_task, cancel_task),
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                model_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await model_task
+                return None
+            if cancel_task in done and self._cancel_requested.is_set():
+                model_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await model_task
+                return None
+            return await model_task
+        finally:
+            if not model_task.done():
+                model_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await model_task
+            cancel_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await cancel_task
+
     async def _backoff_sleep(self, delay: float) -> None:
         """Wait out the retry backoff; user cancellation ends the wait early."""
 
@@ -2245,6 +2286,7 @@ class AgentRunner:
                 )
 
                 if turn.tool_calls:
+                    turn_had_non_read = False
                     call_index = 0
                     while call_index < len(turn.tool_calls):
                         call = turn.tool_calls[call_index]
@@ -2264,6 +2306,8 @@ class AgentRunner:
                                     summary=turn.content or final_summary,
                                 )
                             raise
+                        if effect is not ToolEffect.READ:
+                            turn_had_non_read = True
                         if decision == ApprovalDecision.CANCEL:
                             return await self._finish(
                                 status=RunStatus.CANCELLED,
@@ -2404,6 +2448,27 @@ class AgentRunner:
                                 summary=("Run cancelled by user after the current tool completed."),
                             )
                         call_index += 1
+                    # -- read-only stall guard --
+                    if turn_had_non_read:
+                        self._consecutive_read_only_steps = 0
+                    else:
+                        self._consecutive_read_only_steps += 1
+                        if self._consecutive_read_only_steps >= READ_ONLY_STALL_THRESHOLD:
+                            steps_left = self.task.limits.max_steps - self._step
+                            nudge = (
+                                f"Warning: You have spent {self._consecutive_read_only_steps} "
+                                "consecutive steps only reading files without making any changes. "
+                                f"You are running low on steps ({steps_left} remaining). "
+                                "Stop exploring and start implementing the solution now. "
+                                "Use replace_text or apply_patch to make the necessary code changes."
+                            )
+                            self._messages.append(Message(role="user", content=nudge))
+                            await self._event(
+                                "loop.read_only_stall_nudge",
+                                consecutive_read_only_steps=self._consecutive_read_only_steps,
+                                steps_remaining=steps_left,
+                            )
+                            self._consecutive_read_only_steps = 0
                     continue
 
                 if turn.finish_reason == "length":
@@ -2482,6 +2547,31 @@ class AgentRunner:
                     )
                 )
                 await self._checkpoint(RunStatus.VERIFYING, verification_passed=False)
+
+            # -- wind-down: give the model one last toolless call to summarize --
+            wind_down_message = Message(
+                role="user",
+                content=(
+                    "You have used all available steps. Tools are now disabled. "
+                    "Provide a brief text summary of what you accomplished and what remains."
+                ),
+            )
+            self._messages.append(wind_down_message)
+            try:
+                await self._event("loop.wind_down_started", step=self._step)
+                wind_down_turn = await self._complete_model_wind_down(deadline)
+                if wind_down_turn is not None:
+                    self._record_model_usage("wind_down", self.model, wind_down_turn.usage)
+                    wind_down_text = wind_down_turn.content or ""
+                    if wind_down_text:
+                        final_summary = wind_down_text
+                    self._messages.append(wind_down_turn.as_message())
+                    await self._event(
+                        "loop.wind_down_completed",
+                        content=bounded_text(wind_down_text, 2_000),
+                    )
+            except (TimeoutError, ProviderError):
+                await self._event("loop.wind_down_failed")
 
             return await self._finish(
                 status=RunStatus.FAILED,

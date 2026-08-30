@@ -1269,6 +1269,7 @@ def _model_from_env(
     tool_calling: bool,
     allow_custom_provider_endpoint: bool,
     experimental_subscription: bool = False,
+    dialect_flag: str = "auto",
 ) -> ModelProvider:
     from looplane.codex_oauth import (
         CodexCredentialManager,
@@ -1276,6 +1277,7 @@ def _model_from_env(
         CodexOAuthClient,
         OpenAICodexResponsesModel,
     )
+    from looplane.dialect import resolve_dialect
     from looplane.models import (
         AnthropicModel,
         GeminiModel,
@@ -1285,15 +1287,24 @@ def _model_from_env(
     )
     from looplane.native_credentials import resolve_native_field
 
+    force = dialect_flag if dialect_flag != "auto" else None
+
     if provider == "openai-compatible":
+        dialect = resolve_dialect(
+            model, supports_tool_calling=tool_calling or None, force_dialect=force,
+        )
         return OpenAICompatibleModel(
             model=model,
             api_key=resolve_native_field("openai-compatible", "api_key"),
             base_url=base_url or os.environ.get("OPENAI_BASE_URL"),
             supports_tool_calling=tool_calling,
+            dialect=dialect,
         )
     if provider == "ollama":
         ollama_url = base_url or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434/v1")
+        dialect = resolve_dialect(
+            model, supports_tool_calling=tool_calling or None, force_dialect=force,
+        )
         return OpenAICompatibleModel(
             model=model,
             base_url=ollama_url,
@@ -1306,6 +1317,7 @@ def _model_from_env(
             # useful action into several truncated agent steps.
             max_tokens=4_096,
             user_message_prefix="/no_think\n",
+            dialect=dialect,
         )
     if provider == "openai-codex":
         with _STARTUP.span("model.codex_oauth"):
@@ -1365,12 +1377,16 @@ def _model_from_env(
                 supports_tool_calling=tool_calling,
                 allow_custom_endpoint=True,  # base_url comes from the fixed provider catalog
             )
+        dialect = resolve_dialect(
+            model, supports_tool_calling=tool_calling or None, force_dialect=force,
+        )
         return OpenAICompatibleModel(
             model=model,
             api_key=api_key,
             base_url=base_url,
             supports_tool_calling=tool_calling,
             provider_name=provider,
+            dialect=dialect,
         )
     raise typer.BadParameter(f"unsupported provider: {provider}")
 
@@ -2975,6 +2991,16 @@ def run(
             help="Run native verification checks through the local OS sandbox.",
         ),
     ] = True,
+    dialect: Annotated[
+        str,
+        typer.Option(
+            "--dialect",
+            help=(
+                "Tool calling mode. 'auto' uses in-band XML for models that lack "
+                "native tool calling; 'xml' forces in-band; 'native' forces native."
+            ),
+        ),
+    ] = "auto",
 ) -> None:
     """Run one non-interactive task (Codex-style `exec`; `run` remains an alias)."""
 
@@ -3017,6 +3043,7 @@ def run(
         tool_calling=tool_calling,
         allow_custom_provider_endpoint=allow_custom_provider_endpoint,
         experimental_subscription=experimental_subscription,
+        dialect_flag=dialect,
     )
     try:
         result = asyncio.run(

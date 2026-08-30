@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
+from looplane.dialect import Dialect, encode_inband_history
 
 from looplane.cache_strategy import (
     ProviderCacheTrace,
@@ -529,6 +530,22 @@ class ScriptedModel:
         """No-op lifecycle hook matching real providers."""
 
 
+def _inject_tool_instructions(
+    native_messages: list[dict[str, Any]],
+    tool_instructions: str,
+) -> None:
+    """Append in-band tool instructions to the first system message (in-place).
+
+    If no system message exists, a new one is prepended to the list.
+    """
+    for msg in native_messages:
+        if msg.get("role") == "system":
+            existing = msg.get("content") or ""
+            msg["content"] = f"{existing}\n\n{tool_instructions}" if existing else tool_instructions
+            return
+    native_messages.insert(0, {"role": "system", "content": tool_instructions})
+
+
 class OpenAICompatibleModel:
     """Adapter for OpenAI and compatible Chat Completions endpoints."""
 
@@ -549,6 +566,7 @@ class OpenAICompatibleModel:
         extra_body: Mapping[str, Any] | None = None,
         max_tokens: int | None = None,
         user_message_prefix: str | None = None,
+        dialect: Dialect | None = None,
     ) -> None:
         validated_base_url = _validated_openai_base_url(base_url)
         if key is not None and api_key is not None:
@@ -575,6 +593,7 @@ class OpenAICompatibleModel:
                 f"extra_body cannot override canonical request fields: {sorted(reserved)}"
             )
         self._owns_client = client is None
+        self._dialect = dialect
         self.last_cache_trace: ProviderCacheTrace | None = None
         self._client = client or AsyncOpenAI(
             # OpenAI-compatible local servers such as Ollama do not authenticate,
@@ -594,7 +613,20 @@ class OpenAICompatibleModel:
         messages: Sequence[ConversationItem],
         tools: Sequence[ToolDefinition] = (),
     ) -> ModelTurn:
-        native_messages = _openai_messages(messages)
+        # When an in-band dialect is active and tools are requested, convert
+        # the conversation so the model sees tool calls/results as XML text
+        # and receives tool definitions inside the system prompt instead of
+        # the native ``tools`` request field.
+        inband_tools = tools if (self._dialect is not None and tools) else ()
+        if inband_tools:
+            encoded_messages = encode_inband_history(messages, self._dialect)
+            native_messages = _openai_messages(encoded_messages)
+            # Inject dialect tool instructions into (or after) the system message.
+            tool_instructions = self._dialect.tool_instructions(inband_tools)
+            _inject_tool_instructions(native_messages, tool_instructions)
+        else:
+            native_messages = _openai_messages(messages)
+
         if self._user_message_prefix:
             for message in native_messages:
                 if message.get("role") == "user" and isinstance(message.get("content"), str):
@@ -604,7 +636,7 @@ class OpenAICompatibleModel:
             "model": self.model_id,
             "messages": native_messages,
         }
-        if tools:
+        if tools and not inband_tools:
             request["tools"] = _openai_tools(tools)
         if self._extra_body:
             request["extra_body"] = dict(self._extra_body)
@@ -636,11 +668,6 @@ class OpenAICompatibleModel:
             ) from exc
         choices = getattr(response, "choices", None)
         if not choices:
-            # HTTP succeeded (no APIStatusError raised above) but the body arrived
-            # without a usable ``choices`` field. OpenRouter and other gateways
-            # occasionally emit half-formed SSE trailers that parse as valid
-            # JSON with an empty/missing choices array; treat that as transient
-            # so the retry layer gets a chance to recover on the next attempt.
             raise ProviderError(
                 "openai-compatible response contained no choices",
                 kind=ProviderErrorKind.RETRYABLE,
@@ -648,17 +675,23 @@ class OpenAICompatibleModel:
             )
         choice = choices[0]
         message = choice.message
-        calls = tuple(
-            ToolCall(
-                tool_call_id=call.id,
-                name=call.function.name,
-                arguments=_parse_arguments(
-                    call.function.arguments,
-                    provider_name=self.provider_name,
-                ),
+
+        # Extract tool calls — either from in-band XML parsing or native provider response.
+        if inband_tools and message.content:
+            calls = tuple(self._dialect.parse_tool_calls(message.content, inband_tools))
+        else:
+            calls = tuple(
+                ToolCall(
+                    tool_call_id=call.id,
+                    name=call.function.name,
+                    arguments=_parse_arguments(
+                        call.function.arguments,
+                        provider_name=self.provider_name,
+                    ),
+                )
+                for call in (message.tool_calls or ())
             )
-            for call in (message.tool_calls or ())
-        )
+
         raw_usage = getattr(response, "usage", None)
         details = getattr(raw_usage, "prompt_tokens_details", None)
         completion_details = getattr(raw_usage, "completion_tokens_details", None)
@@ -669,11 +702,14 @@ class OpenAICompatibleModel:
             reasoning_tokens=getattr(completion_details, "reasoning_tokens", 0) or 0,
             provider_total_tokens=getattr(raw_usage, "total_tokens", None),
         )
+        finish_reason = getattr(choice, "finish_reason", None)
+        if inband_tools and calls:
+            finish_reason = "tool_calls"
         return ModelTurn(
             content=message.content,
             tool_calls=calls,
             usage=usage,
-            finish_reason=getattr(choice, "finish_reason", None),
+            finish_reason=finish_reason,
         )
 
     async def aclose(self) -> None:
