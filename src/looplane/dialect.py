@@ -145,30 +145,18 @@ THEN halt.
 ### Reading a file (always read before editing):
 <invoke name="read_file"><parameter name="path">src/main.py</parameter></invoke>
 
-### Editing with replace_text (for small, single-site changes):
+### Editing with replace_text:
 <invoke name="replace_text"><parameter name="path">src/main.py</parameter><parameter name="old_text">old exact text</parameter><parameter name="new_text">new text</parameter></invoke>
 
-### Editing with apply_patch (for multi-hunk edits, large rewrites, or new files):
-<invoke name="apply_patch"><parameter name="patch">--- a/src/main.py
-+++ b/src/main.py
-@@ -1,3 +1,3 @@
- line before
--old line
-+new line
- line after
-</parameter></invoke>
-
 ## Efficiency rules
-- For LARGE changes (translating, reformatting, or rewriting most of a file): read the file once, \
-then use ONE apply_patch call with a comprehensive diff covering all changes
-- For SMALL changes (fixing a typo, changing one line): use replace_text
-- NEVER make more than 3 replace_text calls on the same file — switch to a single apply_patch instead
+- For LARGE changes (translating, reformatting, or rewriting most of a file): use replace_text \
+with LARGE blocks — replace entire sections or the whole file at once, not line by line
+- NEVER make more than 5 replace_text calls total — combine edits into fewer, larger replacements
 - Minimize total tool calls — fewer calls = faster completion
 
 ## Important rules
 - ALWAYS read a file before editing it — never guess the content
 - replace_text: the old_text must EXACTLY match existing file content (character-for-character)
-- apply_patch: content MUST be a unified text diff (starting with --- a/ and +++ b/)
 - Only use tools listed above — do NOT invent tool names"""
 
 # Regex to match <invoke name="...">...</invoke> blocks.
