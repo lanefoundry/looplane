@@ -89,10 +89,38 @@
 4. **Streaming** — 改用 streaming API，改善延遲感知 + 可偵測 mid-generation stall
 5. **Per-request timeout** — 對 OpenAICompatibleModel 加 60-120s timeout
 
+
+## 修復迭代紀錄
+
+### 第一輪修復（commit 9a1d2cd）
+
+三個 P0 修復：
+
+1. **In-band XML dialect** (`src/looplane/dialect.py`) — 新增 `XmlDialect`，對不支援原生 function calling 的模型（`:free`、minimax 等），在 system prompt 注入工具目錄 XML 格式，模型以文字輸出 `<invoke>` XML，由 regex 解析回 `ToolCall`。
+2. **Graceful wind-down** (`src/looplane/loop.py`) — max_steps 到達後不再暴力終止，改注入「tools disabled」訊息做一次 toolless model call 讓模型總結。
+3. **Read-only stall guard** (`src/looplane/loop.py`) — 連續 4 步只有 READ effect 時注入 nudge 訊息提醒模型開始行動。
+
+**結果：** Dialect 生效，模型從「只探索不行動」變成「嘗試呼叫寫入工具」。但工具呼叫參數品質太差，全部失敗：
+- `apply_patch accepts unified text diffs only` — 模型不知道要傳 unified diff 格式
+- `exact replacement requires one match; observed 0` — 模型未先讀檔就猜測 old_text
+- `tool has no approval effect classification: 'tool_program'` — 模型幻覺出不存在的工具名
+- `error ValueError` — 未知工具名導致未處理的 crash
+
+### 第二輪修復（commit 1f54d78）
+
+針對工具呼叫品質問題：
+
+1. **Tool catalog 使用範例** (`dialect.py`) — `_TOOL_CATALOG_TEMPLATE` 新增 Usage examples 區段，示範 read_file → replace_text → apply_patch 正確流程，強調 unified diff 格式和 exact match 要求。
+2. **過濾幻覺工具名** (`dialect.py`) — `parse_tool_calls()` 增加 `if tool_map and tool_def is None: continue`，跳過不在工具列表中的 `<invoke>` 區塊。
+3. **未知工具錯誤處理** (`loop.py`) — `_prepare_tool_call()` 捕捉 `ValueError` 轉為 `ToolExecutionError('unknown_tool:name')`；主迴圈返回 `ToolObservation(ok=False)` 含可用工具列表，讓模型自我修正而非 crash。
+
+**結果：** 待驗證。
+
 ## 狀態
 
 - [x] 診斷完成
 - [x] P0-1 In-band dialect 實作 — `src/looplane/dialect.py` + `models.py` / `cli.py` 整合
 - [x] P0-2 Graceful step limit — wind-down summary call at max_steps
 - [x] P0-3 Stall guard / recovery — read-only stall nudge after 4 consecutive read-only steps
-- [ ] 實際用免費模型 smoke test 驗證
+- [x] 第二輪修復 — tool instructions 範例、幻覺工具過濾、unknown tool 錯誤處理
+- [ ] 實際用免費模型 smoke test 驗證第二輪修復效果
