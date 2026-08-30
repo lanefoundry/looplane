@@ -145,10 +145,10 @@ THEN halt.
 ### Reading a file (always read before editing):
 <invoke name="read_file"><parameter name="path">src/main.py</parameter></invoke>
 
-### Editing with replace_text (preferred for small changes):
+### Editing with replace_text (for small, single-site changes):
 <invoke name="replace_text"><parameter name="path">src/main.py</parameter><parameter name="old_text">old exact text</parameter><parameter name="new_text">new text</parameter></invoke>
 
-### Editing with apply_patch (for multi-hunk or new files):
+### Editing with apply_patch (for multi-hunk edits, large rewrites, or new files):
 <invoke name="apply_patch"><parameter name="patch">--- a/src/main.py
 +++ b/src/main.py
 @@ -1,3 +1,3 @@
@@ -157,6 +157,13 @@ THEN halt.
 +new line
  line after
 </parameter></invoke>
+
+## Efficiency rules
+- For LARGE changes (translating, reformatting, or rewriting most of a file): read the file once, \
+then use ONE apply_patch call with a comprehensive diff covering all changes
+- For SMALL changes (fixing a typo, changing one line): use replace_text
+- NEVER make more than 3 replace_text calls on the same file — switch to a single apply_patch instead
+- Minimize total tool calls — fewer calls = faster completion
 
 ## Important rules
 - ALWAYS read a file before editing it — never guess the content
