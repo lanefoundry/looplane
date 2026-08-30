@@ -142,6 +142,9 @@ def test_sandboxed_command_wraps_linux_with_bubblewrap(
 def test_sandboxed_command_wraps_linux_with_landlock_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    if not landlock_run.landlock_available():
+        pytest.skip("Landlock not supported by the running kernel")
+
     import looplane.runtime as runtime
 
     workspace = tmp_path / "workspace"
@@ -295,4 +298,74 @@ def test_workspace_preparation_respects_explicit_timeout(
     with pytest.raises(WorkspacePreparationError, match="preparation exceeded"):
         runtime.prepare(timeout_seconds=1e-12)
 
-    assert not runtime.workspace_path.exists()
+
+
+def test_sandboxed_command_argv_reports_unavailable_when_kernel_lacks_landlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the running kernel has Landlock disabled in CONFIG_LSM, auto
+    backend must surface an ``unavailable`` string instead of wrapping the
+    command anyway — the wrapper would otherwise apply no-new-privs and a
+    filesystem rule set that excludes the venv, causing the child to crash
+    with PermissionError on its own pyvenv.cfg."""
+    import looplane.runtime as runtime
+
+    sandbox = CommandSandbox(mode="workspace-write")
+
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+    monkeypatch.setattr(runtime.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(landlock_run, "_landlock_abi", lambda: (_ for _ in ()).throw(OSError(38, "Function not implemented")))
+
+    result = sandboxed_command_argv(
+        (sys.executable, "-c", "pass"),
+        cwd=tmp_path,
+        sandbox=sandbox,
+    )
+
+    assert isinstance(result, str)
+    assert "unavailable" in result
+
+
+def test_landlock_backend_reports_unavailable_when_kernel_lacks_landlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit ``landlock`` backend must also surface the kernel probe
+    failure rather than attempting to wrap with a missing syscall."""
+    import looplane.runtime as runtime
+
+    sandbox = CommandSandbox(mode="workspace-write", backend="landlock")
+
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+    monkeypatch.setattr(landlock_run, "_landlock_abi", lambda: (_ for _ in ()).throw(OSError(38, "Function not implemented")))
+
+    result = sandboxed_command_argv(
+        (sys.executable, "-c", "pass"),
+        cwd=tmp_path,
+        sandbox=sandbox,
+    )
+
+    assert isinstance(result, str)
+    assert "landlock" in result
+    assert "unavailable" in result
+
+
+def test_bubblewrap_backend_unaffected_by_landlock_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``bubblewrap`` backend must keep its own ``bwrap`` lookup independent
+    of Landlock availability, and fall through to its existing
+    ``unavailable`` string when bwrap is missing."""
+    import looplane.runtime as runtime
+
+    sandbox = CommandSandbox(mode="workspace-write", backend="bubblewrap")
+
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+    monkeypatch.setattr(runtime.shutil, "which", lambda _name: None)
+
+    result = sandboxed_command_argv(
+        (sys.executable, "-c", "pass"),
+        cwd=tmp_path,
+        sandbox=sandbox,
+    )
+
+

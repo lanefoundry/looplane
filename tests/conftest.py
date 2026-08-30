@@ -17,6 +17,19 @@ def _isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PCA_CONFIG", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _force_tty_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin terminal width so typer/click help rendering matches across
+    local dev, CI runners, and bare ``CliRunner`` invocations. GitHub
+    Actions runners expose a wide default ``COLUMNS`` that pushes typer
+    0.26's help formatter into a boxed layout where option names get
+    hidden inside border padding, so assertions like ``--api-url in
+    result.output`` silently fail even though the option is present.
+    """
+
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setenv("LINES", "40")
+
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "evals" / "fixtures" / "tiny-python-bug"
 
 

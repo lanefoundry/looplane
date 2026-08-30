@@ -13,6 +13,8 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from looplane.landlock_run import landlock_available
+
 
 _FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _SAFE_ENV_KEYS = {
@@ -448,6 +450,10 @@ def sandboxed_command_argv(
                 )
             if sandbox.backend == "bubblewrap":
                 return "Linux bubblewrap sandbox is unavailable"
+        if sandbox.backend == "landlock" and not landlock_available():
+            return "Linux landlock sandbox is unavailable"
+        if sandbox.backend == "auto" and not landlock_available():
+            return "Linux command sandbox is unavailable on this kernel"
         return _linux_landlock_argv(
             argv,
             cwd,

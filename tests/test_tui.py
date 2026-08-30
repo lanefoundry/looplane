@@ -1263,6 +1263,7 @@ async def test_tui_approval_is_attached_inline_and_maps_once_decision(tmp_path: 
     async with app.run_test(size=(100, 30)) as pilot:
         await _wait_until(lambda: bool(app.query(InlineApprovalBlock)))
         approval = app.query_one(InlineApprovalBlock)
+        await _wait_until(lambda: bool(approval.query(".preview")))
         preview = approval.query_one(".preview", Static)
         assert str(preview.content) == "replace src/[example].py x[/bold]"
         choices = approval.query_one(".approval-choices", OptionList)

@@ -227,6 +227,23 @@ def _install_seccomp_filter() -> None:
     program = SockFprog(len=len(filters), filter=filters_array)
     _prctl_seccomp(program)
 
+def landlock_available() -> bool:
+    """Return True iff the running Linux kernel actually supports Landlock.
+
+    Older kernels (< 5.13) lack the syscall and some kernels ship with
+    ``CONFIG_SECURITY_LANDLOCK=y`` but disabled from ``CONFIG_LSM``, which makes
+    the syscall return ``ENOSYS``. Either case means we cannot rely on
+    Landlock to wrap a subprocess and the caller should fall back to an
+    ``unavailable`` error rather than letting the wrapper crash inside the
+    child after ``PR_SET_NO_NEW_PRIVS`` has already restricted filesystem
+    access.
+    """
+    try:
+        _landlock_abi()
+    except OSError:
+        return False
+    return True
+
 
 def _landlock_abi() -> int:
     return _syscall(_SYS_LANDLOCK_CREATE_RULESET, 0, 0, _LANDLOCK_CREATE_RULESET_VERSION)
