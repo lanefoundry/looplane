@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import os
 import re
+import secrets
 import selectors
 import subprocess
 import threading
 import time
+from base64 import urlsafe_b64encode
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import httpx
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -28,8 +33,248 @@ MCP_PROTOCOL_VERSION = "2026-07-28"
 _SAFE_SERVER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+def _b64url(payload: bytes) -> str:
+    return urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
 class McpError(RuntimeError):
     """User-visible MCP client failure."""
+
+
+class NativeMcpOAuthConfig(BaseModel):
+    """Operator-owned MCP authorization-code metadata.
+
+    Rivumi can create and persist its own grant, or consume an operator-supplied
+    access token from the configured environment variable.
+    """
+
+    grant_type: str = Field(default="authorization_code", alias="grantType")
+    issuer: str | None = Field(default=None, min_length=1)
+    authorization_endpoint: str = Field(min_length=1, alias="authorizationEndpoint")
+    token_endpoint: str = Field(min_length=1, alias="tokenEndpoint")
+    client_id: str = Field(min_length=1, max_length=256, alias="clientId")
+    redirect_uri: str = Field(min_length=1, alias="redirectUri")
+    scopes: tuple[str, ...] = Field(default=(), max_length=64)
+    access_token_env_var: str = Field(min_length=1, alias="accessTokenEnvVar")
+
+    @field_validator("grant_type")
+    @classmethod
+    def validate_grant_type(cls, value: str) -> str:
+        if value != "authorization_code":
+            raise ValueError("MCP OAuth grantType must be authorization_code")
+        return value
+
+    @field_validator("issuer", "authorization_endpoint", "token_endpoint")
+    @classmethod
+    def validate_https_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        parsed = urlparse(normalized)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("MCP OAuth URLs must be absolute HTTPS URLs")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("MCP OAuth URLs must not contain credentials, query, or fragment")
+        return normalized.rstrip("/")
+
+    @field_validator("redirect_uri")
+    @classmethod
+    def validate_redirect_uri(cls, value: str) -> str:
+        normalized = value.strip()
+        parsed = urlparse(normalized)
+        if parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+            return normalized
+        if parsed.scheme == "https" and parsed.netloc and not (parsed.query or parsed.fragment):
+            return normalized.rstrip("/")
+        raise ValueError("MCP OAuth redirectUri must be HTTPS or HTTP loopback")
+
+    @field_validator("access_token_env_var")
+    @classmethod
+    def validate_access_token_env_var(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(
+                "MCP OAuth accessTokenEnvVar must be a valid environment variable name"
+            )
+        return value
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for scope in value:
+            scope = scope.strip()
+            if not scope or any(char.isspace() for char in scope) or "\x00" in scope:
+                raise ValueError("MCP OAuth scopes must be non-blank tokens")
+            normalized.append(scope)
+        return tuple(dict.fromkeys(normalized))
+
+
+@dataclass(frozen=True)
+class McpAuthorization:
+    url: str
+    verifier: str
+    state: str
+    redirect_uri: str
+
+
+class McpOAuthCredential(BaseModel):
+    """Stored credential for one Rivumi-owned MCP OAuth grant."""
+
+    access_token: str = Field(min_length=1, alias="accessToken")
+    refresh_token: str | None = Field(default=None, alias="refreshToken")
+    expires_at: float | None = Field(default=None, alias="expiresAt")
+    token_type: str = Field(default="Bearer", alias="tokenType")
+
+    @field_validator("access_token", "refresh_token", "token_type")
+    @classmethod
+    def text_is_safe(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or "\x00" in value:
+            raise ValueError("MCP OAuth credential values must be non-blank and NUL-free")
+        return value
+
+
+def mcp_oauth_credential_path(server_name: str) -> Path:
+    NativeMcpServerConfig(name=server_name, url="https://example.invalid/mcp")
+    state_root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return state_root / "rivumi" / "auth" / f"mcp-{server_name}.json"
+
+
+class McpOAuthCredentialStore:
+    """Single-server MCP OAuth credential store with symlink rejection and 0600 writes."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path).expanduser()
+
+    def load(self) -> McpOAuthCredential | None:
+        import stat
+
+        try:
+            metadata = self.path.lstat()
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise PermissionError("MCP OAuth credential path must be a regular file")
+        if metadata.st_mode & 0o077:
+            raise PermissionError("MCP OAuth credential file permissions must be 0600")
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("MCP OAuth credential file could not be read") from exc
+        return McpOAuthCredential.model_validate(value)
+
+    def save(self, credential: McpOAuthCredential) -> None:
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)
+        temporary = self.path.with_name(f".{self.path.name}.{secrets.token_hex(8)}.tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            payload = credential.model_dump_json(by_alias=True, exclude_none=True).encode()
+            with os.fdopen(descriptor, "wb", closefd=True) as stream:
+                descriptor = -1
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            with contextlib.suppress(FileNotFoundError):
+                temporary.unlink()
+
+    def clear(self) -> bool:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            return False
+        return True
+
+
+class McpOAuthClient:
+    """PKCE authorization-code helper for one MCP HTTP server config."""
+
+    def __init__(self, client: httpx.Client | None = None) -> None:
+        self._owns_client = client is None
+        self._http = client or httpx.Client(timeout=30.0, follow_redirects=False)
+
+    def begin_login(self, config: NativeMcpOAuthConfig) -> McpAuthorization:
+        verifier = secrets.token_urlsafe(64)
+        challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+        state = secrets.token_urlsafe(24)
+        query = urlencode(
+            {
+                "response_type": "code",
+                "client_id": config.client_id,
+                "redirect_uri": config.redirect_uri,
+                "scope": " ".join(config.scopes),
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": state,
+            }
+        )
+        return McpAuthorization(
+            url=f"{config.authorization_endpoint}?{query}",
+            verifier=verifier,
+            state=state,
+            redirect_uri=config.redirect_uri,
+        )
+
+    def exchange_code(
+        self,
+        config: NativeMcpOAuthConfig,
+        *,
+        code: str,
+        verifier: str,
+    ) -> McpOAuthCredential:
+        response = self._http.post(
+            config.token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "client_id": config.client_id,
+                "code": code,
+                "code_verifier": verifier,
+                "redirect_uri": config.redirect_uri,
+            },
+        )
+        if response.status_code >= 400:
+            raise McpError(f"MCP OAuth token exchange failed ({response.status_code})")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise McpError("MCP OAuth token exchange returned invalid JSON") from exc
+        access_token = payload.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise McpError("MCP OAuth token exchange did not return an access token")
+        refresh_token = payload.get("refresh_token")
+        expires_at: float | None = None
+        expires_in = payload.get("expires_in")
+        if isinstance(expires_in, int | float) and expires_in > 0:
+            expires_at = time.time() + float(expires_in)
+        token_type = payload.get("token_type")
+        return McpOAuthCredential(
+            accessToken=access_token,
+            refreshToken=refresh_token if isinstance(refresh_token, str) else None,
+            expiresAt=expires_at,
+            tokenType=token_type if isinstance(token_type, str) else "Bearer",
+        )
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._http.close()
+
+
+def parse_mcp_oauth_callback(url: str, *, expected_state: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    if query.get("state") != [expected_state]:
+        raise ValueError("MCP OAuth callback state did not match")
+    codes = query.get("code")
+    if not codes or not codes[0]:
+        raise ValueError("MCP OAuth callback did not contain an authorization code")
+    return codes[0]
 
 
 class NativeMcpServerConfig(BaseModel):
@@ -42,6 +287,7 @@ class NativeMcpServerConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     headers: dict[str, str] = Field(default_factory=dict)
     bearer_token_env_var: str | None = Field(default=None, alias="bearerTokenEnvVar")
+    oauth: NativeMcpOAuthConfig | None = None
     enabled: bool = True
 
     @field_validator("name")
@@ -125,6 +371,10 @@ class NativeMcpServerConfig(BaseModel):
             raise ValueError("MCP HTTP server config cannot set args")
         if self.url is not None and self.env:
             raise ValueError("MCP HTTP server config cannot set process env")
+        if self.oauth is not None and self.url is None:
+            raise ValueError("MCP OAuth authorization-code config requires HTTP transport")
+        if self.oauth is not None and self.bearer_token_env_var is not None:
+            raise ValueError("MCP config cannot set both oauth and bearerTokenEnvVar")
         return self
 
 
@@ -198,6 +448,56 @@ def mcp_tool_trust_metadata(tool: Mapping[str, Any]) -> tuple[bool, bool]:
     if not read_only:
         return False, False
     return True, True
+
+
+def discover_http_auth_metadata(
+    url: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any] | None:
+    """Discover MCP protected-resource metadata from a Streamable HTTP endpoint.
+
+    Discovery is deliberately read-only.  A 401 ``WWW-Authenticate`` challenge
+    may point at OAuth protected-resource metadata; this helper returns the
+    bounded JSON object for callers that want to prepare an authorization-code
+    config explicitly.
+    """
+
+    owned_client = client is None
+    client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=False)
+    try:
+        response = client.get(
+            url,
+            headers={"accept": "application/json", "mcp-protocol-version": MCP_PROTOCOL_VERSION},
+            timeout=timeout_seconds,
+        )
+        challenge = response.headers.get("www-authenticate", "")
+        metadata_url = _www_authenticate_parameter(challenge, "resource_metadata")
+        if metadata_url is None:
+            metadata_url = _well_known_oauth_resource_url(url)
+        metadata_response = client.get(metadata_url, timeout=timeout_seconds)
+        if metadata_response.status_code != 200:
+            return None
+        payload = metadata_response.json()
+        return dict(payload) if isinstance(payload, Mapping) else None
+    except (httpx.HTTPError, ValueError):
+        return None
+    finally:
+        if owned_client:
+            client.close()
+
+
+def _www_authenticate_parameter(challenge: str, name: str) -> str | None:
+    match = re.search(rf'{re.escape(name)}=(?:"([^"]+)"|([^,\s]+))', challenge)
+    if match is None:
+        return None
+    return (match.group(1) or match.group(2)).strip()
+
+
+def _well_known_oauth_resource_url(url: str) -> str:
+    parsed = urlparse(url)
+    return urljoin(f"{parsed.scheme}://{parsed.netloc}", "/.well-known/oauth-protected-resource")
 
 
 def native_mcp_resource_tool_name(server_name: str, operation: str) -> str:
@@ -648,6 +948,20 @@ class HttpMcpClient(StdioMcpClient):
             if not token:
                 raise McpError(
                     f"MCP bearer token env var {self.config.bearer_token_env_var!r} is unset"
+                )
+            headers["authorization"] = f"Bearer {token}"
+        if self.config.oauth is not None:
+            token = os.environ.get(self.config.oauth.access_token_env_var)
+            if not token:
+                stored = McpOAuthCredentialStore(
+                    mcp_oauth_credential_path(self.config.name)
+                ).load()
+                token = stored.access_token if stored is not None else None
+            if not token:
+                raise McpError(
+                    f"MCP OAuth access token env var "
+                    f"{self.config.oauth.access_token_env_var!r} is unset and no "
+                    "Rivumi-owned MCP credential is configured"
                 )
             headers["authorization"] = f"Bearer {token}"
         return headers

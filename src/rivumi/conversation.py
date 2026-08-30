@@ -46,6 +46,7 @@ class ConversationValidationError(ConversationError, ValueError):
 class ConversationEventKind(StrEnum):
     CREATED = "conversation.created"
     CONTEXT_CHANGED = "context.changed"
+    CONTEXT_COMPACTED = "context.compacted"
     USER_MESSAGE = "user.message"
     ASSISTANT_CHUNK = "assistant.chunk"
     TURN_COMPLETED = "turn.completed"
@@ -239,6 +240,17 @@ class ConversationEvent(ContractModel):
                 raise ValueError(
                     "context.changed requires only runtime and optional model_override"
                 )
+            return self
+        if self.event_type == ConversationEventKind.CONTEXT_COMPACTED:
+            if (
+                self.runtime is not None
+                or self.model_override is not None
+                or self.turn_id is not None
+                or self.text is None
+                or self.reason is not None
+                or self.error is not None
+            ):
+                raise ValueError("context.compacted requires only checkpoint text")
             return self
         if self.runtime is not None or self.model_override is not None:
             raise ValueError("only context.changed can contain runtime context")
@@ -451,6 +463,12 @@ class ConversationStore:
                 if active is not None:
                     raise ConversationValidationError(
                         "conversation context cannot change during an active turn"
+                    )
+                continue
+            if event.event_type == ConversationEventKind.CONTEXT_COMPACTED:
+                if active is not None:
+                    raise ConversationValidationError(
+                        "conversation context cannot compact during an active turn"
                     )
                 continue
             if event.event_type == ConversationEventKind.USER_MESSAGE:
@@ -705,6 +723,41 @@ class ConversationStore:
         await self._write_manifest(manifest)
         return event
 
+    async def append_context_checkpoint(
+        self,
+        lease: ConversationWriterLease,
+        checkpoint: object,
+    ) -> ConversationEvent:
+        """Persist one compacted-context checkpoint between completed turns."""
+
+        self._require_lease(lease)
+        snapshot = await self.load(lease.conversation_dir.name)
+        if snapshot.manifest.active_writer_token != lease.token:
+            raise ConversationValidationError("conversation is fenced by another writer token")
+        if snapshot.manifest.active_turn_id is not None:
+            raise ConversationValidationError("conversation context cannot compact during a turn")
+        if hasattr(checkpoint, "model_dump"):
+            payload = checkpoint.model_dump(mode="json")  # type: ignore[attr-defined]
+        else:
+            payload = checkpoint
+        text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if len(text) > MAX_MESSAGE_CHARS:
+            raise ConversationValidationError("context checkpoint exceeds the event text limit")
+        event = ConversationEvent(
+            conversation_id=snapshot.manifest.conversation_id,
+            sequence=snapshot.manifest.last_event_sequence + 1,
+            event_type=ConversationEventKind.CONTEXT_COMPACTED,
+            text=text,
+        )
+        candidate_events = (*snapshot.events, event)
+        self._validate_lifecycle(candidate_events)
+        await asyncio.to_thread(self._append_line, lease.conversation_dir / "events.jsonl", event)
+        manifest = snapshot.manifest.model_copy(
+            update={"last_event_sequence": event.sequence, "updated_at": datetime.now(UTC)}
+        )
+        await self._write_manifest(manifest)
+        return event
+
     async def list(self) -> tuple[ConversationManifest, ...]:
         await asyncio.to_thread(self._ensure_root)
         manifests: list[ConversationManifest] = []
@@ -826,6 +879,8 @@ class ConversationStore:
             elif event.event_type in _TURN_TERMINALS:
                 user = None
                 assistant_parts = []
+            elif event.event_type == ConversationEventKind.CONTEXT_COMPACTED:
+                continue
         selected: list[ConversationMessage] = []
         used_chars = 0
         for pair in reversed(turns):

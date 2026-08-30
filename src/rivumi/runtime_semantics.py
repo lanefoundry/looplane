@@ -48,6 +48,13 @@ class ContextTelemetry(ContractModel):
             raise ValueError("total_tokens cannot exceed context_window")
         return self
 
+    @property
+    def input_cache_hit_rate(self) -> float | None:
+        return input_cache_hit_rate(
+            input_tokens=self.input_tokens,
+            cached_input_tokens=self.cached_input_tokens,
+        )
+
 
 class RuntimeCapabilities(ContractModel):
     """Explicit semantic features supported by one provider adapter."""
@@ -59,6 +66,20 @@ class RuntimeCapabilities(ContractModel):
     queued_submissions: bool = False
     steer_active_turn: bool = False
     background_task_management: bool = False
+
+
+def input_cache_hit_rate(*, input_tokens: int, cached_input_tokens: int) -> float | None:
+    """Return cached input ratio, or ``None`` before a provider reports input tokens."""
+
+    if input_tokens < 0:
+        raise ValueError("input_tokens cannot be negative")
+    if cached_input_tokens < 0:
+        raise ValueError("cached_input_tokens cannot be negative")
+    if cached_input_tokens > input_tokens:
+        raise ValueError("cached_input_tokens cannot exceed input_tokens")
+    if input_tokens == 0:
+        return None
+    return cached_input_tokens / input_tokens
 
 
 def should_auto_compact_context(

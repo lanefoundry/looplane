@@ -2149,6 +2149,7 @@ async def test_context_command_uses_runtime_token_telemetry_not_character_count(
 
         entry = [item for item in app.query(TimelineEntry) if item.title == "Context"][-1]
         assert "1,000 tokens (exact)" in (entry.detail or "")
+        assert "cached input 400 (44.4% hit)" in (entry.detail or "")
         assert "10.0% of 10,000" in (entry.detail or "")
         assert "characters" not in (entry.detail or "")
 
@@ -3812,4 +3813,5 @@ async def test_usage_command_reports_session_totals(tmp_path: Path) -> None:
         detail_node = entries[-1].query(".timeline-detail")
         detail = entries[-1].query_one(".timeline-detail").render().plain if detail_node else ""
         assert "total 1,500" in detail
+        assert "cached input 200 (20.0% hit)" in detail
         assert "3 turn(s)" in detail

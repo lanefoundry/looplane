@@ -13,6 +13,7 @@ import os
 import stat
 import tempfile
 import time
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path, PureWindowsPath
 from uuid import uuid4
@@ -33,6 +34,11 @@ from rivumi.backends import (
 )
 from rivumi.contracts import RunResult, RunStatus, TaskContract, ToolCall, Usage
 from rivumi.events import atomic_write_json
+from rivumi.instructions import (
+    render_instruction_context,
+    render_instruction_diagnostics,
+    resolve_instruction_documents,
+)
 from rivumi.policy import SafePathPolicy
 from rivumi.runtime import (
     LocalGitWorkspace,
@@ -41,7 +47,13 @@ from rivumi.runtime import (
     sanitized_subprocess_env,
 )
 from rivumi.secret_scan import scan_patch_for_secrets
+from rivumi.skills import load_project_skills, render_skill_context, select_project_skills
 from rivumi.tools import ToolExecutionError, ToolExecutor
+
+EXTERNAL_INSTRUCTION_POLICY_VERSION = "external-instruction-policy-v1"
+MAX_NATIVE_SUPPRESSION_ARGS = 16
+MAX_NATIVE_SUPPRESSION_ENV = 16
+MAX_NATIVE_SUPPRESSION_VALUE_CHARS = 200
 
 EXTERNAL_FAILURE_HINTS: dict[str, str] = {
     "executable_unavailable": (
@@ -77,6 +89,65 @@ def external_failure_hint(terminal_reason: str, backend_name: str) -> str | None
     if template is None:
         return None
     return template.format(name=backend_name)
+
+
+def _bounded_policy_text(value: object, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    if not value or "\x00" in value or len(value) > MAX_NATIVE_SUPPRESSION_VALUE_CHARS:
+        raise ValueError(f"{field} must be bounded and NUL-free")
+    return value
+
+
+def native_instruction_suppression_policy(backend: ExternalAgentBackend) -> dict[str, object]:
+    """Return the backend-declared native duplicate-discovery suppression contract.
+
+    External CLI wrappers may hard-code flags that suppress their own project/user instruction
+    discovery. Rivumi records those declarations separately from its prompt directive so run
+    artifacts do not confuse "requested by prompt" with "enforced by the child runtime CLI".
+    """
+
+    raw_args = getattr(backend, "native_instruction_suppression_args", ())
+    raw_env = getattr(backend, "native_instruction_suppression_env", {})
+    raw_note = getattr(backend, "native_instruction_suppression_note", "")
+
+    if isinstance(raw_args, str) or not isinstance(raw_args, Sequence):
+        raise ValueError("native_instruction_suppression_args must be a bounded sequence")
+    args = tuple(
+        _bounded_policy_text(value, field="native_instruction_suppression_args")
+        for value in raw_args
+    )
+    if len(args) > MAX_NATIVE_SUPPRESSION_ARGS:
+        raise ValueError("native_instruction_suppression_args exceeds max entries")
+
+    if not isinstance(raw_env, Mapping):
+        raise ValueError("native_instruction_suppression_env must be a mapping")
+    env: dict[str, str] = {}
+    for key, value in raw_env.items():
+        name = _bounded_policy_text(key, field="native_instruction_suppression_env key")
+        if not name.replace("_", "A").isalnum() or not (name[0].isalpha() or name[0] == "_"):
+            raise ValueError("native_instruction_suppression_env key must be env-var shaped")
+        env[name] = _bounded_policy_text(value, field="native_instruction_suppression_env value")
+    if len(env) > MAX_NATIVE_SUPPRESSION_ENV:
+        raise ValueError("native_instruction_suppression_env exceeds max entries")
+
+    note = (
+        _bounded_policy_text(raw_note, field="native_instruction_suppression_note")
+        if raw_note
+        else None
+    )
+    configured = bool(args or env)
+    return {
+        "backend_name": backend.backend_name,
+        "status": "configured" if configured else "prompt_only",
+        "argv": list(args),
+        "env": env,
+        "note": note
+        or (
+            "Backend did not declare a stable native instruction-discovery disable control; "
+            "Rivumi projects an explicit suppression directive only."
+        ),
+    }
 
 
 class UnsafeExternalVerificationError(RuntimeError):
@@ -643,6 +714,19 @@ class ExternalCodingRunner:
         await self._write_text("events.jsonl", "")
         await self._write_text("changes.patch", "")
         await self._write_text("test.log", "")
+        await atomic_write_json(
+            self.run_dir / "instruction-resolution.json",
+            {
+                "documents": [],
+                "source_priority": [],
+            },
+            durable=self.durable_artifacts,
+        )
+        await atomic_write_json(
+            self.run_dir / "skill-resolution.json",
+            {"skills": []},
+            durable=self.durable_artifacts,
+        )
 
         workspace_handle = LocalGitWorkspace(
             effective_task.repository,
@@ -670,6 +754,97 @@ class ExternalCodingRunner:
         )
 
         allowed = "\n".join(f"- {path}" for path in effective_task.allowed_paths)
+        instruction_resolution = resolve_instruction_documents(
+            project_root=effective_task.repository,
+        )
+        instruction_context = render_instruction_context(instruction_resolution.documents)
+        instruction_diagnostics = render_instruction_diagnostics(
+            instruction_resolution.diagnostics
+        )
+        instruction_resolution_payload = {
+            "documents": [
+                {
+                    "source": document.source,
+                    "scope": document.scope,
+                }
+                for document in instruction_resolution.documents
+            ],
+            "source_priority": [
+                {
+                    "source": diagnostic.source,
+                    "scope": diagnostic.scope,
+                    "status": diagnostic.status,
+                    "reason": diagnostic.reason,
+                }
+                for diagnostic in instruction_resolution.diagnostics
+            ],
+        }
+        await atomic_write_json(
+            self.run_dir / "instruction-resolution.json",
+            instruction_resolution_payload,
+            durable=self.durable_artifacts,
+        )
+        external_instruction_policy = {
+            "version": EXTERNAL_INSTRUCTION_POLICY_VERSION,
+            "owner": "rivumi",
+            "mode": "projected_resolved_bundle",
+            "duplicate_discovery": "disabled_by_policy",
+            "native_suppression": native_instruction_suppression_policy(self.backend),
+            "runtime_directive": (
+                "Use the resolved Rivumi instruction bundle in this prompt as the authoritative "
+                "project guidance. Do not run or apply the external CLI runtime's own "
+                "AGENTS.md, CLAUDE.md, RIVUMI.md, or equivalent instruction discovery on top "
+                "of this bundle. If the runtime cannot suppress its own discovery, report that "
+                "limitation instead of silently merging duplicate instructions."
+            ),
+            "documents": instruction_resolution_payload["documents"],
+            "source_priority": instruction_resolution_payload["source_priority"],
+        }
+        await atomic_write_json(
+            self.run_dir / "external-instruction-policy.json",
+            external_instruction_policy,
+            durable=self.durable_artifacts,
+        )
+        loaded_skills = load_project_skills(effective_task.repository)
+        skills = select_project_skills(
+            loaded_skills,
+            effective_task.enabled_skills,
+        )
+        skill_context = render_skill_context(skills)
+        skill_resolution_payload = {
+            "enabled_skills": list(effective_task.enabled_skills),
+            "skills": [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "source": skill.source,
+                }
+                for skill in skills
+            ]
+        }
+        await atomic_write_json(
+            self.run_dir / "skill-resolution.json",
+            skill_resolution_payload,
+            durable=self.durable_artifacts,
+        )
+        projected_instructions = (
+            "\n\nResolved Rivumi instruction bundle for this repository:\n"
+            f"[{EXTERNAL_INSTRUCTION_POLICY_VERSION}]\n"
+            f"{external_instruction_policy['runtime_directive']}\n\n"
+            "Native suppression status: "
+            f"{external_instruction_policy['native_suppression']['status']}; "
+            f"{external_instruction_policy['native_suppression']['note']}\n\n"
+            f"{instruction_context}"
+            f"\n\n{instruction_diagnostics}"
+            if instruction_context
+            else ""
+        )
+        projected_skills = (
+            "\n\nResolved Rivumi skill bundle for this repository:\n"
+            f"{skill_context}"
+            if skill_context
+            else ""
+        )
         delegated_task = ExternalAgentTask(
             task_id=effective_task.task_id,
             instruction=(
@@ -677,6 +852,8 @@ class ExternalCodingRunner:
                 "You are editing a disposable Git clone. Make the requested code change only; "
                 "do not commit, push, or access the network. Rivumi will run final checks after "
                 f"you exit. Allowed changed paths:\n{allowed}"
+                f"{projected_instructions}"
+                f"{projected_skills}"
             ),
         )
         backend_result: ExternalAgentResult | None = None
@@ -826,6 +1003,11 @@ class ExternalCodingRunner:
             "checkpoint": str(self.run_dir / "checkpoint.json"),
             "patch": str(self.run_dir / "changes.patch"),
             "test_log": str(self.run_dir / "test.log"),
+            "instruction_resolution": str(self.run_dir / "instruction-resolution.json"),
+            "external_instruction_policy": str(
+                self.run_dir / "external-instruction-policy.json"
+            ),
+            "skill_resolution": str(self.run_dir / "skill-resolution.json"),
             "result": str(self.run_dir / "result.json"),
         }
         if backend_result is not None:

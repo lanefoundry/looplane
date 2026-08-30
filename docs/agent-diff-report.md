@@ -140,22 +140,21 @@ Highest-ROI work completed in this pass:
     injects a one-shot bounded workspace reminder before the next model request, including changed
     files, verification status, recent important paths, and active constraints.
 
-Still open and high ROI, but not completed in this pass:
+Still open after the 2026-08-30 follow-up, or moved into validation/hardening:
 
-1. **Per-role lane expansion** — Static role candidates, opt-in CLI aliases, and an opt-in
-   reviewer lane exist, but Rivumi still lacks automatic summary/parser/scout routing and
-   per-role inheritance/override policy.
-2. **MCP production parity** — Native stdio tools, resources, and prompts now work, but auth
-   flows, streamable HTTP/SSE transport, tool-change refresh, and per-tool trust metadata remain
-   open.
-3. **Local sandbox parity** — Host verification has an opt-in macOS wrapper, named profile/read-root
-   config, and fail-closed guard, but Linux Landlock/seccomp and broader tool/process containment
-   remain open.
-4. **Compaction fallback/replay** — Auto compaction now exists for native-capable conversations,
-   session event-content search, CLI replay JSON, and side-effect-free fork seeds exist, and native
-   loop history fallback now gets post-compact workspace/context reinjection. Remaining work is
-   replay API/serverization, starting safe forked runs, and extending equivalent fallback behavior
-   beyond the native loop.
+1. **Per-role lane expansion** — Static role candidates, opt-in CLI aliases, reviewer lane, and
+   lane/cost telemetry exist. Remaining work is hardening role inheritance/override semantics and
+   deciding whether summary/parser/scout routing should become automatic.
+2. **MCP production parity** — Native stdio/HTTP/SSE tools, resources, prompts, tool-change
+   refresh, OAuth metadata, PKCE login, and app-owned credential storage now work locally.
+   Remaining work is a real authorization server end-to-end run and MCP-specific confirmation UX.
+3. **Local sandbox parity** — Host verification now defaults into local OS sandboxing where the
+   platform can prove containment, and Linux Landlock/seccomp smoke is part of CI. Remaining work is
+   external CI result confirmation plus broadening containment beyond verification commands.
+4. **Compaction fallback/replay** — Auto compaction, deterministic fallback, checkpoint
+   persistence, SDK replay/fork APIs, CLI replay JSON, and safe forked run/workspace creation now
+   exist. Remaining work is provider/live-runtime validation and richer hooks around compaction
+   boundaries.
 
 ## Score Matrix
 
@@ -171,17 +170,17 @@ Still open and high ROI, but not completed in this pass:
 | A6 | Multi-Model Support | 4 | Advanced reviewer lane baseline |
 | A7 | Operational Modes | 4 | Advanced |
 | A8 | Background Execution | 1 | Partial |
-| A9 | Skill / Plugin System | 1 | Not implemented |
-| A10 | Agent Dispatch | 1 | Not implemented |
+| A9 | Skill / Plugin System | 4 | Plugin manifest baseline |
+| A10 | Agent Dispatch | 4 | Named-role fan-out and transaction proposal baseline |
 | A11 | Output Control | 2 | Partial |
 | A12 | Planning & Task Management | 2 | Partial |
 | A13 | MCP Integration | 4 | Advanced stdio surface |
 | A14 | Security & Privacy | 4 | Advanced |
 | A15 | Observability & Cost Tracking | 4 | Advanced |
-| A16 | IDE & External Integration | 0 | Not implemented |
+| A16 | IDE & External Integration | 4 | Packaged VS Code bridge plus WebSocket push |
 | A17 | Command System | 3 | Implemented |
 | A18 | SDK / Programmatic API | 4 | Advanced durable run baseline |
-| A19 | Concurrency Management | 3 | Implemented |
+| A19 | Concurrency Management | 4 | Advanced read-only batching |
 | A20 | Version Migration | 1 | Partial |
 | A21 | File Operation Safety | 4 | Advanced |
 | A22 | Sandbox Execution Environment | 4 | Advanced |
@@ -191,16 +190,16 @@ Still open and high ROI, but not completed in this pass:
 
 | ID | Dimension | Score | Status |
 |---|---|---|---|
-| B1 | Context Assembly Pipeline | 1 | Not implemented (beyond single-prompt template) |
-| B2 | Instruction Layering & Merging | 2 | Baseline implemented |
+| B1 | Context Assembly Pipeline | 3 | Baseline section builder |
+| B2 | Instruction Layering & Merging | 3 | Override/reload/projection baseline |
 | B3 | Memory System | 2 | Baseline implemented |
 | B4 | Conversation History Management | 4 | Advanced |
 | B5 | Token Budget & Allocation | 3 | Implemented |
-| B6 | Dynamic Injection | 1 | Partial |
+| B6 | Dynamic Injection | 3 | Baseline injected context |
 | B7 | Information Retrieval Strategy | 4 | Implemented |
 | B8 | Multimodal Input | 1 | Not implemented |
 | B9 | Context Eviction & Compression | 4 | Advanced |
-| B10 | Cache Strategy | 1 | Not implemented |
+| B10 | Cache Strategy | 4 | Provider hints plus hit-rate display |
 
 ### C. Prompt Engineering
 
@@ -215,22 +214,43 @@ Still open and high ROI, but not completed in this pass:
 
 ## Top Gaps (Highest Impact)
 
-1. **A6/A15 Per-role lane expansion (4/5 foundation)** — fallback, cost estimates, static role
-   candidates, opt-in CLI aliases, and a verified-patch reviewer lane exist, but
-   summary/parser/scout work is not routed automatically and role inheritance/override semantics
-   are not defined.
-2. **A18 Agent as a Service (4/5 foundation)** — Cloudflare runs now start asynchronously with
-   durable status, attachable NDJSON/SSE event reads, approvals, cancellation, artifacts, and a
-   Python attach client; WebSocket parity and a versioned third-party SDK package remain open.
-3. **A22 sandbox defaulting and live proof (4/5)** — Native verification can opt into macOS
-   Seatbelt-style wrapping and Linux bubblewrap/Landlock+seccomp backends, but sandboxed
-   verification is not yet the default and Linux live containment has not been proven in CI here.
-4. **B4 Session replay/search/fork (4/5 foundation)** — JSONL, resume, metadata plus
-   event-content search, compact timeline show, deterministic replay reduction, and CLI replay are
-   strong, but there is no replay API or fork-from-event operation.
-5. **B9 Compaction fallback (4/5)** — Native-capable conversations auto-compact and the native loop
-   now has automatic deterministic history-summary replacement under pressure, but other runtimes
-   still need equivalent fallback behavior plus post-compact context reinjection.
+1. **A10 Multi-agent Planner / Child Transactions** — native named-role fan-out,
+   dependency handoff, host-controlled per-agent model routing, and parent-approved subagent
+   transaction proposals exist. A versioned native planner prompt policy now tells the model when
+   to spawn and sequence roles; remaining work is live trace tuning rather than first
+   implementation.
+2. **B10 Provider Trace Validation** — Anthropic cache_control, OpenAI/Responses
+   prompt_cache_key, provider cache mapping defaults, persisted cache traces, and hit-rate
+   display exist. Remaining work is live repeated-provider cache-reuse validation and deciding
+   whether trace-gated prompt ordering should become a default call-site behavior.
+3. **A16 IDE / LSP Adapter Hardening** — repository-local diagnostics and open-file state can
+   now be bridged into model context, `editors/vscode` is packaged and smoked locally, typed
+   WebSocket IDE context push exists, and `ManagedLspServer` owns long-lived LSP subprocess
+   diagnostics output. Remaining work is language-specific initialize/didOpen/didChange adapter
+   polish, not generic LSP process ownership.
+4. **A3/A19 Rich Tool Programs** — read-only tool programs, modify/check transactions, bounded
+   repeat/branch control flow, and backend turn limiting now exist. Remaining work is deciding
+   whether richer transaction DSL or parallel transaction execution is worth the complexity.
+5. **A9 Runtime Skill Surfacing** — plugin manifests can package skills/hooks, local package
+   install/list CLI UX exists, external runners receive resolved skill bundles, and child
+   app-server `skills/changed` notifications are normalized into runtime timeline events.
+   `TaskContract.enabled_skills` supports on-demand exact skill selection across native and
+   external runners. Plugin manifests also carry bounded discovery metadata, and
+   `ConversationController.compact_context()` runs `pre_compact` / `post_compact` hooks for
+   external-runtime compaction.
+
+Recently moved out of the immediate gap list: A2 dangerous-command allow/ask/deny classification,
+A6/A15 role lanes, A9 local hooks/skills/plugin manifests, A13 MCP authorization-code support, A18 SDK/WebSocket
+attach, A16 IDE/LSP diagnostics bridge, A22 Linux CI sandbox smoke/default verification
+sandboxing, A3/A19 read-only tool programs, A3/A19 modify/check transactions, A3/A19 bounded
+repeat/branch control flow, A3/A19 backend turn limiting, B1 prompt section builder, B4 replay/fork API, B6
+injected context channel, B1/B6 interaction policy, initial git-status projection,
+external app-server runtime context providers, and native provider attachment mapping,
+B2 override/reload/projection, B9 compaction fallback/checkpoint
+persistence, B10 Anthropic stable-prefix cache control, B10 OpenAI/Responses prompt cache keys,
+B10 hit-rate display, and A10 native named-role fan-out/handoff/routing plus parent-approved
+transaction proposals. These now need external
+validation, packaging, and hardening rather than first implementation.
 
 ## Quidproquo Series Optimization Backlog
 
@@ -251,9 +271,12 @@ confirms that the next optimization work should not stop at the six initial ROI 
 4. **Session replay/search/fork** — Existing JSONL artifacts are sufficient raw material. Build a
    deterministic reducer that can replay state, search prior sessions, and fork a new run from a
    chosen event/checkpoint without reusing unsafe side effects.
-5. **Hooks / skills / plugins** — Promote typed events into blocking extension points:
-   `pre_tool_use`, `post_tool_use`, `approval_request`, and `pre_compact` / `post_compact`.
-   Skills should inject knowledge; plugins should package tools/config, not bypass approval.
+5. **Hooks / skills / plugins** — Local markdown skills, opt-in blocking hook commands, plugin
+   manifests, local package install/list UX, and child app-server skill-change timeline events now
+   exist. `TaskContract.enabled_skills` adds on-demand exact skill selection for native and
+   external skill projection. Plugin manifests carry local discovery metadata for future
+   marketplace indexing. External runtime compaction now shares the same `pre_compact` /
+   `post_compact` hook coverage as native fallback compaction.
 6. **LSP diagnostics injection** — Start with pull-on-edit diagnostics after `replace_text` /
    `apply_patch`, then move to long-lived LSP servers with versioned diagnostics and bounded
    deferred injection into the next model turn.
@@ -321,19 +344,30 @@ and session grants.
 #### A3. Tool System — **4/5** (Advanced)
 
 **Evidence:**
-- [src/rivumi/tools.py:41-217] `ToolExecutor` registry of 7 built-ins (list_files/read_file/search_text/git_diff/replace_text/apply_patch/run_check), each with JSON Schema; dynamic schema mutation injects declared verification commands into `run_check`'s enum ([tools.py:93-102]).
+- [src/rivumi/tools.py] `ToolExecutor` registry of 9 built-ins
+  (list_files/read_file/search_text/git_diff/tool_program/tool_transaction/replace_text/apply_patch/run_check),
+  each with JSON Schema; dynamic schema mutation injects declared verification commands into
+  `run_check`'s enum.
 - [src/rivumi/approvals.py:135-152] Every tool statically classified by approval effect; unknown tools fail closed.
 - [src/rivumi/tools.py:246-303] Result budgeting: bounded output chars, truncated reads/searches/listings with markers; read-before-edit version tracking via sha256 ([tools.py:256-264]).
 - [src/rivumi/contracts.py] `ToolDefinition` now includes `read_only` and `concurrency_safe`
   metadata, and built-in read tools advertise both.
+- [src/rivumi/tools.py] `tool_program` executes a bounded read-only tool program in one model
+  tool call, restricted to `list_files`, `read_file`, `search_text`, `git_diff`, bounded
+  `repeat`, and `if_contains`; modify, verification, and MCP calls are rejected.
+- [src/rivumi/tools.py] `tool_transaction` executes bounded modify/check batches over
+  `read_file`, `replace_text`, `apply_patch`, `run_check`, `git_diff`, bounded `repeat`, and
+  `if_contains`; if any step fails, touched paths are restored to their pre-transaction state.
+- [src/rivumi/approvals.py] classifies `tool_transaction` as `modify_execute`, so it is not
+  auto-allowed by edit-only permission modes.
 
 **Cross-ref:** opencode ships one module per tool under `opencode/packages/opencode/src/tool/` (apply_patch.ts, edit.ts, glob.ts, …) with schema + permission metadata per tool.
 
-**Gaps:** No deferred/lazy tool loading or tool search; native set fixed at 7 tools; MCP tools
-exist only via external runtimes.
+**Gaps:** No deferred/lazy tool loading or tool search. The control-flow DSL is intentionally
+minimal; it has no variables, computed predicates, or parallel branches.
 
 **Action plan:** Add native MCP/lazy tool discovery so the tool surface can grow without bloating
-every prompt.
+every prompt, then use real traces to decide whether richer transaction DSL features are justified.
 
 **Effort:** Low–Medium
 
@@ -429,33 +463,111 @@ selectors.
 
 **Effort:** High
 
-#### A9. Skill / Plugin System — **1/5** (Not implemented)
+#### A9. Skill / Plugin System — **4/5** (Plugin manifest baseline)
 
 **Evidence:**
-- src/rivumi/prompts.py:1-14 — single versioned system-prompt constant (`CODING_AGENT_PROMPT_VERSION = "m3-exact-edit-v2"`); no skill/prompt-template loading from files.
-- src/rivumi/codex_app_server.py:323-328 — child codex launched with `--disable plugins --disable remote_plugin -c hooks.state={}`; a `skills/changed` notification merely whitelisted as ignorable protocol noise (codex_app_server.py:94).
-- docs/research/2026-08-22-capability-current-state-audit.md:119-120 — plugins/skills explicitly listed as deferred future capabilities.
+- src/rivumi/skills.py and src/rivumi/loop.py — repository-local `.rivumi/skills/*.md` markdown
+  files are loaded with strict symlink/size/frontmatter checks and rendered as bounded,
+  lower-priority project skill guidance in the native system prompt.
+- src/rivumi/hooks.py and src/rivumi/loop.py — `.rivumi/hooks.json` defines exact-argv hook
+  commands for `pre_tool_use`, `post_tool_use`, `approval_request`, `pre_compact`, and
+  `post_compact`; project hook execution is disabled unless `RIVUMI_ENABLE_PROJECT_HOOKS=1`,
+  receives JSON on stdin, has per-hook timeouts, and can deny but not auto-allow or bypass
+  approval.
+- src/rivumi/sdk.py and docs/sdk.md — hook and skill contracts are exported through the stable 0.x
+  facade and documented for embedders.
+- [src/rivumi/plugins.py] loads `.rivumi/plugins/*.json` manifests with bounded UTF-8 JSON,
+  safe plugin names, repository-contained markdown skill references, and raw hook package data.
+- [src/rivumi/plugins.py] installs a local plugin manifest plus referenced markdown skill files
+  into `.rivumi/plugins/`; [src/rivumi/cli.py] exposes `rivumi plugin install` and
+  `rivumi plugin list`.
+- [src/rivumi/skills.py] loads plugin-packaged markdown skills as `plugin.skill` prompt guidance;
+  [src/rivumi/hooks.py] merges plugin-packaged hooks into the same deny-only hook registry.
+- [src/rivumi/external_runner.py] projects the same resolved project/plugin skill bundle into
+  delegated external-agent prompts and persists `skill-resolution.json` artifact metadata.
+- src/rivumi/codex_app_server.py:323-328 — child codex still launches with `--disable plugins
+  --disable remote_plugin -c hooks.state={}`.
+- [src/rivumi/conversation_runtime.py] defines `RuntimeSkillsChangedEvent`; [src/rivumi/codex_app_server.py]
+  converts child app-server `skills/changed` notifications into provider-neutral timeline events
+  with bounded source, summary, and skill-name fields.
+- [src/rivumi/contracts.py] adds `TaskContract.enabled_skills`; [src/rivumi/skills.py] provides
+  `select_project_skills()`, which native and external runners use to project only exact
+  on-demand skill matches while preserving load-all default behavior.
+- [src/rivumi/plugins.py] validates `PluginDiscoveryMetadata` with bounded keywords, homepage,
+  repository, license, and author fields; [src/rivumi/cli.py] exposes that metadata through
+  `rivumi plugin install/list --json` and text listing.
+- [src/rivumi/conversation_controller.py] runs `pre_compact` and `post_compact` hooks around both
+  local fallback compaction and native-capable external runtime compaction; a pre hook denial stops
+  delegated compaction before the runtime request is sent.
+- [src/rivumi/prompts.py] exposes `render_interaction_prompt_context()` as a stable interaction
+  policy section for response style, direct-answer behavior, and ask-mode guidance.
+- [src/rivumi/prompts.py] extends `render_workspace_prompt_context()` with bounded initial
+  `git_status_short` projection; [src/rivumi/loop.py] collects that snapshot after the disposable
+  workspace is prepared.
 
 **Cross-ref:** codex ships a full skills crate (`codex-rs/skills/src/loading.rs`, `parser.rs` — markdown skill discovery/selection) plus `plugin/`; opencode has a plugin loader (`packages/opencode/src/plugin/`) with marketplace install tests.
 
-**Gaps:** No user/project skill directories, no on-demand loading, no plugin manifest format, no extension API surface at all. Even child-runtime skills/plugins are hard-disabled rather than surfaced through the TUI.
+**Gaps:** Plugin manifests can package skills/hooks and local packages have install/list CLI UX,
+external runners receive the resolved skill bundle, child app-server skill changes surface in the
+timeline, on-demand skill selection exists, and manifests carry local discovery metadata.
+Compaction hooks now cover native history-summary fallback plus `ConversationController`
+external-runtime compaction.
 
-**Action plan:** Define a minimal skill contract (markdown + frontmatter) injected into `CODING_AGENT_SYSTEM_PROMPT` assembly, mirroring codex's loading.rs shape; second step: stop force-disabling child skills and expose `skills/changed` in the timeline.
+**Action plan:** Keep the extension points stable while future marketplace installs remain
+explicit and local-first.
 
 **Effort:** Medium
 
-#### A10. Agent Dispatch — **1/5** (Not implemented)
+#### A10. Agent Dispatch — **4/5** (Named-role fan-out and transaction proposal baseline)
 
 **Evidence:**
-- grep `subagent|spawn_agent|dispatchAgent|worktree|coordinator` → no agent-spawning code in src/; hits are asyncio task plumbing (`asyncio.create_task` for I/O), not subagents.
-- src/rivumi/conversation_workspace.py:1-5 — git clone/worktree isolation exists but is one disposable workspace per run, not per-agent dispatch.
+- [src/rivumi/subagents.py] `derive_subagent_task()` creates a child `TaskContract` that
+  preserves the parent repository/base boundary while allowing narrowed instructions,
+  allowed paths, verification, and limits.
+- [src/rivumi/subagents.py] `run_subagent_task()` runs the child through `AgentRunner` under
+  `run_root/subagents/<id>`, so every child gets a separate Rivumi run directory and disposable
+  workspace.
+- [src/rivumi/subagents.py] defines named read-only subagent roles: `scout`, `analyst`, and
+  `reviewer`.
+- [src/rivumi/subagents.py] `normalize_subagent_schedule()` is the host-side scheduler baseline:
+  it validates model-requested subagent graphs, rejects unsafe ids, duplicate ids, unsupported
+  roles, unknown dependencies, cycles, and out-of-budget step counts, then assigns deterministic
+  execution waves.
+- [src/rivumi/loop.py] exposes a native-loop synthetic `dispatch_subagents` tool. The tool accepts
+  up to four named-role agents, validates narrowed `allowed_paths`, runs dependency-free agents
+  concurrently, injects bounded `depends_on` handoff summaries into later agents, and returns a
+  bounded `[subagents-v1]` observation to the parent turn.
+- [src/rivumi/loop.py] emits `subagents.schedule_normalized` before execution so live traces can
+  show the actual host-approved graph and wave layout.
+- [src/rivumi/subagents.py] and [scripts/analyze_subagent_schedules.py] aggregate those schedule
+  traces into role counts, wave counts, transaction counts, and tuning warnings.
+- [src/rivumi/cli.py] exposes the same analyzer through
+  `rivumi sessions --analyze-subagents <run>` for persisted run artifacts.
+- [scripts/smoke_subagent_schedule_analysis.py] runs a local analyst/reviewer dispatch and
+  analyzes the persisted run artifact end to end.
+- [src/rivumi/loop.py] accepts `subagent_models`, a host-controlled route map keyed by subagent
+  id or role. Tool arguments cannot choose provider/model strings; routing remains outside the
+  model-controlled payload.
+- Child subagents run with `HeadlessApprovalPolicy(allow_modify=False, allow_execute=False)` and
+  `enable_subagent_dispatch=False`, so children cannot directly edit, execute checks, or recurse.
+- [src/rivumi/loop.py] lets each dispatched subagent carry one optional `proposed_transaction`.
+  After that child completes, the parent executes the steps sequentially through the existing
+  `tool_transaction` approval, permission-guard, check, and rollback path, then reports
+  `transaction: ok` or a failed dispatch observation.
+- [src/rivumi/prompts.py] defines a versioned subagent planner policy for when to use `scout`,
+  `analyst`, `reviewer`, `depends_on`, and `proposed_transaction`; [src/rivumi/loop.py] injects it
+  into the stable tool-policy prompt only when native subagent dispatch is enabled.
+- [src/rivumi/sdk.py] exports the subagent helpers and normalized schedule contract for embedders.
 - src/rivumi/codex_app_server.py:1398-1399 — external runtime's `collabAgentToolCall` items mapped to `RuntimeToolKind.AGENT` for display/approval only (passthrough, no rivumi-side dispatch).
 
 **Cross-ref:** pi-mono has a dedicated agent package with harness composition (`pi-mono/packages/agent/src/harness/`, `agent-loop.ts`); codex-rs has collaboration modes (`codex-rs/collaboration-mode-templates/`) and Claude Code-style AgentTool equivalents.
 
-**Gaps:** No named agent types, no parallel fan-out, no inter-agent communication, no per-agent permission/model routing.
+**Gaps:** Native dispatch now has a deterministic host-side scheduler baseline, CLI analyzer, and
+local real-run smoke evidence. It does not yet reshape valid graphs based on broader production
+trace corpora.
 
-**Action plan:** Lowest-cost first step: let the native loop spawn read-only "scout" subagent runs reusing AgentRunner with restricted SafePathPolicy + HeadlessApprovalPolicy; workspace isolation infra already exists.
+**Action plan:** Keep collecting `subagents.schedule_normalized` production traces after adoption;
+only add graph reshaping if observed traces show recurring planner mistakes.
 
 **Effort:** High
 
@@ -506,15 +618,22 @@ selectors.
 - src/rivumi/approvals.py:146-155 — dynamic MCP tools fail closed into `ToolEffect.EXECUTE`
   unless MCP trust metadata marks them read-only/safe; fixed resource/prompt bridge tools are
   `ToolEffect.READ` and can join read-only batches.
+- src/rivumi/mcp_client.py and src/rivumi/cli.py — authorization-code OAuth metadata is validated
+  for HTTP MCP servers, PKCE login/exchange creates a Rivumi-owned grant, credentials are stored in
+  a private 0600 app store, `auth login-mcp/status-mcp/logout-mcp` manage that grant, and HTTP MCP
+  clients use either the configured env token or the app-owned stored credential.
+- src/rivumi/mcp_client.py — protected-resource auth metadata can be discovered from
+  `WWW-Authenticate` or `.well-known/oauth-protected-resource`, giving operators a dynamic source
+  for OAuth/trust configuration instead of static-only config.
 
 **Cross-ref:** codex-rs embeds an official MCP client (`codex-rs/rmcp-client/`) and exposes MCP server mode (`mcp-server/`, `codex-mcp/`); Claude Code normalizes tools as `mcp__server__tool` with OAuth auth flow.
 
-**Gaps:** OAuth-style interactive auth is still not implemented. Dynamic trust metadata is config
-driven rather than discovered from every server, and sensitive dynamic operations still rely on
-the approval gate rather than richer MCP-specific confirmation UX.
+**Gaps:** OAuth-style interactive auth is implemented and covered by mocks, but still needs a
+real MCP authorization server end-to-end run. Sensitive dynamic operations still rely on the
+general approval gate rather than richer MCP-specific confirmation UX.
 
-**Action plan:** Add an explicit OAuth/authorization-code integration path where server metadata
-requires it, then expand MCP-specific confirmation copy for sensitive operations.
+**Action plan:** Run one real authorization-code MCP server through `auth login-mcp`, then expand
+MCP-specific confirmation copy for sensitive operations.
 
 **Effort:** High
 
@@ -566,20 +685,51 @@ and export turn-level usage/cost events through OTel.
 
 **Effort:** Low
 
-#### A16. IDE & External Integration — **0/5** (Not implemented)
+#### A16. IDE & External Integration — **5/5** (Packaged VS Code bridge plus managed LSP supervision)
 
 **Evidence:**
-- grep `vscode|jetbrains|lsp|deeplink|registerProtocol` over src/ → only false positives (`urllib.parse.urlsplit`).
-- Surface inventory is CLI (typer, cli.py) + Textual TUI (tui.py) + one headless HTTP gateway (gateway.py) and Cloudflare sandbox entrypoint — none are IDE-facing.
-- .research audit line 119 — LSP listed among deferred future capabilities.
+- [src/rivumi/ide.py] defines a bounded, LSP-compatible diagnostic snapshot schema
+  (`IdeDiagnostic`, `IdeRange`, `IdePosition`, severity 1-4) and safely loads optional
+  repository-local `.rivumi/ide/diagnostics.json`.
+- [src/rivumi/ide.py] accepts either Rivumi-shaped diagnostics or LSP `publishDiagnostics`
+  envelopes with `file://` URIs, rejects paths outside the repository, symlinks, oversized files,
+  invalid UTF-8, and malformed ranges.
+- [src/rivumi/loop.py] pulls the diagnostics snapshot before model requests and injects changed
+  snapshots as `InjectedContext(source="ide_diagnostics")`, emitting `ide.diagnostics_injected`
+  or `ide.diagnostics_ignored`.
+- [src/rivumi/ide.py] also loads `.rivumi/ide/open-files.json` editor state with active file,
+  cursor, and selection ranges; [src/rivumi/loop.py] injects changed snapshots as
+  `InjectedContext(source="ide_open_files")`.
+- [src/rivumi/ide.py] builds repository-bounded VS Code and `file://` editor deep links for
+  diagnostics and open-file cursor positions; [src/rivumi/loop.py] includes those links in
+  injected IDE context.
+- [src/rivumi/sdk.py] exports the IDE diagnostic types, renderer, and deep-link helper for
+  editor adapters.
+- [editors/vscode] contains a packageable VS Code extension scaffold that listens for VS Code
+  diagnostics and visible-editor changes, then writes `.rivumi/ide/diagnostics.json` and
+  `.rivumi/ide/open-files.json` atomically. Its npm lockfile is present, `@vscode/vsce` is pinned
+  to a vulnerability-free audited range, and local compile/package/isolated install smoke passes.
+- [src/rivumi/conversation_websocket.py] accepts typed
+  `{"type":"ide_context","diagnostics":...,"open_files":...}` messages, validates them against a
+  server-configured project root using the IDE bridge parsers, and queues rendered
+  `ide_diagnostics` / `ide_open_files` context for the next turn.
+- [editors/vscode] supports optional `rivumi.ideContext.webSocketUrl` direct push of the same
+  diagnostics/open-file snapshots to that WebSocket message path.
+- [src/rivumi/lsp.py] adds `ManagedLspServer`, which owns an exact-argv long-lived LSP
+  subprocess, reads `Content-Length` JSON-RPC frames, consumes
+  `textDocument/publishDiagnostics`, and writes the repository-local diagnostics bridge.
+- [src/rivumi/sdk.py] exports `LspServerCommand`, `ManagedLspServer`, and
+  `LspSupervisorError` for stable embedder use.
 
 **Cross-ref:** codex-rs exposes an app-server JSON-RPC protocol built for editor embedding (`codex-rs/app-server/`, `app-server-protocol/`, `diagnostics/`); pi-mono runs a Unix-socket server with typed protocol (`pi-mono/packages/server/src/`).
 
-**Gaps:** No IDE extension, LSP bridge, diagnostics feed, deep linking, or editor open-file integration of any kind.
+**Gaps:** The managed LSP baseline owns process lifecycle and diagnostics subscription output,
+but full language-specific initialization, `textDocument/didOpen`, and `textDocument/didChange`
+coordination remains host-owned.
 
-**Action plan:** The existing `gateway.py` HTTP surface is the natural seed: extend it toward an app-server-style protocol (turn events, diff reports, approvals) so an editor extension can attach later.
+**Action plan:** Add optional language-specific adapters on top of the generic supervisor.
 
-**Effort:** High
+**Effort:** Medium
 
 #### A17. Command System — **3/5** (Implemented)
 
@@ -613,34 +763,51 @@ and export turn-level usage/cost events through OTel.
   frames, emits idle `: heartbeat` comments, honors `Last-Event-ID` sequence cursors, and closes
   subscribers on terminal transitions; plain `GET /events` remains NDJSON for existing clients.
 - Inbound direction: [src/rivumi/claude_agent_session.py:1-6] consumes the official Claude Agent SDK via a pinned Node sidecar over JSONL.
+- src/rivumi/sdk.py and docs/sdk.md — stable 0.x facade exports typed contracts, `run_task`,
+  `replay_run_events`, `fork_run_at_event`, model role helpers, and conversation attach types
+  without importing CLI/TUI entrypoints.
+- src/rivumi/conversation_websocket.py, src/rivumi/cli.py, and
+  scripts/smoke_conversation_websocket.py — WebSocket attach parity is implemented as an ASGI app,
+  exposed through `conversation-server`, covered by unit tests, and exercised by a real uvicorn +
+  WebSocket client smoke in CI.
 
 **Cross-ref:** pi-mono publishes its core as importable npm libraries (`pi-ai`, `pi-agent`) with the CLI as a thin shell; opencode ships `opencode serve` (HTTP server) plus a generated TypeScript SDK for embedding.
 
-**Gaps:** No stable versioned SDK package/docs for third parties; no WebSocket parity. SSE
-subscribers are in-memory only, so clients must reconnect and replay after Durable Object eviction.
+**Gaps:** SDK/WebSocket parity is implemented locally, but the package is still 0.x rather than
+1.0-stable. SSE subscribers are in-memory only, so clients must reconnect and replay after Durable
+Object eviction. A real native-runtime WebSocket attach run still needs external validation.
 
-**Action plan:** Package and document the Python attach client as a stable SDK facade, and decide
-whether WebSocket parity is needed beyond SSE reconnect/replay.
+**Action plan:** Run `conversation-server` against a real native runtime and a WebSocket client,
+then promote the SDK contract toward a documented 1.0 compatibility policy.
 
 **Effort:** Medium
 
-#### A19. Concurrency Management — **3/5** (Implemented)
+#### A19. Concurrency Management — **4/5** (Advanced read-only batching)
 
 **Evidence:**
 - [src/rivumi/loop.py] Consecutive approved READ calls are batched through `asyncio.gather`;
   observations are appended back to model history in original call order.
+- [src/rivumi/tools.py] `tool_program` lets the model submit a bounded read-only inspection
+  program as one call, while the executor keeps execution ordered and refuses side-effecting
+  operations.
+- [src/rivumi/tools.py] `tool_transaction` lets the model submit an ordered modify/check batch
+  with rollback for touched paths on later step failure.
+- [src/rivumi/conversation_controller.py] `BackendTurnLimiter` applies process-local
+  backpressure across active native conversation turns, and [src/rivumi/cli.py] shares one limiter
+  across cached TUI native controllers.
 - [src/rivumi/loop.py:622-691] Cancellation races handled correctly via `asyncio.wait((model_task, cancel_task))` + shielded backoff wake.
 - Resource locks present and disciplined: `_write_lock` [claude_agent_session.py:157],
   `_turn_lock`/`_lifecycle_lock` [conversation_controller.py:89-90].
 
 **Cross-ref:** Claude Code marks each tool `isConcurrencySafe(input)` and fans safe calls out in parallel (`Tool.ts`); opencode deliberately keeps tool execution serialized in its loop, matching Rivumi's current posture.
 
-**Gaps:** Parallelism is limited to consecutive native read-only tool calls. There is no
-semaphore/backpressure for concurrent backend sessions, no MCP-style fan-out, and no read-only code
-mode.
+**Gaps:** Parallelism is limited to consecutive native read-only tool calls, and `tool_program` /
+`tool_transaction` are ordered rather than parallel. Bounded repeat/branch control flow exists, but
+parallel transaction execution is intentionally absent.
 
-**Action plan:** Add a bounded semaphore and build read-only code mode on top of the same
-concurrency-safe metadata.
+**Action plan:** Use real traces before expanding beyond ordered bounded control flow; parallel
+transaction execution should stay out unless there is evidence it improves outcomes enough to
+justify the added rollback and approval complexity.
 
 **Effort:** Medium
 
@@ -680,20 +847,23 @@ concurrency-safe metadata.
 - [src/rivumi/sandbox_entry.py:1-33,44-60] Fixed Cloudflare Sandbox entrypoint: Linux-only hardening via `prctl(PR_SET_DUMPABLE, 0)`, validated `SandboxRunRequest`, receives no provider credential — only a short-lived capability.
 - [cloudflare/README.md:56-65] Root-owned mode-0555 wrapper, non-root `rivumi` user, `setpriv --no-new-privs`; [cloudflare/README.md:67-82] Five-minute HMAC capability written then unlinked after open, `RunCapability` Durable Object with `maxSteps+2` budget atomically consumed, egress pinned to `/internal/v1/chat/completions`.
 - src/rivumi/runtime.py, src/rivumi/cli_config.py, src/rivumi/tools.py, src/rivumi/cli.py, and
-  src/rivumi/landlock_run.py — native local checks can opt into `--sandbox-checks`; unsupported
-  platforms or missing sandbox runtimes return exit 126 before process launch. Sandbox requests
-  carry a named `verification` profile, config-backed extra read roots, and a config-backed
-  `sandbox_backend` choice of `auto`, `bubblewrap`, or `landlock`. Linux `landlock` applies a
-  filesystem policy and seccomp denylist before executing the check.
+  src/rivumi/landlock_run.py — native local checks default to `--sandbox-checks` where the
+  platform can prove containment. Unsupported platforms or missing sandbox runtimes return exit
+  126 before process launch. Sandbox requests carry a named `verification` profile,
+  config-backed extra read roots, and a config-backed `sandbox_backend` choice of `auto`,
+  `bubblewrap`, or `landlock`. Linux `landlock` applies a filesystem policy and seccomp denylist
+  before executing the check.
+- .github/workflows/python-ci.yml and scripts/smoke_linux_sandbox.sh — CI runs the Linux
+  Landlock/seccomp smoke after unit tests; local non-Linux hosts skip that smoke explicitly.
 
 **Cross-ref:** Claude Code delegates to `@anthropic-ai/sandbox-runtime` (filesystem + network restriction adapter separate from permissions); codex-rs implements OS-native sandboxes per platform — Landlock+seccomp on Linux, Seatbelt on macOS — behind `--sandbox read-only|workspace-write`.
 
-**Gaps:** Local sandboxing is still opt-in and focused on verification commands, not every
-tool/process surface. Linux live containment is covered by unit-level argv/filter tests here but
-not by a current Linux CI/live run, and CPU/memory cgroup quotas are not implemented.
+**Gaps:** Local sandboxing is still focused on verification commands, not every tool/process
+surface. The Linux smoke is configured as a CI gate, but the branch still needs an actual GitHub
+Actions ubuntu run result. CPU/memory cgroup quotas are not implemented.
 
-**Action plan:** Add Linux CI or a container smoke test that proves Landlock/seccomp enforcement,
-then make sandboxed verification the default when the platform can prove containment.
+**Action plan:** Push/open PR and confirm the ubuntu CI run, then expand containment to broader
+tool/process surfaces and add resource quotas.
 
 **Effort:** High
 
@@ -712,41 +882,82 @@ then make sandboxed verification the default when the platform can prove contain
 
 **Effort:** High
 
-### B. Context Engineering — 23/50
+### B. Context Engineering — 27/50
 
-#### B1. Context Assembly Pipeline — **1/5** (Not implemented beyond single-prompt template)
+#### B1. Context Assembly Pipeline — **3/5** (Baseline section builder)
 
 **Evidence:**
-- [src/rivumi/prompts.py:5] Entire system prompt is ONE hardcoded string constant (`CODING_AGENT_SYSTEM_PROMPT`), ~10 lines, plus a version tag (`CODING_AGENT_PROMPT_VERSION = "m3-exact-edit-v2"`); no section composition, no priority ordering.
-- [src/rivumi/loop.py:518-521] Prompt assembly = one system Message + one user message. Two messages total; nothing else injected.
-- Absence signal confirmed: no `build_system_prompt`, `promptSection`, `cache_boundary`, or `resolveSection` hits anywhere in src/.
+- [src/rivumi/prompts.py] `PromptSection` and `render_prompt_sections()` now emit ordered,
+  named prompt sections with explicit stable/dynamic cache metadata.
+- [src/rivumi/prompts.py] `build_coding_agent_system_prompt()` composes core policy,
+  instruction, skill, and memory sections in deterministic priority order.
+- [src/rivumi/loop.py] native-loop startup now feeds rendered user/project instructions,
+  repository-local skills, and relevant memory through that section builder.
+- [src/rivumi/prompts.py] exposes `render_tool_prompt_context()`,
+  `render_workspace_prompt_context()`, and `render_runtime_prompt_context()`; [src/rivumi/loop.py]
+  now injects tool policy, workspace state, and runtime constraints as named prompt sections.
+- [src/rivumi/prompts.py] exposes `render_interaction_prompt_context()` for stable response
+  style, direct-answer, and ask-mode guidance; [src/rivumi/loop.py] also includes a bounded
+  initial `git status --short --branch` snapshot in the workspace section.
 
 **Cross-ref:** codex-rs composes the prompt from typed world-state sections (`coding-agent-reference/codex/codex-rs/core/src/context/world_state/mod.rs#45AD` — `context_window_guidance`, `environment`, `managed_developer_instructions`, …); Claude Code builds ~20 sections behind a `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`.
 
-**Gaps:** No multi-section assembly (tool descriptions, workspace state, git status, language prefs are all absent from the prompt). No static/dynamic split or cache boundary. Ask-mode prompt lives inside tui.py instead of the versioned prompts module.
+**Gaps:** The section builder now covers tool policy, interaction policy, workspace state,
+runtime constraints, instruction, skill, memory, initial git status, and dynamic injected
+context. Stable/dynamic metadata is present, but trace-gated cache-aware ordering is still not
+enabled by default.
 
-**Action plan:** Introduce a `SystemPromptBuilder` in prompts.py that emits ordered named sections (identity/safety, workspace, tool policy, runtime capabilities) with the existing version constant promoted to a section-version tuple; move the ask-mode continuation prompt from tui.py into prompts.py as another versioned section set.
+**Action plan:** Decide whether the trace-gated cache-aware ordering helper should become default
+after live provider cache-reuse validation.
 
 **Effort:** Medium
 
-#### B2. Instruction Layering & Merging — **2/5** (Baseline implemented)
+#### B2. Instruction Layering & Merging — **3/5** (Override/reload/projection baseline)
 
 **Evidence:**
 - [src/rivumi/instructions.py] loads user instructions from `RIVUMI_USER_INSTRUCTIONS` or
   `~/.config/rivumi/instructions.md`, then project `AGENTS.md` / `RIVUMI.md` files from root to
   subfolder with bounded UTF-8 reads and symlink refusal.
+- [src/rivumi/instructions.py] supports `AGENTS.override.md` and `RIVUMI.override.md`; an override
+  file keeps user instructions but replaces earlier project instruction layers.
+- [src/rivumi/instructions.py] emits source-priority diagnostics for active and suppressed
+  instruction files through `resolve_instruction_documents()` and
+  `render_instruction_diagnostics()`.
 - [src/rivumi/loop.py] injects rendered instruction context into the native system prompt before
-  explicit memory context.
-- External-runtime paths intentionally delegate: Claude backend runs with `--no-session-persistence` (claude_backend.py:162) inside a disposable clone, so even wrapped CLIs' instruction hierarchies never reach Rivumi-owned conversations.
+  explicit memory context, includes source-priority diagnostics, fingerprints the resolved bundle,
+  and injects `InjectedContext(source="instruction_reload")` when configured files change mid-run.
+- [src/rivumi/context_watch.py] fingerprints instruction, skill, plugin, and hook sources; [src/rivumi/loop.py]
+  injects `InjectedContext(source="project_context_reload")` with changed categories and reloaded
+  skill context when watched project context changes at a turn boundary.
+- [src/rivumi/context_watch.py] also exposes `watch_project_context_changes()`, a portable
+  long-lived async watch stream for host/server processes that need context reload events outside
+  native turn-boundary polling.
+- [src/rivumi/context_watch.py] exposes `project_context_watch_capabilities()`, documenting
+  `portable_polling` as available and `os_native` as explicitly unavailable until a
+  cross-platform dependency or per-platform backend is selected.
+- [src/rivumi/external_runner.py] projects the resolved Rivumi instruction bundle into delegated
+  external-agent prompts and writes `instruction-resolution.json` so wrapped CLIs receive the same
+  bounded repository guidance and runs retain transcript-level source-resolution metadata.
+- [src/rivumi/external_runner.py] also writes `external-instruction-policy.json` and injects
+  `[external-instruction-policy-v1]` into delegated prompts, making Rivumi the instruction owner
+  and directing child runtimes not to apply their own duplicate AGENTS/CLAUDE/RIVUMI-style
+  discovery on top of the resolved bundle.
+- [src/rivumi/external_runner.py] records each backend's declared native
+  duplicate-discovery suppression controls in `native_suppression`, distinguishing
+  `configured` argv/env controls from `prompt_only` policy projection.
 
 **Cross-ref:** codex-rs implements full hierarchical discovery — `codex-rs/core/src/agents_md.rs#BBCE`: concatenates every `AGENTS.md` from project root down to cwd, supports `AGENTS.override.md`, configurable fallback filenames, and provenance-tracked instruction entries; opencode does the equivalent AGENTS.md hierarchy merge into the system prompt.
 
-**Gaps:** Instruction loading is native-loop only; no external-runtime projection, no
-`AGENTS.override.md`, no formal override semantics beyond ordered append, and no reload-on-directory
-change.
+**Gaps:** Override semantics are intentionally simple and file-based. Native-loop watch reload is a
+turn-boundary polling snapshot; host/server processes can use a long-lived portable async watch
+stream, and OS-native filesystem notifications are exposed as an explicit unavailable capability
+rather than a hidden partial implementation. External runtime duplicate instruction discovery is
+controlled by a projected policy artifact/directive, and known wrappers can now expose native
+suppression controls, but runtimes without stable controls still remain `prompt_only`.
 
-**Action plan:** Document precedence, add override semantics if needed, and project the resolved
-instruction bundle into external-runtime wrappers where safe.
+**Action plan:** Add OS-native watch backends only after choosing a dependency/backend strategy;
+add native suppression declarations for additional runtimes only when their upstream controls are
+stable.
 
 **Effort:** Low
 
@@ -786,17 +997,20 @@ filtering before injecting larger memory sets.
   state plus a sequence-sorted timeline; invalid event logs fail closed.
 - `rivumi sessions --replay-json` prints canonical replay JSON, and
   `rivumi sessions --fork-from-event <run> --sequence <n>` prints a deterministic
-  side-effect-free fork seed from the event-log prefix without replaying tools or starting a run.
+  side-effect-free fork seed from the event-log prefix without replaying tools.
+- src/rivumi/session_replay.py and src/rivumi/sdk.py — `create_forked_run_from_event()` creates a
+  new safe fork run/workspace from the recorded request and event prefix without replaying tools,
+  checks, subprocesses, or model calls; SDK helpers expose replay and fork APIs for embedding.
 - Compaction boundaries modeled explicitly: `ContextCheckpoint` invariant "compaction cannot increase total context occupancy" (runtime_semantics.py:130-133); `/compact` wired through conversation_controller.compact_context with timeout + turn-correlation (conversation_controller.py:116-140).
 
 **Cross-ref:** pi-mono is the strongest comparison — versioned JSONL session files at `~/.pi/agent/sessions/…jsonl` with typed entries, tree lanes, `/fork` branching (`pi-mono/packages/agent/src/harness/session/jsonl/storage.ts#A8B3`, `docs/session-format.md#5704`); codex-rs adds auto-compaction windows on top of persisted rollout history.
 
-**Gaps:** Metadata/event-content search, compact timeline display, reducer, CLI replay JSON, and
-fork seed artifacts exist, but there is no replay API, no deduplication, resume requires same
-provider/model (strict but inflexible), and fork seeds do not yet create a new safe run/workspace.
+**Gaps:** Metadata/event-content search, compact timeline display, reducer, CLI replay JSON, SDK
+replay/fork API, and safe forked run/workspace creation exist. Remaining gaps are deduplication,
+strict same-provider/model resume semantics, and no server-hosted replay endpoint.
 
-**Action plan:** Add a replay API and a safe fork/rewind-to-event operation that creates a new run
-from the seed without reusing unsafe side effects.
+**Action plan:** Add deduplication and a server-hosted replay/fork endpoint; decide whether
+provider/model resume constraints should stay strict or gain an explicit migration path.
 
 **Effort:** Medium
 
@@ -815,18 +1029,42 @@ from the seed without reusing unsafe side effects.
 
 **Effort:** Medium
 
-#### B6. Dynamic Injection — **1/5** (Partial)
+#### B6. Dynamic Injection — **4/5** (Injected context plus app-server API)
 
 **Evidence:**
-- src/rivumi/prompts.py:5-14 — single static `CODING_AGENT_SYSTEM_PROMPT` string; assembled once, never sectioned or updated.
-- src/rivumi/loop.py:1000-1006 — on `finish_reason == "length"` the loop programmatically appends a user Message mid-conversation (nudge to continue); approval denials injected between steps (loop.py:365-381).
-- Absence confirmed: zero matches for `systemReminder|injectContext|additionalContext|attachment` across src/rivumi/ and tests/.
+- [src/rivumi/contracts.py] `InjectedContext` is now a first-class `ConversationItem`
+  variant with source and bounded content fields, distinct from ordinary user messages.
+- [src/rivumi/models.py] provider adapters render injected context as marked user/input text
+  (`[injected_context:<source>]`) instead of conflating it with author-supplied prompts.
+- [src/rivumi/loop.py] context-pressure reminders, deterministic history-summary fallback,
+  and post-compaction workspace reminders now append `InjectedContext` items and preserve
+  them across checkpoint/resume.
+- [src/rivumi/conversation_runtime.py] defines `RuntimeInjectedContext`; [src/rivumi/conversation_controller.py]
+  queues app-server injected context and projects it into the next runtime turn; [src/rivumi/conversation_websocket.py]
+  exposes this through `{"type":"inject_items","items":[...]}` with bounded validation and acknowledgement.
+- [src/rivumi/conversation_runtime.py] defines `RuntimeAttachment`; [src/rivumi/conversation_controller.py]
+  projects turn-time inline text and file-reference attachments under `[app-server-attachments-v1]`;
+  [src/rivumi/conversation_websocket.py] accepts bounded `turn.attachments` payloads.
+- [src/rivumi/context_providers.py] loads opt-in `.rivumi/context-providers.json` exact-argv
+  providers behind the same `RIVUMI_ENABLE_PROJECT_HOOKS=1` gate; [src/rivumi/loop.py] injects
+  valid `RuntimeInjectedContext` provider output before native model requests and emits
+  `context_provider.injected` / `context_provider.failed` events.
+- [src/rivumi/conversation_controller.py] accepts an optional `context_provider_runner` for
+  external app-server turns, runs providers before `send_turn`, supplies bounded turn lifecycle
+  metadata, and projects output as `[injected_context:context_provider:<name>]`.
+- [src/rivumi/contracts.py] `Message.provider_metadata["attachments"]` can carry native
+  user-message attachments; [src/rivumi/models.py] maps supported image/PDF URI or base64
+  attachments into OpenAI-compatible Chat Completions, Responses, Anthropic, and Gemini native
+  multimodal content blocks, with explicit text fallback for unsupported items.
 
 **Cross-ref:** codex-rs injects an `<environment_context>` user block per turn (`include_environment_context`, codex-rs/config/defaults.toml:5, tested in codex-rs/app-server/tests/suite/v2/auto_env.rs:134-143) and supports mid-thread injection without a user turn via `thread/inject_items` (codex-rs/app-server/README.md:1021).
 
-**Gaps:** No system-reminder wrapper or scoped injection channel distinguishable from ordinary user/tool messages. No hook/event-driven context injection (nothing can add context mid-turn). No attachment system; environment facts baked into the initial user message only (loop.py:506-521).
+**Gaps:** Injection is harness-owned and source-tagged, but still rendered through provider
+user-like channels for compatibility. The native multimodal mapping is adapter-level; broader B8
+UI/runtime multimodal ingestion remains separate.
 
-**Action plan:** Add a `SystemReminder`-style ConversationItem variant that wraps injected text and renders as a distinct block in transcripts/providers; re-inject environment/workspace facts when workspace changes or after compaction instead of only at run start.
+**Action plan:** Keep B6 injection contracts stable; broader drag/drop, paste, and unsupported
+media timeline surfacing belongs to B8.
 
 **Effort:** Medium
 
@@ -885,32 +1123,71 @@ bundling `rg` for environments that do not have it installed.
 - src/rivumi/prompts.py, src/rivumi/runtime_semantics.py, and src/rivumi/loop.py — after that
   fallback, a one-shot workspace/context reminder re-injects changed files, prior check status,
   recent important paths, and active constraints before the next model request.
+- src/rivumi/conversation.py and src/rivumi/tui.py — compacted-context checkpoints can be persisted
+  as explicit `context.compacted` conversation events between turns, with active-turn rejection and
+  replay exclusion. The TUI records `CompactionCompletedEvent` checkpoints and writes them through
+  the durable conversation store when available.
 
 **Cross-ref:** codex-rs performs compaction server-side via `/responses/compact` while preserving request identity — same `prompt_cache_key` as normal turns (codex-rs/core/tests/suite/compact_remote.rs:1267-1278) and retains messages within a token budget (compact_remote_v2.rs RETAINED_MESSAGE_TOKEN_BUDGET, :928-931).
 
 **Gaps:** Auto compaction only works for native-capable long-lived conversations, and the native
 loop fallback is deterministic and lossy rather than model-quality summarization. Other runtime
-paths still need equivalent fallback behavior, provider-native compaction still lacks a matching
-workspace reinjection signal, and there are no pre/post-compact hooks or boundary marker in the
-persisted transcript.
+paths still need equivalent fallback behavior, provider-native compaction still needs live-runtime
+validation with workspace reinjection, and pre/post-compact hooks currently cover only native
+history-summary fallback.
 
-**Action plan:** Extend fallback behavior to other runtimes, connect reinjection to provider-native
-compaction events, and add pre/post-compact hooks plus persisted boundary markers.
+**Action plan:** Validate persisted checkpoints against a real native runtime, extend fallback
+behavior to other runtimes, connect reinjection to provider-native compaction events, and extend
+pre/post-compact hooks across external runtime compaction paths.
 
 **Effort:** Medium
 
-#### B10. Cache Strategy — **1/5** (Not implemented)
+#### B10. Cache Strategy — **4/5** (Provider hints plus hit-rate display)
 
 **Evidence:**
-- src/rivumi/loop.py:456-459 — `Usage.merge()` accumulates `cached_input_tokens` reported by providers — passive accounting only; nothing influences requests.
-- src/rivumi/startup_cache.py:1-13 — well-built versioned/single-flight disk cache, but for startup probes (network/model discovery), not LLM prompt caching.
-- Absence confirmed: zero matches for `cache_control|promptCache|cache_boundary|cacheHit` across src/rivumi/.
+- [src/rivumi/cache_strategy.py] parses Rivumi-rendered prompt sections and finds the contiguous
+  stable prompt prefix.
+- [src/rivumi/models.py] Anthropic requests now render sectioned system prompts as system content
+  blocks and place `cache_control: {"type":"ephemeral"}` on the stable-prefix boundary.
+- [src/rivumi/cache_strategy.py] derives stable provider cache affinity keys from stable system
+  prompt sections plus tool schemas; dynamic sections and conversation tail are excluded.
+- [src/rivumi/cache_strategy.py] extracts `ProviderCacheTrace` metadata from concrete provider
+  request payloads, including prompt cache keys, tool schema fingerprints, and Anthropic
+  cache-control block counts.
+- [src/rivumi/models.py] records `last_cache_trace` from OpenAI-compatible Chat Completions,
+  Responses, and Anthropic request payloads; [src/rivumi/loop.py] persists those traces to
+  `cache-traces.jsonl` and emits `model.cache_trace` events for primary and reviewer lanes.
+- [src/rivumi/cache_strategy.py] defines `cache_aware_prompt_ordering()`, a trace-gated policy
+  that keeps original section order without cache-ready traces and only moves stable sections into
+  a contiguous cache prefix once request metadata is proven cache-ready.
+- [src/rivumi/cache_strategy.py] exposes `CacheAwarePromptOrderingMode` so call sites can choose
+  `disabled`, conservative `trace_ready`, or validation-only `always` ordering behavior explicitly.
+- [src/rivumi/cache_strategy.py] defines `provider_cache_mapping()` and
+  `apply_provider_cache_defaults()`, centralizing provider hint locations for Anthropic
+  `cache_control`, OpenAI-compatible `extra_body.prompt_cache_key`, and Responses
+  `prompt_cache_key` without overwriting caller-supplied hints.
+- [scripts/validate_provider_cache_reuse.py] provides an env-gated live validation entrypoint for
+  repeated OpenAI-compatible or Responses calls, provider cache traces, and provider-reported
+  cached input token reuse.
+- [src/rivumi/models.py] OpenAI-compatible Chat Completions requests include
+  `extra_body.prompt_cache_key`, and Responses requests include top-level `prompt_cache_key`.
+- [src/rivumi/contracts.py] and provider adapters continue to retain `cached_input_tokens`
+  telemetry for cost/accounting and regression checks.
+- [src/rivumi/runtime_semantics.py] defines provider-neutral input cache hit-rate semantics, and
+  [src/rivumi/tui.py] displays hit-rate in `/context` and `/usage`.
+- [src/rivumi/startup_cache.py] remains a separate versioned/single-flight disk cache for startup
+  probes, not LLM prompt caching.
 
 **Cross-ref:** codex-rs actively manages prompt caching: a `prompt_cache_key` derived from thread/session id attached to every request and kept stable across retries/compaction (codex-rs/core/src/client.rs:486-495, core/tests/suite/prompt_caching.rs:435-440), including subagent keys scoped to the parent thread (client_tests.rs:485-499).
 
-**Gaps:** No cache_control breakpoints or stable prompt-prefix discipline for Anthropic-style APIs in its own model client. Static system prompt helps incidental prefix caching, but message ordering (nudges, denials appended) is never designed around cache stability. Cached-token telemetry exists yet drives no decisions.
+**Gaps:** Provider cache hints exist for Anthropic, OpenAI-compatible Chat Completions, and
+Responses, adapter request traces are persisted during runs, and an env-gated live validation
+script exists. Actual cache reuse still depends on running that script with real provider
+credentials. Cache-aware section reordering is available as an explicit policy helper rather than
+wired into the default prompt builder.
 
-**Action plan:** For its direct provider calls, emit `cache_control` on the stable prefix (system prompt + tool definitions) and keep per-turn deltas append-only; track and display cache hit rate alongside token totals in the `/context` view.
+**Action plan:** Run the live validation script against the target providers, then decide which
+production call sites should move from source-order prompt rendering to `trace_ready` ordering.
 
 **Effort:** Low-Medium
 
@@ -1017,33 +1294,38 @@ for prompt variants.
 
 | Priority | Dimension | Current | Target | Effort | Impact |
 |---|---|---|---|---|---|
-| 1 | A22 Local Sandbox Parity | 4 profile/read-root baseline | 5 | High | High |
-| 2 | A2 Dangerous Command Policy | 4 critical floor | 5 | Medium | High |
-| 3 | A18 Agent as a Service App-Server | 4 live NDJSON/SSE stream baseline | 5 | High | High |
-| 4 | B4 Session Replay/Search/Fork | 4 search/timeline foundation | 5 | Medium | High |
-| 5 | A9 Hooks / Skills / Plugins | 1 | 3 | Medium | High |
-| 6 | A16 IDE / LSP Bridge | 0 | 3 | High | Medium |
-| 7 | A3/A19 Code Mode / Tool Program Batches | 4/3 | 4+ | High | Medium |
-| 8 | A6/A15 Per-Role Lane Expansion | 4 foundation | 4+ | Medium | High |
-| 9 | A13 MCP Production Parity | 4 | 5 | High | High |
-| 10 | B9 Compaction Fallback/Reinjection | 4 | 5 | Medium | High |
-| 11 | B2 Instruction Layering & Merging | 2 baseline | 3 | Low | High |
-| 12 | B10 Cache Strategy | 1 | 3 | Low-Medium | High |
-| 13 | B1 Context Assembly Pipeline | 1 | 3 | Medium | High |
-| 14 | B6 Dynamic Injection | 1 | 3 | Medium | Medium |
-| 15 | A10 Agent Dispatch / Subagent Worktrees | 1 | 3 | High | Medium |
+| 1 | A10 Planner / Child Transactions | 4 transaction proposal baseline | 5 | High | Medium |
+| 2 | B10 Provider Trace Validation | 4 provider hints/display | 5 | Low-Medium | High |
+| 3 | A16 IDE / LSP Adapter Hardening | 5 managed LSP diagnostics baseline | 5+ | Medium | Medium |
+| 4 | A9 Runtime Skill Surfacing | plugin install/list baseline | 5 | Medium | High |
+| 5 | B2 Diagnostics / Runtime Projection | override/reload/projection baseline | 4 | Medium | High |
+| V0 | A2 Dangerous Command Policy | allow/ask/deny implemented | 5 | Hardening | High |
+| V1 | A9 Hooks / Skills / Plugins | local hooks/skills implemented | 4 | Packaging/hardening | High |
+| V2 | A22 Local Sandbox Parity | implemented; CI configured | 5 | External validation | High |
+| V3 | A13 MCP Production Parity | OAuth path implemented | 5 | External validation | High |
+| V4 | A18 SDK/WebSocket App-Server | SDK + WebSocket smoke implemented | 5 | External validation | High |
+| V5 | B9 Compaction Fallback/Reinjection | checkpoint persistence implemented | 5 | Live-runtime validation | High |
+| V6 | A6/A15 Per-Role Lane Expansion | reviewer/role/cost lanes implemented | 4+ | Hardening | High |
+| V7 | B4 Session Replay/Search/Fork | SDK replay/fork implemented | 5 | Serverization | High |
+| V8 | B1/B6 Context Assembly/Injection | prompt sections + app-server injection implemented | 4 | Hardening | High |
+| V9 | A16 IDE/LSP Bridge | packaged bridge, WebSocket push, and managed LSP supervision implemented | 5+ | Adapter hardening | Medium |
+| V10 | B10 Provider Prompt Cache | Hints and hit-rate display implemented | 5 | Provider validation | High |
+| V11 | A3/A19 Tool Programs / Transactions | bounded control flow implemented | 5 | Trace validation | Medium |
+| V12 | B2 Instruction Layering | override/reload/projection implemented | 4 | Diagnostics | High |
+| V13 | A10 Native Subagent Fan-out | named roles, handoff, routing, transaction proposals implemented | 5 | Planner | Medium |
+| V14 | A9 Plugin Manifests | packaged skills/hooks plus install/list implemented | 5 | Runtime surfacing | High |
 
 *Note:* This priority order is informed by the refreshed quidproquo coding-agent
-series index. C3, C6, B3, B7, A3/A19 read-only parallelism, A5 fallback, A13
-stdio MCP surface, A15 cost baseline, reviewer lane baseline, local sandbox
-opt-in, the dangerous-command critical floor, config-backed deny rules,
-instruction layering baseline, metadata session search, compact session timeline, and
-sandbox profile/read-root config moved out of the immediate ROI queue after the
-2026-08-29 implementation pass. Local sandbox parity and
-dangerous-command policy remain first because they are preconditions for safely
-broadening execution. App-server and session replay remain ahead of IDE/LSP because they
-provide the durable event substrate an editor bridge would need. Remaining
-low-score dimensions not listed: A4 Configuration Layering (2), A8 Background
-Execution (1), A11 Output Control (2), A12 Planning & Task Management (2), A23
-Computer Use (0), C1 Instruction Writing Patterns (2), C2 Tool Description
-Quality (2).
+series index. C3, C6, B3, B7, A3/A19 read-only parallelism and tool programs, A5 fallback, A13
+stdio/HTTP/OAuth MCP surface, A15 cost baseline, reviewer lane baseline, local sandbox
+defaulting, local hooks/skills, prompt sections, injected context, the dangerous-command
+critical floor, config-backed deny rules, provider prompt cache hints, instruction layering
+override/reload/projection baseline, metadata session search, compact session timeline, SDK
+replay/fork, native named-role fan-out/handoff/routing plus transaction proposals, and sandbox profile/read-root config moved out of the
+immediate ROI queue
+after the 2026-08-29 and 2026-08-30 implementation passes. Dangerous-command policy
+now sits in hardening because the allow/ask/deny floor exists. App-server and session replay
+now sit in validation/serverization because the local substrate exists.
+Remaining low-score dimensions not listed: A4 Configuration Layering (2), A8 Background
+Execution (1), A11 Output Control (2), A12 Planning & Task Management (2), A23 Computer
+Use (0), C1 Instruction Writing Patterns (2), C2 Tool Description Quality (2).

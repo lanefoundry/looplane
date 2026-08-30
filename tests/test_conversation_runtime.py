@@ -15,6 +15,7 @@ from rivumi.conversation_runtime import (
     RuntimeApprovalRequest,
     RuntimeCapabilities,
     RuntimeModelUpdatedEvent,
+    RuntimeSkillsChangedEvent,
     RuntimeToolKind,
     TextDeltaEvent,
     ToolStartedEvent,
@@ -159,6 +160,23 @@ def test_runtime_model_event_is_bounded_and_provider_neutral() -> None:
 
     assert isinstance(event, RuntimeModelUpdatedEvent)
     assert event.model == "claude-opus-4-5"
+
+
+def test_runtime_skills_changed_event_is_bounded_and_provider_neutral() -> None:
+    event = CONVERSATION_RUNTIME_EVENT_ADAPTER.validate_python(
+        {
+            "event_type": "runtime_skills_changed",
+            "sequence": 6,
+            "turn_id": "turn",
+            "source": "project skills",
+            "skill_names": ("review", "test-writer"),
+            "summary": "Runtime skill set changed.",
+        }
+    )
+
+    assert isinstance(event, RuntimeSkillsChangedEvent)
+    assert event.skill_names == ("review", "test-writer")
+    assert event.source == "project skills"
 
 
 def test_action_preview_and_approval_share_bounded_proposed_changes() -> None:

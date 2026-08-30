@@ -16,7 +16,9 @@ from rivumi.approvals import (
     HeadlessApprovalPolicy,
     ToolEffect,
 )
+from rivumi.cache_strategy import ProviderCacheTrace
 from rivumi.contracts import (
+    InjectedContext,
     Limits,
     Message,
     ModelCapabilities,
@@ -26,13 +28,18 @@ from rivumi.contracts import (
     RunStatus,
     TaskContract,
     ToolCall,
+    ToolObservation,
     Usage,
     VerificationCommand,
 )
 from rivumi.loop import AgentRunner
 from rivumi.models import ProviderError, ProviderErrorKind, ScriptedModel
 from rivumi.permissions import PermissionGuard
-from rivumi.prompts import WORKSPACE_CONTEXT_REMINDER_VERSION, build_workspace_context_reminder
+from rivumi.prompts import (
+    INTERACTION_CONTEXT_VERSION,
+    WORKSPACE_CONTEXT_REMINDER_VERSION,
+    build_workspace_context_reminder,
+)
 from rivumi.session import SessionManifest, SessionPhase, SessionStore
 
 BROKEN_PATCH = """\
@@ -77,6 +84,7 @@ def make_task(
     limits: Limits,
     verification: tuple[VerificationCommand, ...] | None = None,
     allowed_paths: tuple[str, ...] = ("src/**",),
+    enabled_skills: tuple[str, ...] = (),
 ) -> TaskContract:
     return TaskContract(
         task_id="tiny-python-bug",
@@ -87,6 +95,7 @@ def make_task(
         verification=verification
         or (VerificationCommand(name="tests", argv=("pytest", "-q"), timeout_seconds=30),),
         limits=limits,
+        enabled_skills=enabled_skills,
     )
 
 
@@ -234,6 +243,421 @@ async def test_initial_prompt_injects_project_instructions(
     assert system.role == "system"
     assert "Additional instructions from configured files" in (system.content or "")
     assert "Project instruction: use pytest." in (system.content or "")
+
+
+@pytest.mark.asyncio
+async def test_initial_prompt_injects_tool_workspace_and_runtime_sections(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=1))
+    model = ScriptedModel([ModelTurn(content="No change needed.")])
+
+    await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+        sandbox_checks=True,
+        sandbox_backend="none",
+    ).run()
+
+    first_messages, _tools = model.calls[0]
+    system = first_messages[0]
+    assert isinstance(system, Message)
+    content = system.content or ""
+    assert "<section name='tool_policy' cache='stable'>" in content
+    assert "[b1-tool-policy-v1]" in content
+    assert "- read_file" in content
+    assert "- dispatch_subagents" in content
+    assert "[a10-subagent-planner-policy-v1]" in content
+    assert "Use proposed_transaction" in content
+    assert "<section name='interaction_policy' cache='stable'>" in content
+    assert f"[{INTERACTION_CONTEXT_VERSION}]" in content
+    assert "ask_mode: ask_only_when_required_or_high_risk" in content
+    assert "<section name='runtime_context' cache='dynamic'>" in content
+    assert "sandbox_checks: True" in content
+    assert "<section name='workspace_state' cache='dynamic'>" in content
+    assert "[b1-workspace-state-v1]" in content
+    assert "allowed_paths:" in content
+    assert "required_verification:" in content
+    assert "git_status_short:" in content
+    assert "- ##" in content
+
+
+@pytest.mark.asyncio
+async def test_initial_prompt_omits_subagent_planner_when_dispatch_disabled(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=1))
+    model = ScriptedModel([ModelTurn(content="No change needed.")])
+
+    await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+        enable_subagent_dispatch=False,
+    ).run()
+
+    first_messages, _tools = model.calls[0]
+    system = first_messages[0]
+    assert isinstance(system, Message)
+    content = system.content or ""
+    assert "[a10-subagent-planner-policy-v1]" not in content
+    assert "- dispatch_subagents" not in content
+
+
+@pytest.mark.asyncio
+async def test_model_cache_trace_is_persisted_as_event_and_artifact(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    class CacheTracingModel(ScriptedModel):
+        def __init__(self) -> None:
+            super().__init__([ModelTurn(content="No change needed.")])
+            self.last_cache_trace: ProviderCacheTrace | None = None
+
+        async def complete(self, messages, tools=()):
+            turn = await super().complete(messages, tools)
+            self.last_cache_trace = ProviderCacheTrace(
+                provider="openai-responses",
+                prompt_cache_key="rivumi-responses:test",
+                tool_schema_fingerprint="tools",
+                cache_control_blocks=0,
+            )
+            return turn
+
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=1, wall_time_seconds=30))
+    model = CacheTracingModel()
+
+    result = await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert "cache_traces" in result.artifacts
+    records = [
+        json.loads(line)
+        for line in Path(result.artifacts["cache_traces"]).read_text().splitlines()
+        if line.strip()
+    ]
+    assert records == [
+        {
+            "lane": "primary",
+            "model": "scripted",
+            "provider": "scripted",
+            "step": 1,
+            "trace": {
+                "cache_control_blocks": 0,
+                "cache_ready": True,
+                "prompt_cache_key": "rivumi-responses:test",
+                "provider": "openai-responses",
+                "tool_schema_fingerprint": "tools",
+                "warnings": [],
+            },
+        }
+    ]
+    events = read_events(result)
+    trace_event = next(event for event in events if event["event_type"] == "model.cache_trace")
+    assert trace_event["data"]["cache_ready"] is True
+    assert trace_event["data"]["prompt_cache_key"] == "rivumi-responses:test"
+
+
+@pytest.mark.asyncio
+async def test_initial_prompt_injects_project_skills(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    skills = tiny_bug_repo / ".rivumi" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "review.md").write_text(
+        "---\nname: reviewer\ndescription: local review skill\n---\nCheck edge cases.",
+        encoding="utf-8",
+    )
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=1))
+    model = ScriptedModel([ModelTurn(content="No change needed.")])
+
+    await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    first_messages, _tools = model.calls[0]
+    system = first_messages[0]
+    assert isinstance(system, Message)
+    assert "Project skills from .rivumi/skills" in (system.content or "")
+    assert "Check edge cases." in (system.content or "")
+
+
+@pytest.mark.asyncio
+async def test_initial_prompt_injects_only_enabled_project_skills(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    skills = tiny_bug_repo / ".rivumi" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "review.md").write_text(
+        "---\nname: reviewer\n---\nReview changed code.",
+        encoding="utf-8",
+    )
+    (skills / "test.md").write_text(
+        "---\nname: test-writer\n---\nWrite regression tests.",
+        encoding="utf-8",
+    )
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(max_steps=1),
+        enabled_skills=("test-writer",),
+    )
+    model = ScriptedModel([ModelTurn(content="No change needed.")])
+
+    await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    first_messages, _tools = model.calls[0]
+    system = first_messages[0]
+    assert isinstance(system, Message)
+    assert "Write regression tests." in (system.content or "")
+    assert "Review changed code." not in (system.content or "")
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_provider_injects_context_before_model_request(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = tmp_path / "provider.py"
+    provider.write_text(
+        """
+import json
+import sys
+
+payload = json.loads(sys.stdin.read())
+print(json.dumps({"source": "ide", "content": f"provider step={payload['payload']['step']}"}))
+""".lstrip(),
+        encoding="utf-8",
+    )
+    rivumi_dir = tiny_bug_repo / ".rivumi"
+    rivumi_dir.mkdir()
+    (rivumi_dir / "context-providers.json").write_text(
+        json.dumps(
+            {
+                "providers": [
+                    {
+                        "name": "ide",
+                        "command": [sys.executable, str(provider)],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RIVUMI_ENABLE_PROJECT_HOOKS", "1")
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2))
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="read_file",
+                        arguments={"path": "src/tiny_python_bug/calculator.py"},
+                    ),
+                )
+            ),
+            ModelTurn(content="No change needed."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status is RunStatus.COMPLETED
+    second_messages, _tools = model.calls[1]
+    injected = [
+        message
+        for message in second_messages
+        if isinstance(message, InjectedContext)
+        and message.source == "context_provider:ide"
+    ]
+    assert injected
+    assert "provider step=1" in injected[-1].content
+    events = read_events(result)
+    assert any(event["event_type"] == "context_provider.injected" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_project_pre_tool_hook_can_deny_tool_execution(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hooks_dir = tiny_bug_repo / ".rivumi"
+    hooks_dir.mkdir(exist_ok=True)
+    hook_script = hooks_dir / "deny_read.py"
+    hook_script.write_text(
+        """
+from __future__ import annotations
+
+import json
+import sys
+
+payload = json.loads(sys.stdin.read())
+if payload["payload"]["tool_call"]["name"] == "read_file":
+    print(json.dumps({"decision": "deny", "reason": "read blocked by test hook"}))
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (hooks_dir / "hooks.json").write_text(
+        json.dumps(
+            {
+                "pre_tool_use": [
+                    {
+                        "command": [sys.executable, str(hook_script)],
+                        "tools": ["read_file"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RIVUMI_ENABLE_PROJECT_HOOKS", "1")
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="read_file",
+                        arguments={"path": "src/tiny_python_bug/calculator.py"},
+                    ),
+                )
+            ),
+            ModelTurn(content="No source change was needed."),
+        ]
+    )
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2))
+
+    result = await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+    events = read_events(result)
+
+    assert result.status is RunStatus.COMPLETED
+    assert any(event["event_type"] == "hook.denied" for event in events)
+    assert not any(
+        event["event_type"] == "tool.started"
+        and event["data"].get("name") == "read_file"
+        for event in events
+    )
+    assert any(
+        event["event_type"] == "tool.completed"
+        and event["data"].get("name") == "read_file"
+        and event["data"].get("error") == "action denied by user"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_ide_diagnostics_are_injected_as_harness_context(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    diagnostics_dir = tiny_bug_repo / ".rivumi" / "ide"
+    diagnostics_dir.mkdir(parents=True)
+    (diagnostics_dir / "diagnostics.json").write_text(
+        json.dumps(
+            {
+                "diagnostics": [
+                    {
+                        "path": "src/tiny_python_bug/calculator.py",
+                        "range": {
+                            "start": {"line": 2, "character": 11},
+                            "end": {"line": 2, "character": 16},
+                        },
+                        "severity": 1,
+                        "source": "pyright",
+                        "code": "operator",
+                        "message": "Operator '-' is suspicious here.",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=1))
+    model = ScriptedModel([ModelTurn(content="No change needed.")])
+
+    result = await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status is RunStatus.COMPLETED
+    first_messages, _tools = model.calls[0]
+    diagnostics = [
+        message
+        for message in first_messages
+        if isinstance(message, InjectedContext) and message.source == "ide_diagnostics"
+    ]
+    assert len(diagnostics) == 1
+    assert "[ide-lsp-diagnostics-v1]" in diagnostics[0].content
+    assert "src/tiny_python_bug/calculator.py:3:12" in diagnostics[0].content
+    events = read_events(result)
+    assert any(event["event_type"] == "ide.diagnostics_injected" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_ide_open_files_are_injected_as_harness_context(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    ide_dir = tiny_bug_repo / ".rivumi" / "ide"
+    ide_dir.mkdir(parents=True)
+    (ide_dir / "open-files.json").write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "path": "src/tiny_python_bug/calculator.py",
+                        "active": True,
+                        "cursor": {"line": 2, "character": 11},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=1))
+    model = ScriptedModel([ModelTurn(content="No change needed.")])
+
+    result = await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status is RunStatus.COMPLETED
+    first_messages, _tools = model.calls[0]
+    open_files = [
+        message
+        for message in first_messages
+        if isinstance(message, InjectedContext) and message.source == "ide_open_files"
+    ]
+    assert len(open_files) == 1
+    assert "[ide-open-files-v1]" in open_files[0].content
+    assert "src/tiny_python_bug/calculator.py (active, cursor=3:12)" in open_files[0].content
+    events = read_events(result)
+    assert any(event["event_type"] == "ide.open_files_injected" for event in events)
 
 
 @pytest.mark.asyncio
@@ -450,6 +874,288 @@ async def test_read_only_tool_calls_execute_as_parallel_batch(
 
 
 @pytest.mark.asyncio
+async def test_native_loop_dispatches_read_only_scout_subagent(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="dispatch_subagents",
+                        arguments={
+                            "agents": [
+                                {
+                                    "id": "scout-a",
+                                    "role": "scout",
+                                    "instruction": "Inspect calculator only.",
+                                    "allowed_paths": ["src/tiny_python_bug/**"],
+                                    "max_steps": 1,
+                                }
+                            ]
+                        },
+                    ),
+                )
+            ),
+            ModelTurn(content="Scout found no required change."),
+            ModelTurn(content="Parent done."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    parent_second_messages, parent_tools = model.calls[2]
+    assert "dispatch_subagents" in {tool.name for tool in parent_tools}
+    observations = [
+        message
+        for message in parent_second_messages
+        if isinstance(message, ToolObservation) and message.name == "dispatch_subagents"
+    ]
+    assert len(observations) == 1
+    assert "## scout-a" in observations[0].content
+    assert "status: completed" in observations[0].content
+    events = read_events(result)
+    assert any(event["event_type"] == "subagents.dispatch_started" for event in events)
+    assert any(event["event_type"] == "subagents.dispatch_completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_native_loop_dispatches_named_roles_with_handoff(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="dispatch_subagents",
+                        arguments={
+                            "agents": [
+                                {
+                                    "id": "analysis",
+                                    "role": "analyst",
+                                    "instruction": "Inspect calculator behavior.",
+                                    "allowed_paths": ["src/tiny_python_bug/**"],
+                                    "max_steps": 1,
+                                },
+                                {
+                                    "id": "review",
+                                    "role": "reviewer",
+                                    "instruction": "Review the analyst report.",
+                                    "depends_on": ["analysis"],
+                                    "allowed_paths": ["src/tiny_python_bug/**"],
+                                    "max_steps": 1,
+                                },
+                            ]
+                        },
+                    ),
+                )
+            ),
+            ModelTurn(content="Analyst says calculator subtracts."),
+            ModelTurn(content="Parent done."),
+        ],
+        model_id="parent",
+    )
+    reviewer_model = ScriptedModel(
+        [ModelTurn(content="Reviewer confirms the analyst report.")],
+        model_id="reviewer-routed",
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+        subagent_models={"reviewer": reviewer_model},
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert len(reviewer_model.calls) == 1
+    reviewer_messages, _reviewer_tools = reviewer_model.calls[0]
+    reviewer_user = next(
+        message
+        for message in reviewer_messages
+        if isinstance(message, Message) and message.role == "user"
+    )
+    assert "Role: reviewer" in reviewer_user.content
+    assert "Prior subagent handoff reports:" in reviewer_user.content
+    assert "[analysis] status=completed" in reviewer_user.content
+    assert "Analyst says calculator subtracts." in reviewer_user.content
+    parent_messages, _parent_tools = model.calls[2]
+    observations = [
+        message
+        for message in parent_messages
+        if isinstance(message, ToolObservation) and message.name == "dispatch_subagents"
+    ]
+    assert "role: analyst" in observations[0].content
+    assert "role: reviewer" in observations[0].content
+    assert "depends_on: analysis" in observations[0].content
+    assert "model: scripted/reviewer-routed" in observations[0].content
+    events = read_events(result)
+    schedule_events = [
+        event for event in events if event["event_type"] == "subagents.schedule_normalized"
+    ]
+    assert schedule_events[0]["data"]["agents"] == [
+        {
+            "id": "analysis",
+            "role": "analyst",
+            "depends_on": [],
+            "wave": 0,
+            "max_steps": 1,
+            "proposed_transaction": False,
+        },
+        {
+            "id": "review",
+            "role": "reviewer",
+            "depends_on": ["analysis"],
+            "wave": 1,
+            "max_steps": 1,
+            "proposed_transaction": False,
+        },
+    ]
+    assert len([event for event in events if event["event_type"] == "subagents.wave_started"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_native_loop_executes_subagent_proposed_transaction(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="dispatch_subagents",
+                        arguments={
+                            "agents": [
+                                {
+                                    "id": "fixer",
+                                    "role": "analyst",
+                                    "instruction": (
+                                        "Review this transaction before parent applies it."
+                                    ),
+                                    "allowed_paths": ["src/tiny_python_bug/**"],
+                                    "max_steps": 1,
+                                    "proposed_transaction": {
+                                        "steps": [
+                                            {
+                                                "op": "read_file",
+                                                "args": {
+                                                    "path": "src/tiny_python_bug/calculator.py"
+                                                },
+                                            },
+                                            {
+                                                "op": "replace_text",
+                                                "args": {
+                                                    "path": "src/tiny_python_bug/calculator.py",
+                                                    "old_text": "return left - right",
+                                                    "new_text": "return left + right",
+                                                },
+                                            },
+                                            {"op": "run_check", "args": {"name": "tests"}},
+                                        ]
+                                    },
+                                }
+                            ]
+                        },
+                    ),
+                )
+            ),
+            ModelTurn(content="Transaction is scoped and should be applied."),
+            ModelTurn(content="Parent done."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert result.changed_files == ("src/tiny_python_bug/calculator.py",)
+    patch = Path(result.artifacts["patch"]).read_text(encoding="utf-8")
+    assert "return left + right" in patch
+    parent_messages, _parent_tools = model.calls[2]
+    observation = next(
+        message
+        for message in parent_messages
+        if isinstance(message, ToolObservation) and message.name == "dispatch_subagents"
+    )
+    assert observation.ok is True
+    assert "transaction: ok" in observation.content
+    events = read_events(result)
+    assert any(event["event_type"] == "subagents.transaction_started" for event in events)
+    assert any(
+        event["event_type"] == "subagents.transaction_completed"
+        and event["data"]["ok"] is True
+        for event in events
+    )
+    assert any(
+        event["event_type"] == "tool.completed"
+        and event["data"]["name"] == "tool_transaction"
+        and event["data"]["ok"] is True
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_loop_rejects_unknown_subagent_dependency(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="dispatch_subagents",
+                        arguments={
+                            "agents": [
+                                {
+                                    "id": "review",
+                                    "role": "reviewer",
+                                    "instruction": "Review missing analysis.",
+                                    "depends_on": ["analysis"],
+                                }
+                            ]
+                        },
+                    ),
+                )
+            ),
+            ModelTurn(content="Dependency rejected."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    parent_messages, _parent_tools = model.calls[1]
+    observation = next(
+        message
+        for message in parent_messages
+        if isinstance(message, ToolObservation) and message.name == "dispatch_subagents"
+    )
+    assert observation.ok is False
+    assert "depends on unknown id" in (observation.error or "")
+
+
+@pytest.mark.asyncio
 async def test_mcp_resource_and_prompt_reads_execute_as_parallel_batch(
     tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -582,6 +1288,54 @@ class ToolDisabledModel(SlowModel):
         raise AssertionError("a tool-disabled provider must never be called")
 
 
+class InstructionChangingModel(SlowModel):
+    def __init__(self, repository: Path) -> None:
+        self.repository = repository
+        self.calls: list[tuple[object, object]] = []
+
+    async def complete(self, messages: object, tools: object = ()) -> ModelTurn:
+        self.calls.append((messages, tools))
+        if len(self.calls) == 1:
+            (self.repository / "AGENTS.md").write_text(
+                "Reloaded project guidance.",
+                encoding="utf-8",
+            )
+            return ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="read_file",
+                        arguments={"path": "src/tiny_python_bug/calculator.py"},
+                    ),
+                )
+            )
+        return ModelTurn(content="No change needed.")
+
+
+class SkillChangingModel(SlowModel):
+    def __init__(self, repository: Path) -> None:
+        self.repository = repository
+        self.calls: list[tuple[object, object]] = []
+
+    async def complete(self, messages: object, tools: object = ()) -> ModelTurn:
+        self.calls.append((messages, tools))
+        if len(self.calls) == 1:
+            skills = self.repository / ".rivumi" / "skills"
+            skills.mkdir(parents=True, exist_ok=True)
+            (skills / "review.md").write_text(
+                "---\nname: reviewer\n---\nReview the changed code.",
+                encoding="utf-8",
+            )
+            return ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="read_file",
+                        arguments={"path": "src/tiny_python_bug/calculator.py"},
+                    ),
+                )
+            )
+        return ModelTurn(content="No change needed.")
+
+
 @pytest.mark.asyncio
 async def test_agent_runner_fails_closed_for_tool_disabled_provider(
     tiny_bug_repo: Path, tmp_path: Path
@@ -598,6 +1352,69 @@ async def test_agent_runner_fails_closed_for_tool_disabled_provider(
         ).run()
 
     assert not run_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_instruction_changes_are_reloaded_as_injected_context(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    (tiny_bug_repo / "AGENTS.md").write_text("Initial project guidance.", encoding="utf-8")
+    model = InstructionChangingModel(tiny_bug_repo)
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2))
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status is RunStatus.COMPLETED
+    second_messages, _tools = model.calls[1]
+    reloads = [
+        message
+        for message in second_messages
+        if isinstance(message, InjectedContext) and message.source == "instruction_reload"
+    ]
+    assert len(reloads) == 1
+    assert "Reloaded project guidance." in reloads[0].content
+    events = read_events(result)
+    assert any(event["event_type"] == "instructions.reloaded" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_project_context_watch_reloads_skill_changes_as_injected_context(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    model = SkillChangingModel(tiny_bug_repo)
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2))
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status is RunStatus.COMPLETED
+    second_messages, _tools = model.calls[1]
+    reloads = [
+        message
+        for message in second_messages
+        if isinstance(message, InjectedContext) and message.source == "project_context_reload"
+    ]
+    assert len(reloads) == 1
+    assert "[project-context-reload-v1]" in reloads[0].content
+    assert "- skills: .rivumi/skills/review.md" in reloads[0].content
+    assert "Review the changed code." in reloads[0].content
+    events = read_events(result)
+    assert any(
+        event["event_type"] == "project_context.reloaded"
+        and event["data"]["categories"] == ["skills"]
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -905,21 +1722,24 @@ async def test_context_pressure_reminder_is_injected_once_before_next_model_requ
     assert not [
         message
         for message in first_call_messages
-        if isinstance(message, Message)
+        if isinstance(message, InjectedContext)
+        and message.source == "context_pressure"
         and message.content
         and "b9-b1-context-pressure-v1" in message.content
     ]
     second_reminders = [
         message
         for message in second_call_messages
-        if isinstance(message, Message)
+        if isinstance(message, InjectedContext)
+        and message.source == "context_pressure"
         and message.content
         and "b9-b1-context-pressure-v1" in message.content
     ]
     third_reminders = [
         message
         for message in third_call_messages
-        if isinstance(message, Message)
+        if isinstance(message, InjectedContext)
+        and message.source == "context_pressure"
         and message.content
         and "b9-b1-context-pressure-v1" in message.content
     ]
@@ -979,7 +1799,8 @@ async def test_history_summary_fallback_compacts_old_native_messages_once(
     summaries = [
         message
         for message in fourth_call_messages
-        if isinstance(message, Message)
+        if isinstance(message, InjectedContext)
+        and message.source == "history_summary_fallback"
         and message.content
         and "b9-summary-fallback-v1" in message.content
     ]
@@ -997,6 +1818,154 @@ async def test_history_summary_fallback_compacts_old_native_messages_once(
             if event["event_type"] == "context_pressure.summary_fallback_applied"
         ]
     ) == 1
+
+
+@pytest.mark.asyncio
+async def test_history_summary_fallback_runs_pre_and_post_compaction_hooks(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hooks_dir = tiny_bug_repo / ".rivumi"
+    hooks_dir.mkdir()
+    hook_log = tmp_path / "compact-hooks.jsonl"
+    hook = tmp_path / "compact_hook.py"
+    hook.write_text(
+        f"""
+from __future__ import annotations
+
+import json
+import sys
+
+payload = json.loads(sys.stdin.read())
+with open({str(hook_log)!r}, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(payload, sort_keys=True) + "\\n")
+print("{{}}")
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (hooks_dir / "hooks.json").write_text(
+        json.dumps(
+            {
+                "pre_compact": [{"command": [sys.executable, str(hook)]}],
+                "post_compact": [{"command": [sys.executable, str(hook)]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RIVUMI_ENABLE_PROJECT_HOOKS", "1")
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(max_steps=4, wall_time_seconds=60, max_total_tokens=100),
+        verification=(
+            VerificationCommand(
+                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
+            ),
+        ),
+    )
+    read_calculator = ToolCall(
+        name="read_file",
+        arguments={"path": "src/tiny_python_bug/calculator.py"},
+    )
+    read_package = ToolCall(
+        name="read_file",
+        arguments={"path": "src/tiny_python_bug/__init__.py"},
+    )
+    model = ScriptedModel(
+        [
+            ModelTurn(tool_calls=(read_calculator,), usage=Usage(input_tokens=40)),
+            ModelTurn(tool_calls=(read_package,), usage=Usage(input_tokens=45)),
+            ModelTurn(tool_calls=(read_calculator,), usage=Usage(input_tokens=1)),
+            ModelTurn(content="No repository change is needed."),
+        ]
+    )
+
+    result = await AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True).run()
+
+    assert result.status == RunStatus.COMPLETED
+    hook_payloads = [
+        json.loads(line) for line in hook_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [payload["event"] for payload in hook_payloads] == [
+        "pre_compact",
+        "post_compact",
+    ]
+    assert hook_payloads[0]["payload"]["compaction"]["kind"] == "history_summary_fallback"
+    assert hook_payloads[1]["payload"]["summary"]["source"] == "history_summary_fallback"
+    events = read_events(result)
+    assert [
+        event["data"]["hook_event"]
+        for event in events
+        if event["event_type"] == "hook.completed"
+        and event["data"]["hook_event"] in {"pre_compact", "post_compact"}
+    ] == ["pre_compact", "post_compact"]
+
+
+@pytest.mark.asyncio
+async def test_history_summary_fallback_pre_compaction_hook_can_deny(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hooks_dir = tiny_bug_repo / ".rivumi"
+    hooks_dir.mkdir()
+    hook = tmp_path / "deny_compact.py"
+    hook.write_text(
+        """
+import json
+
+print(json.dumps({"decision": "deny", "reason": "keep full context"}))
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (hooks_dir / "hooks.json").write_text(
+        json.dumps({"pre_compact": [{"command": [sys.executable, str(hook)]}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RIVUMI_ENABLE_PROJECT_HOOKS", "1")
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(max_steps=4, wall_time_seconds=60, max_total_tokens=100),
+        verification=(
+            VerificationCommand(
+                name="check", argv=("git", "diff", "--check"), timeout_seconds=30
+            ),
+        ),
+    )
+    read_calculator = ToolCall(
+        name="read_file",
+        arguments={"path": "src/tiny_python_bug/calculator.py"},
+    )
+    read_package = ToolCall(
+        name="read_file",
+        arguments={"path": "src/tiny_python_bug/__init__.py"},
+    )
+    model = ScriptedModel(
+        [
+            ModelTurn(tool_calls=(read_calculator,), usage=Usage(input_tokens=40)),
+            ModelTurn(tool_calls=(read_package,), usage=Usage(input_tokens=45)),
+            ModelTurn(tool_calls=(read_calculator,), usage=Usage(input_tokens=1)),
+            ModelTurn(content="No repository change is needed."),
+        ]
+    )
+
+    result = await AgentRunner(task, model, tmp_path / "runs", allow_unsafe_local_exec=True).run()
+
+    assert result.status == RunStatus.COMPLETED
+    fourth_call_messages, _tools = model.calls[3]
+    assert not [
+        message
+        for message in fourth_call_messages
+        if isinstance(message, InjectedContext)
+        and message.source == "history_summary_fallback"
+    ]
+    events = read_events(result)
+    assert any(
+        event["event_type"] == "hook.denied"
+        and event["data"]["hook_event"] == "pre_compact"
+        for event in events
+    )
+    assert any(
+        event["event_type"] == "context_pressure.summary_fallback_skipped"
+        and event["data"]["reason"] == "keep full context"
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -1046,7 +2015,8 @@ async def test_workspace_context_reminder_is_injected_after_summary_fallback(
     reminders = [
         message
         for message in fourth_call_messages
-        if isinstance(message, Message)
+        if isinstance(message, InjectedContext)
+        and message.source == "workspace_context_reminder"
         and message.content
         and WORKSPACE_CONTEXT_REMINDER_VERSION in message.content
     ]
@@ -1097,11 +2067,15 @@ async def test_resume_detects_existing_workspace_context_reminder_marker(
         json.dumps(task.model_dump(mode="json"), indent=2),
         encoding="utf-8",
     )
-    existing_reminder = build_workspace_context_reminder(
-        changed_files=("src/tiny_python_bug/calculator.py",),
-        check_status=("tests: failed (exit 1)",),
-        recent_paths=("src/tiny_python_bug/calculator.py",),
-        constraints=("allowed_paths=src/**",),
+    existing_reminder = InjectedContext(
+        source="workspace_context_reminder",
+        content=build_workspace_context_reminder(
+            changed_files=("src/tiny_python_bug/calculator.py",),
+            check_status=("tests: failed (exit 1)",),
+            recent_paths=("src/tiny_python_bug/calculator.py",),
+            constraints=("allowed_paths=src/**",),
+        ).content
+        or "",
     )
     manifest = SessionManifest.new(
         run_id=run_id,
@@ -1117,7 +2091,10 @@ async def test_resume_detects_existing_workspace_context_reminder_marker(
             "messages": (
                 Message(role="system", content="system"),
                 Message(role="user", content="task"),
-                Message(role="user", content="[b9-summary-fallback-v1]\nsummary"),
+                InjectedContext(
+                    source="history_summary_fallback",
+                    content="[b9-summary-fallback-v1]\nsummary",
+                ),
                 existing_reminder,
             ),
             "usage": Usage(input_tokens=85),
@@ -1145,7 +2122,8 @@ async def test_resume_detects_existing_workspace_context_reminder_marker(
     reminders = [
         message
         for message in call_messages
-        if isinstance(message, Message)
+        if isinstance(message, InjectedContext)
+        and message.source == "workspace_context_reminder"
         and message.content
         and WORKSPACE_CONTEXT_REMINDER_VERSION in message.content
     ]

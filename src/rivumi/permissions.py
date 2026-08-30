@@ -27,6 +27,7 @@ from rivumi.approvals import (
 _TIER_RANK: dict[ToolEffect, int] = {
     ToolEffect.READ: 0,
     ToolEffect.MODIFY: 1,
+    ToolEffect.MODIFY_EXECUTE: 2,
     ToolEffect.EXECUTE: 2,
 }
 
@@ -388,7 +389,7 @@ class PermissionGuard:
             tool_name = request.tool_call.name if request.tool_call is not None else ""
             if rule.matches(tool_name, resolved):
                 return f"deny rule {rule.tool_name} ({rule.kind})"
-        if request.effect == ToolEffect.EXECUTE:
+        if request.effect in {ToolEffect.EXECUTE, ToolEffect.MODIFY_EXECUTE}:
             classification = self.command_policy(request, resolved)
             if classification.action is CommandPolicyAction.DENY:
                 return classification.reason
@@ -401,7 +402,7 @@ class PermissionGuard:
     ) -> CommandPolicyResult:
         """Return the command policy classification for an execution request."""
 
-        if request.effect != ToolEffect.EXECUTE:
+        if request.effect not in {ToolEffect.EXECUTE, ToolEffect.MODIFY_EXECUTE}:
             return CommandPolicyResult(
                 CommandPolicyAction.ALLOW,
                 f"non-execute effect: {request.effect.value}",

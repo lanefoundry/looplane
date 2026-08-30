@@ -1,0 +1,58 @@
+{
+  "name": "rivumi-vscode",
+  "displayName": "Rivumi",
+  "description": "Push VS Code diagnostics and open-file context into Rivumi.",
+  "version": "0.1.0",
+  "publisher": "rivumi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vincentxuu/rivumi.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:rivumi.pushIdeContext"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "rivumi.pushIdeContext",
+        "title": "Rivumi: Push IDE Context"
+      }
+    ],
+    "configuration": {
+      "title": "Rivumi",
+      "properties": {
+        "rivumi.ideContext.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Push diagnostics and open files into .rivumi/ide for Rivumi runs."
+        },
+        "rivumi.ideContext.webSocketUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Rivumi conversation WebSocket attach URL for direct IDE context push."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.5.0"
+  }
+}

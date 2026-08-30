@@ -18,6 +18,7 @@ class ToolEffect(StrEnum):
 
     READ = "read"
     MODIFY = "modify"
+    MODIFY_EXECUTE = "modify_execute"
     EXECUTE = "execute"
 
 
@@ -94,6 +95,7 @@ class HeadlessApprovalPolicy:
         allowed = {
             ToolEffect.READ: True,
             ToolEffect.MODIFY: self.allow_modify,
+            ToolEffect.MODIFY_EXECUTE: self.allow_modify and self.allow_execute,
             ToolEffect.EXECUTE: self.allow_execute,
         }[request.effect]
         return ApprovalDecision.ALLOW_ONCE if allowed else ApprovalDecision.DENY
@@ -145,8 +147,10 @@ TOOL_EFFECTS: dict[str, ToolEffect] = {
     "read_file": ToolEffect.READ,
     "search_text": ToolEffect.READ,
     "git_diff": ToolEffect.READ,
+    "dispatch_subagents": ToolEffect.READ,
     "replace_text": ToolEffect.MODIFY,
     "apply_patch": ToolEffect.MODIFY,
+    "tool_transaction": ToolEffect.MODIFY_EXECUTE,
     "run_check": ToolEffect.EXECUTE,
 }
 

@@ -17,6 +17,10 @@ Worker + Sandbox deployment slice.
 - Disposable Git clone pinned to a full base commit.
 - Bounded `list_files`, `read_file`, `search_text`, `replace_text`, `apply_patch`, `run_check`, and
   `git_diff` tools.
+- Bounded read-only `tool_program` calls for small inspection batches over list/read/search/diff,
+  with bounded `repeat` and `if_contains` control flow.
+- Bounded `tool_transaction` calls for modify/check batches that restore touched paths when a
+  later step fails, with the same bounded control-flow primitives.
 - Segment-aware path allowlists, traversal/symlink protection, exact command argv, process-group
   timeouts, bounded output capture, and a subprocess environment without model/GitHub credentials.
 - JSONL events, atomic checkpoints, final patch, test log, and result artifacts.
@@ -28,11 +32,39 @@ Worker + Sandbox deployment slice.
   because the process cannot prove whether that side effect completed.
 - Explicit model protocols, loopback Ollama, custom OpenAI-compatible API URLs, an experimental
   app-owned ChatGPT/Codex OAuth transport, and an optional bounded local model gateway.
+- Native conversation controllers can share a bounded backend turn limiter so long-lived runtime
+  sessions apply process-local backpressure instead of starting unbounded concurrent turns.
 - A Rivumi-audited `ExternalCodingRunner` for local delegation to installed coding CLIs — the
   official Codex and Claude Code CLIs plus local-only `opencode`, `pi`, and `omp`. They edit only a
   pinned disposable clone; Rivumi independently checks the full path-bounded patch and runs exact
   final verification. They never become `ModelProvider`s, and Rivumi never reads their credential
   stores.
+- A typed `rivumi.sdk` facade for embedding, WebSocket conversation attach, deterministic replay and
+  fork helpers, role-lane model candidates, cost estimates, and org/project policy discovery. See
+  [docs/sdk.md](docs/sdk.md).
+- Programmatic subagent dispatch helpers derive child tasks and run them in separate
+  `subagents/<id>` run directories/disposable workspaces.
+- Native `dispatch_subagents` exposes bounded `scout` / `analyst` / `reviewer` fan-out to the
+  model, with dependency handoff, host-controlled child model routing, and child direct
+  modify/execute approvals disabled. A child can carry a parent-approved `proposed_transaction`
+  that Rivumi applies through the existing `tool_transaction` approval/check/rollback path.
+  The native prompt includes a versioned subagent planner policy for when to scout, analyze,
+  review, stage handoffs, or request a child-reviewed transaction.
+- Repository-local `.rivumi/skills/*.md` prompt guidance plus opt-in `.rivumi/hooks.json` blocking
+  hooks for native `pre_tool_use`, `post_tool_use`, and `approval_request` events.
+- Repository-local `.rivumi/plugins/*.json` manifests can package markdown skills and deny-only
+  hooks plus discovery metadata without bypassing the same hook opt-in gate; `rivumi plugin install`
+  copies local plugin packages into the repository.
+- Repository-local `.rivumi/ide/diagnostics.json` and `.rivumi/ide/open-files.json` IDE/LSP
+  snapshots are safely loaded and injected as harness context with bounded editor deep links
+  before model requests.
+- `editors/vscode` contains a packageable VS Code extension scaffold that pushes VS Code
+  diagnostics and visible editor state into those Rivumi IDE bridge files; its package lock,
+  TypeScript build, audit, VSIX packaging, and isolated CLI install smoke are verified locally.
+  When `rivumi.ideContext.webSocketUrl` is configured, it also pushes typed `ide_context`
+  messages to the conversation WebSocket attach endpoint.
+- User/project instruction loading supports `AGENTS.override.md` / `RIVUMI.override.md`, native
+  reload injection, and external-runner prompt projection.
 
 ## Set up with uv
 
@@ -40,6 +72,7 @@ Worker + Sandbox deployment slice.
 uv sync --extra dev
 uv run pytest
 uv run ruff check .
+bash scripts/smoke_linux_sandbox.sh  # Linux Landlock/seccomp smoke; skips outside Linux
 ```
 
 The `.venv/` directory is created and managed by `uv`; dependencies are defined in

@@ -51,6 +51,50 @@ class RuntimeTurnStatus(StrEnum):
     INTERRUPTED = "interrupted"
 
 
+class RuntimeInjectedContext(ContractModel):
+    """One app-server supplied context item queued for the next conversation turn."""
+
+    source: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=64_000)
+
+    @field_validator("source", "content")
+    @classmethod
+    def text_is_bounded_and_nul_free(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("injected context text cannot be blank")
+        if "\x00" in value:
+            raise ValueError("injected context text cannot contain NUL")
+        return value
+
+
+class RuntimeAttachment(ContractModel):
+    """One app-server supplied attachment for a conversation turn."""
+
+    name: str = Field(min_length=1, max_length=256)
+    media_type: str = Field(default="text/plain", min_length=1, max_length=128)
+    content: str | None = Field(default=None, max_length=64_000)
+    uri: str | None = Field(default=None, max_length=2_048)
+
+    @field_validator("name", "media_type", "content", "uri")
+    @classmethod
+    def text_is_bounded_and_nul_free(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("attachment text cannot be blank")
+        if "\x00" in value:
+            raise ValueError("attachment text cannot contain NUL")
+        return value
+
+    @model_validator(mode="after")
+    def has_exactly_one_payload(self) -> RuntimeAttachment:
+        if (self.content is None) == (self.uri is None):
+            raise ValueError("attachment must contain exactly one of content or uri")
+        return self
+
+
 class RuntimeApprovalRequest(ContractModel):
     """One Rivumi-correlated approval request; it contains no vendor identifiers."""
 
@@ -118,6 +162,36 @@ class ContextUsageUpdatedEvent(_RuntimeEvent):
 class RuntimeModelUpdatedEvent(_RuntimeEvent):
     event_type: Literal["runtime_model_updated"] = "runtime_model_updated"
     model: str = Field(min_length=1, max_length=256)
+
+
+class RuntimeSkillsChangedEvent(_RuntimeEvent):
+    event_type: Literal["runtime_skills_changed"] = "runtime_skills_changed"
+    source: str | None = Field(default=None, min_length=1, max_length=256)
+    skill_names: tuple[str, ...] = Field(default=(), max_length=256)
+    summary: str = Field(default="Runtime skill set changed.", max_length=4_000)
+
+    @field_validator("source", "summary")
+    @classmethod
+    def text_is_bounded_and_nul_free(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("skills changed text cannot be blank")
+        if "\x00" in value:
+            raise ValueError("skills changed text cannot contain NUL")
+        return value
+
+    @field_validator("skill_names")
+    @classmethod
+    def skill_names_are_unique_and_bounded(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if len(value) != len(set(value)) or any(
+            not name or len(name) > 256 or "\x00" in name for name in value
+        ):
+            raise ValueError("skill names must be non-empty, unique, and bounded")
+        return value
 
 
 class CompactionStartedEvent(_RuntimeEvent):
@@ -222,6 +296,7 @@ ConversationRuntimeEvent = Annotated[
     | TextDeltaEvent
     | ContextUsageUpdatedEvent
     | RuntimeModelUpdatedEvent
+    | RuntimeSkillsChangedEvent
     | CompactionStartedEvent
     | CompactionCompletedEvent
     | ToolStartedEvent

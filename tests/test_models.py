@@ -8,7 +8,9 @@ import httpx
 import pytest
 from openai import APIStatusError
 
+from rivumi.cache_strategy import provider_cache_trace
 from rivumi.contracts import (
+    InjectedContext,
     Message,
     ModelTurn,
     ToolCall,
@@ -28,6 +30,7 @@ from rivumi.models import (
     _http_error,
     _retry_after,
 )
+from rivumi.prompts import PromptSection, render_prompt_sections
 
 TOOL = ToolDefinition(
     name="read_file",
@@ -39,6 +42,24 @@ TOOL = ToolDefinition(
     },
 )
 MESSAGES = (Message(role="system", content="Be precise."), Message(role="user", content="Read it."))
+ATTACHMENT_MESSAGE = Message(
+    role="user",
+    content="Inspect attachments.",
+    provider_metadata={
+        "attachments": [
+            {
+                "name": "screenshot.png",
+                "media_type": "image/png",
+                "data_base64": "aW1hZ2U=",
+            },
+            {
+                "name": "notes.md",
+                "media_type": "text/markdown",
+                "content": "# Notes",
+            },
+        ]
+    },
+)
 
 
 def assert_common_turn(turn: ModelTurn) -> None:
@@ -119,6 +140,68 @@ async def test_openai_compatible_text_tool_and_usage_roundtrip() -> None:
     assert turn.usage.cached_input_tokens == 3
     assert turn.usage.reasoning_tokens == 2
     assert completions.requests[0]["tools"][0]["function"]["name"] == "read_file"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_renders_injected_context_as_marked_user_message() -> None:
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="done", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+    )
+    completions = FakeCompletions(response)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model = OpenAICompatibleModel(
+        model="fake-model", client=client, supports_tool_calling=True
+    )
+
+    await model.complete(
+        [
+            Message(role="system", content="Use tools."),
+            InjectedContext(source="workspace", content="Changed files: src/app.py"),
+        ],
+        (),
+    )
+
+    assert completions.requests[0]["messages"][1] == {
+        "role": "user",
+        "content": "[injected_context:workspace]\nChanged files: src/app.py",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_maps_message_attachments_to_native_content() -> None:
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="done", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+    )
+    completions = FakeCompletions(response)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model = OpenAICompatibleModel(
+        model="fake-model", client=client, supports_tool_calling=True
+    )
+
+    await model.complete((Message(role="system", content="Use tools."), ATTACHMENT_MESSAGE))
+
+    content = completions.requests[0]["messages"][1]["content"]
+    assert content[0] == {"type": "text", "text": "Inspect attachments."}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
+    }
+    assert content[2] == {
+        "type": "text",
+        "text": "[attachment:notes.md; media_type=text/markdown]\n# Notes",
+    }
 
 
 def make_json_client(payload: dict[str, Any], status_code: int = 200) -> httpx.AsyncClient:
@@ -220,6 +303,65 @@ async def test_http_adapters_text_tool_and_usage_roundtrip(provider: str) -> Non
 
     assert_common_turn(turn)
     assert turn.tool_calls[0].tool_call_id == "call-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["anthropic", "gemini"])
+async def test_http_adapters_map_message_attachments_to_native_content(provider: str) -> None:
+    if provider == "anthropic":
+        payload = {
+            "content": [{"type": "text", "text": "Done."}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        client, requests = make_capturing_json_client(payload)
+        model = AnthropicModel(
+            model="fake-model",
+            api_key="test",
+            client=client,
+            supports_tool_calling=True,
+        )
+    else:
+        payload = {
+            "candidates": [{"content": {"parts": [{"text": "Done."}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+        }
+        client, requests = make_capturing_json_client(payload)
+        model = GeminiModel(
+            model="fake-model",
+            api_key="test",
+            client=client,
+            supports_tool_calling=True,
+        )
+
+    try:
+        await model.complete((Message(role="system", content="Use tools."), ATTACHMENT_MESSAGE))
+    finally:
+        await client.aclose()
+
+    if provider == "anthropic":
+        content = requests[0]["messages"][0]["content"]
+        assert content[0] == {"type": "text", "text": "Inspect attachments."}
+        assert content[1] == {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "aW1hZ2U=",
+            },
+        }
+        assert content[2] == {
+            "type": "text",
+            "text": "[attachment:notes.md; media_type=text/markdown]\n# Notes",
+        }
+    else:
+        parts = requests[0]["contents"][0]["parts"]
+        assert parts[0] == {"text": "Inspect attachments."}
+        assert parts[1] == {
+            "inline_data": {"mime_type": "image/png", "data": "aW1hZ2U="}
+        }
+        assert parts[2] == {
+            "text": "[attachment:notes.md; media_type=text/markdown]\n# Notes"
+        }
 
 
 @pytest.mark.asyncio
@@ -383,6 +525,38 @@ async def test_http_provider_second_turn_preserves_success_and_failure_observati
             "call-ok",
             "call-failed",
         ]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_model_marks_stable_prompt_prefix_for_cache_control() -> None:
+    response = {
+        "content": [{"type": "text", "text": "Done."}],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    client, requests = make_capturing_json_client(response)
+    model = AnthropicModel(
+        model="fake-model", api_key="test", client=client, supports_tool_calling=True
+    )
+    prompt = render_prompt_sections(
+        (
+            PromptSection("core", "Stable rules", cache_stable=True),
+            PromptSection("workspace", "Dynamic state"),
+        )
+    )
+
+    try:
+        await model.complete((Message(role="system", content=prompt),))
+    finally:
+        await client.aclose()
+
+    system = requests[0]["system"]
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+    assert "Stable rules" in system[0]["text"]
+    assert "cache_control" not in system[1]
+    trace = provider_cache_trace("anthropic", requests[0])
+    assert trace.cache_ready is True
+    assert trace.cache_control_blocks == 1
+    assert model.last_cache_trace == trace
 
 
 @pytest.mark.asyncio
@@ -577,9 +751,45 @@ async def test_openai_compatible_passes_bounded_provider_options() -> None:
 
     await model.complete([Message(role="user", content="test")])
 
-    assert completions.requests[0]["extra_body"] == {"think": False}
+    assert completions.requests[0]["extra_body"]["think"] is False
+    assert completions.requests[0]["extra_body"]["prompt_cache_key"].startswith(
+        "rivumi-openai:"
+    )
+    trace = provider_cache_trace("openai-compatible", completions.requests[0])
+    assert trace.cache_ready is True
+    assert trace.prompt_cache_key is not None
+    assert model.last_cache_trace == trace
     assert completions.requests[0]["max_tokens"] == 1_024
     assert completions.requests[0]["messages"][0]["content"].startswith("/no_think\n")
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_preserves_caller_prompt_cache_key() -> None:
+    completions = FakeCompletions(
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="done", tool_calls=[]),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+    )
+    fake_openai = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model = OpenAICompatibleModel(
+        model="qwen3:4b",
+        client=fake_openai,
+        supports_tool_calling=True,
+        extra_body={"prompt_cache_key": "caller:key"},
+    )
+
+    await model.complete([Message(role="user", content="test")])
+
+    assert completions.requests[0]["extra_body"]["prompt_cache_key"] == "caller:key"
+    trace = provider_cache_trace("openai-compatible", completions.requests[0])
+    assert trace.prompt_cache_key == "caller:key"
+    assert model.last_cache_trace == trace
 
 
 def test_openai_compatible_provider_options_cannot_override_core_fields() -> None:
@@ -716,6 +926,55 @@ async def test_responses_model_text_tool_and_usage_roundtrip() -> None:
 
 
 @pytest.mark.asyncio
+async def test_responses_model_maps_message_attachments_to_native_content() -> None:
+    client, requests = make_capturing_json_client(RESPONSES_PAYLOAD)
+    model = ResponsesModel(
+        model="gpt-5",
+        api_key="test",
+        client=client,
+        supports_tool_calling=True,
+    )
+
+    try:
+        await model.complete(
+            (
+                Message(role="system", content="Use tools."),
+                ATTACHMENT_MESSAGE.model_copy(
+                    update={
+                        "provider_metadata": {
+                            "attachments": [
+                                {
+                                    "name": "screenshot.png",
+                                    "media_type": "image/png",
+                                    "uri": "https://example.test/screenshot.png",
+                                },
+                                {
+                                    "name": "design.pdf",
+                                    "media_type": "application/pdf",
+                                    "uri": "https://example.test/design.pdf",
+                                },
+                            ]
+                        }
+                    }
+                ),
+            )
+        )
+    finally:
+        await client.aclose()
+
+    content = requests[0]["input"][0]["content"]
+    assert content[0] == {"type": "input_text", "text": "Inspect attachments."}
+    assert content[1] == {
+        "type": "input_image",
+        "image_url": "https://example.test/screenshot.png",
+    }
+    assert content[2] == {
+        "type": "input_file",
+        "file_url": "https://example.test/design.pdf",
+    }
+
+
+@pytest.mark.asyncio
 async def test_responses_model_translates_canonical_request_shape() -> None:
     client, requests = make_capturing_json_client(RESPONSES_PAYLOAD)
     model = ResponsesModel(
@@ -733,6 +992,11 @@ async def test_responses_model_translates_canonical_request_shape() -> None:
         await client.aclose()
 
     request = requests[0]
+    assert request["prompt_cache_key"].startswith("rivumi-responses:")
+    trace = provider_cache_trace("openai-responses", request)
+    assert trace.cache_ready is True
+    assert trace.tool_schema_fingerprint is not None
+    assert model.last_cache_trace == trace
     # system messages hoist into top-level instructions
     assert request["instructions"] == "Use tools."
     # tools flatten one level versus Chat Completions

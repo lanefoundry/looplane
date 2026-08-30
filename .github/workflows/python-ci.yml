@@ -1,0 +1,21 @@
+name: python-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --extra dev --extra sandbox
+      - name: Unit tests
+        run: uv run pytest
+      - name: WebSocket conversation attach smoke
+        run: uv run --extra dev python scripts/smoke_conversation_websocket.py
+      - name: Linux Landlock/seccomp smoke
+        run: bash scripts/smoke_linux_sandbox.sh

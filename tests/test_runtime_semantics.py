@@ -24,6 +24,7 @@ from rivumi.runtime_semantics import (
     TaskStatus,
     decide_permission,
     history_summary_fallback_span,
+    input_cache_hit_rate,
     should_apply_history_summary_fallback,
     should_auto_compact_context,
     should_inject_workspace_context_reminder,
@@ -64,6 +65,25 @@ def test_context_telemetry_distinguishes_exact_from_estimated_counts() -> None:
             total_tokens=110,
             context_window=100,
         )
+
+
+def test_input_cache_hit_rate_uses_cached_input_subset() -> None:
+    assert input_cache_hit_rate(input_tokens=1_000, cached_input_tokens=250) == 0.25
+    assert input_cache_hit_rate(input_tokens=0, cached_input_tokens=0) is None
+    assert (
+        ContextTelemetry(
+            accuracy="exact",
+            input_tokens=1_000,
+            cached_input_tokens=400,
+            output_tokens=100,
+            total_tokens=1_100,
+            context_window=2_000,
+        ).input_cache_hit_rate
+        == 0.4
+    )
+
+    with pytest.raises(ValueError, match="cannot exceed"):
+        input_cache_hit_rate(input_tokens=100, cached_input_tokens=101)
 
 
 def test_context_checkpoint_separates_summarized_and_retained_turns() -> None:
@@ -224,10 +244,13 @@ def test_workspace_context_reminder_policy_is_one_shot_after_compaction() -> Non
     [
         (PermissionMode.ASK, ToolEffect.READ, PermissionDecision.ALLOW),
         (PermissionMode.ASK, ToolEffect.MODIFY, PermissionDecision.ASK),
+        (PermissionMode.ASK, ToolEffect.MODIFY_EXECUTE, PermissionDecision.ASK),
         (PermissionMode.ASK, ToolEffect.EXECUTE, PermissionDecision.ASK),
         (PermissionMode.ACCEPT_EDITS, ToolEffect.MODIFY, PermissionDecision.ALLOW),
+        (PermissionMode.ACCEPT_EDITS, ToolEffect.MODIFY_EXECUTE, PermissionDecision.ASK),
         (PermissionMode.ACCEPT_EDITS, ToolEffect.EXECUTE, PermissionDecision.ASK),
         (PermissionMode.READ_ONLY, ToolEffect.MODIFY, PermissionDecision.DENY),
+        (PermissionMode.READ_ONLY, ToolEffect.MODIFY_EXECUTE, PermissionDecision.DENY),
         (PermissionMode.READ_ONLY, ToolEffect.EXECUTE, PermissionDecision.DENY),
     ],
 )

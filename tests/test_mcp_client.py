@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import stat
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -9,7 +11,17 @@ import pytest
 
 from rivumi.approvals import ToolEffect, effect_for_tool, effect_for_tool_definition
 from rivumi.contracts import ToolCall, ToolDefinition, VerificationCommand
-from rivumi.mcp_client import McpError, load_native_mcp_server_configs
+from rivumi.mcp_client import (
+    McpError,
+    McpOAuthClient,
+    McpOAuthCredential,
+    McpOAuthCredentialStore,
+    NativeMcpOAuthConfig,
+    discover_http_auth_metadata,
+    load_native_mcp_server_configs,
+    mcp_oauth_credential_path,
+    parse_mcp_oauth_callback,
+)
 from rivumi.policy import SafePathPolicy
 from rivumi.runtime_registry import RUNTIME_REGISTRY, RuntimeCapability
 from rivumi.tools import ToolExecutor
@@ -214,6 +226,37 @@ def test_mcp_config_loads_allowlisted_http_server(tmp_path: Path) -> None:
     assert configs[0].bearer_token_env_var == "REMOTE_MCP_TOKEN"
 
 
+def test_mcp_config_loads_authorization_code_oauth_metadata(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "remote": {
+                        "url": "https://mcp.example.test/mcp",
+                        "oauth": {
+                            "grantType": "authorization_code",
+                            "issuer": "https://auth.example.test",
+                            "authorizationEndpoint": "https://auth.example.test/authorize",
+                            "tokenEndpoint": "https://auth.example.test/token",
+                            "clientId": "rivumi",
+                            "redirectUri": "https://client.example.test/callback",
+                            "scopes": ["mcp:tools", "mcp:tools"],
+                            "accessTokenEnvVar": "REMOTE_MCP_ACCESS_TOKEN",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    configs = load_native_mcp_server_configs(tmp_path, allowlist=("remote",))
+
+    assert configs[0].oauth is not None
+    assert configs[0].oauth.grant_type == "authorization_code"
+    assert configs[0].oauth.scopes == ("mcp:tools",)
+
+
 def test_mcp_config_rejects_remote_plain_http(tmp_path: Path) -> None:
     (tmp_path / ".mcp.json").write_text(
         json.dumps({"mcpServers": {"remote": {"url": "http://mcp.example.test/mcp"}}}),
@@ -384,6 +427,258 @@ def test_tool_executor_exposes_and_calls_allowlisted_http_mcp_tool(
         assert requests[2]["client"] == "rivumi"
     finally:
         executor.close()
+
+
+def test_tool_executor_uses_oauth_access_token_for_http_mcp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authorizations: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        authorizations.append(request.headers.get("authorization"))
+        request_id = body.get("id")
+        method = body.get("method")
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={"jsonrpc": "2.0", "id": request_id, "result": {"capabilities": {}}},
+            )
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        if method == "tools/list":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"tools": []},
+                },
+            )
+        raise AssertionError(f"unexpected MCP method: {method}")
+
+    real_client = httpx.Client
+
+    def client_factory(**kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr("rivumi.mcp_client.httpx.Client", client_factory)
+    monkeypatch.setenv("REMOTE_MCP_ACCESS_TOKEN", "oauth-access-token")
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "remote": {
+                        "url": "https://mcp.example.test/mcp",
+                        "oauth": {
+                            "authorizationEndpoint": "https://auth.example.test/authorize",
+                            "tokenEndpoint": "https://auth.example.test/token",
+                            "clientId": "rivumi",
+                            "redirectUri": "https://client.example.test/callback",
+                            "accessTokenEnvVar": "REMOTE_MCP_ACCESS_TOKEN",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    executor = ToolExecutor(
+        workspace=tmp_path,
+        policy=SafePathPolicy(tmp_path, allowed_paths=("**",)),
+        verification_commands=(VerificationCommand(name="noop", argv=("true",)),),
+        mcp_servers=load_native_mcp_server_configs(tmp_path, allowlist=("remote",)),
+    )
+    try:
+        assert executor.definitions
+        assert authorizations == [
+            "Bearer oauth-access-token",
+            "Bearer oauth-access-token",
+            "Bearer oauth-access-token",
+        ]
+    finally:
+        executor.close()
+
+
+def test_http_mcp_oauth_header_uses_rivumi_store_when_env_is_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authorizations: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        authorizations.append(request.headers.get("authorization"))
+        request_id = body.get("id")
+        method = body.get("method")
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={"jsonrpc": "2.0", "id": request_id, "result": {"capabilities": {}}},
+            )
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        if method == "tools/list":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={"jsonrpc": "2.0", "id": request_id, "result": {"tools": []}},
+            )
+        raise AssertionError(method)
+
+    real_client = httpx.Client
+
+    def client_factory(**kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr("rivumi.mcp_client.httpx.Client", client_factory)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    McpOAuthCredentialStore(mcp_oauth_credential_path("remote")).save(
+        McpOAuthCredential(accessToken="stored-access-token")
+    )
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "remote": {
+                        "url": "https://mcp.example.test/mcp",
+                        "oauth": {
+                            "authorizationEndpoint": "https://auth.example.test/authorize",
+                            "tokenEndpoint": "https://auth.example.test/token",
+                            "clientId": "rivumi",
+                            "redirectUri": "http://localhost:1455/callback",
+                            "accessTokenEnvVar": "REMOTE_MCP_ACCESS_TOKEN",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    executor = ToolExecutor(
+        workspace=tmp_path,
+        policy=SafePathPolicy(tmp_path, allowed_paths=("**",)),
+        verification_commands=(VerificationCommand(name="noop", argv=("true",)),),
+        mcp_servers=load_native_mcp_server_configs(tmp_path, allowlist=("remote",)),
+    )
+    try:
+        assert executor.definitions
+        assert all(value == "Bearer stored-access-token" for value in authorizations)
+    finally:
+        executor.close()
+
+
+def test_mcp_oauth_client_exchanges_authorization_code_and_parses_callback() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+            request=request,
+        )
+
+    config = NativeMcpOAuthConfig(
+        authorizationEndpoint="https://auth.example.test/authorize",
+        tokenEndpoint="https://auth.example.test/token",
+        clientId="rivumi",
+        redirectUri="http://localhost:1455/callback",
+        scopes=("mcp:tools",),
+        accessTokenEnvVar="REMOTE_MCP_ACCESS_TOKEN",
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    oauth = McpOAuthClient(client=client)
+
+    try:
+        authorization = oauth.begin_login(config)
+        assert authorization.url.startswith("https://auth.example.test/authorize?")
+        code = parse_mcp_oauth_callback(
+            f"http://localhost:1455/callback?code=abc&state={authorization.state}",
+            expected_state=authorization.state,
+        )
+
+        credential = oauth.exchange_code(config, code=code, verifier=authorization.verifier)
+
+        assert code == "abc"
+        assert credential.access_token == "access-token"
+        assert credential.refresh_token == "refresh-token"
+        assert credential.expires_at is not None
+        assert credential.expires_at > time.time()
+        assert requests[0].url == httpx.URL("https://auth.example.test/token")
+        assert b"grant_type=authorization_code" in requests[0].content
+        assert b"code=abc" in requests[0].content
+        assert b"code_verifier=" in requests[0].content
+    finally:
+        oauth.close()
+        client.close()
+
+
+def test_mcp_oauth_credential_store_round_trips_private_file(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "rivumi" / "auth" / "mcp-remote.json"
+    store = McpOAuthCredentialStore(path)
+
+    store.save(
+        McpOAuthCredential(
+            accessToken="access-token",
+            refreshToken="refresh-token",
+            expiresAt=1234.5,
+        )
+    )
+
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.access_token == "access-token"
+    assert loaded.refresh_token == "refresh-token"
+    assert loaded.expires_at == 1234.5
+
+
+def test_discover_http_auth_metadata_from_www_authenticate() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://mcp.example.test/mcp":
+            return httpx.Response(
+                401,
+                headers={
+                    "www-authenticate": (
+                        'Bearer resource_metadata="https://mcp.example.test/.well-known/oauth"'
+                    )
+                },
+                request=request,
+            )
+        if str(request.url) == "https://mcp.example.test/.well-known/oauth":
+            return httpx.Response(
+                200,
+                json={
+                    "resource": "https://mcp.example.test/mcp",
+                    "authorization_servers": ["https://auth.example.test"],
+                },
+                request=request,
+            )
+        raise AssertionError(str(request.url))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    metadata = discover_http_auth_metadata("https://mcp.example.test/mcp", client=client)
+
+    assert metadata == {
+        "resource": "https://mcp.example.test/mcp",
+        "authorization_servers": ["https://auth.example.test"],
+    }
 
 
 def test_http_mcp_requires_configured_bearer_token(tmp_path: Path) -> None:

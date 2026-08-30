@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from rivumi.secret_scan import redact_secrets, scan_text_for_secrets
+
 _OTEL_VERSION = 1
 
 
@@ -116,6 +118,10 @@ def export_run(run_dir: str | Path, output: Path | None = None) -> str:
     """Export one run as OTLP-JSON; returns the JSON string (writes to output if given)."""
 
     payload = json.dumps(run_to_otel_payload(run_dir), ensure_ascii=False, indent=2)
+    payload = redact_secrets(payload)
+    findings = scan_text_for_secrets(str(output), path="otel-export-path") if output else ()
+    if findings:
+        raise ValueError("OTel export output path looks like it contains a secret")
     if output is not None:
         output.write_text(payload + "\n")
     return payload

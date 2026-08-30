@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from rivumi.secret_scan import redact_secrets
+
 MAX_EXPORT_ITEMS = 400
 MAX_ITEM_CHARS = 1_600
 MAX_DETAIL_CHARS = 800
@@ -23,7 +25,7 @@ _ASSISTANT_ROLES = frozenset({"Assistant", "Agent"})
 
 
 def _bounded(text: str, limit: int) -> str:
-    collapsed = text.rstrip()
+    collapsed = redact_secrets(text).rstrip()
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1] + "…"

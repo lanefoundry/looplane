@@ -8,7 +8,7 @@ import hashlib
 import json
 import random
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any, TypeVar
@@ -23,10 +23,21 @@ from rivumi.approvals import (
     ToolEffect,
     effect_for_tool_definition,
 )
+from rivumi.cache_strategy import ProviderCacheTrace
 from rivumi.console import CompositeEventSink, EventSink, JsonlEventSink
+from rivumi.context_providers import (
+    ContextProviderRunner,
+    load_project_context_provider_runner,
+)
+from rivumi.context_watch import (
+    ProjectContextWatchSnapshot,
+    project_context_watch_snapshot,
+    render_project_context_reload,
+)
 from rivumi.contracts import (
     Checkpoint,
     ConversationItem,
+    InjectedContext,
     Message,
     ModelTurn,
     ModelUsageRecord,
@@ -34,13 +45,27 @@ from rivumi.contracts import (
     RunStatus,
     TaskContract,
     ToolCall,
+    ToolDefinition,
     ToolObservation,
     Usage,
     VerificationCommand,
     VerificationOutcome,
 )
 from rivumi.events import EventWriter, RunEvent, atomic_write_json
-from rivumi.instructions import load_instruction_documents, render_instruction_context
+from rivumi.hooks import HookDecision, HookEventName, HookRunner, load_project_hook_runner
+from rivumi.ide import (
+    IdeBridgeError,
+    load_project_ide_diagnostics,
+    load_project_open_files,
+    render_ide_diagnostics_context,
+    render_ide_open_files_context,
+)
+from rivumi.instructions import (
+    instruction_documents_fingerprint,
+    render_instruction_context,
+    render_instruction_diagnostics,
+    resolve_instruction_documents,
+)
 from rivumi.mcp_client import load_native_mcp_server_configs
 from rivumi.memory import relevant_memory_entries, render_known_context
 from rivumi.models import ModelProvider, ProviderError
@@ -55,6 +80,11 @@ from rivumi.prompts import (
     build_context_pressure_reminder,
     build_history_summary_fallback_message,
     build_workspace_context_reminder,
+    render_interaction_prompt_context,
+    render_runtime_prompt_context,
+    render_subagent_planner_policy,
+    render_tool_prompt_context,
+    render_workspace_prompt_context,
 )
 from rivumi.provider_catalog import estimate_cost
 from rivumi.runtime import (
@@ -78,6 +108,7 @@ from rivumi.session import (
     SessionValidationError,
     SessionWriterLease,
 )
+from rivumi.skills import load_project_skills, render_skill_context, select_project_skills
 from rivumi.tools import ToolExecutionError, ToolExecutor
 
 
@@ -127,6 +158,10 @@ class AgentRunner:
         sandbox_backend: str | None = None,
         sandbox_read_roots: Sequence[Path] = (),
         event_sink: EventSink | None = None,
+        hook_runner: HookRunner | None = None,
+        context_provider_runner: ContextProviderRunner | None = None,
+        enable_subagent_dispatch: bool = True,
+        subagent_models: Mapping[str, ModelProvider] | None = None,
     ) -> None:
         self.task = task
         self.model_retry_delay = retry_delay_seconds
@@ -155,6 +190,13 @@ class AgentRunner:
         self.events = EventWriter(self.run_dir / "events.jsonl", durable=durable_events)
         self.allow_unsafe_local_exec = allow_unsafe_local_exec
         self.permission_guard = permission_guard
+        self._hook_runner = hook_runner or load_project_hook_runner(self.task.repository)
+        self._context_provider_runner = (
+            context_provider_runner
+            or load_project_context_provider_runner(self.task.repository)
+        )
+        self._enable_subagent_dispatch = enable_subagent_dispatch
+        self._subagent_models = dict(subagent_models or {})
         self.approvals = approval_policy or HeadlessApprovalPolicy(
             allow_modify=True,
             allow_execute=allow_unsafe_local_exec,
@@ -187,6 +229,10 @@ class AgentRunner:
         self._context_pressure_reminder_sent = False
         self._history_summary_fallback_applied = False
         self._workspace_context_reminder_sent = False
+        self._last_ide_diagnostics_fingerprint: str | None = None
+        self._last_ide_open_files_fingerprint: str | None = None
+        self._last_instruction_fingerprint: str | None = None
+        self._last_project_context_watch: ProjectContextWatchSnapshot | None = None
         self._cancel_requested = asyncio.Event()
 
     @property
@@ -261,22 +307,22 @@ class AgentRunner:
             runner._last_fingerprint = manifest.last_action_fingerprint
             runner._last_verification = manifest.verification
             runner._context_pressure_reminder_sent = any(
-                isinstance(item, Message)
-                and item.role == "user"
+                isinstance(item, InjectedContext)
+                and item.source == "context_pressure"
                 and item.content is not None
                 and CONTEXT_PRESSURE_REMINDER_VERSION in item.content
                 for item in runner._messages
             )
             runner._history_summary_fallback_applied = any(
-                isinstance(item, Message)
-                and item.role == "user"
+                isinstance(item, InjectedContext)
+                and item.source == "history_summary_fallback"
                 and item.content is not None
                 and CONTEXT_SUMMARY_FALLBACK_VERSION in item.content
                 for item in runner._messages
             )
             runner._workspace_context_reminder_sent = any(
-                isinstance(item, Message)
-                and item.role == "user"
+                isinstance(item, InjectedContext)
+                and item.source == "workspace_context_reminder"
                 and item.content is not None
                 and WORKSPACE_CONTEXT_REMINDER_VERSION in item.content
                 for item in runner._messages
@@ -330,6 +376,39 @@ class AgentRunner:
         await self._event_sink.emit(event)
         self._sequence += 1
 
+    async def _run_hook(
+        self,
+        event: HookEventName,
+        payload: dict[str, Any],
+    ) -> HookDecision | None:
+        if not self._hook_runner.enabled:
+            return None
+        try:
+            decision = await self._run_blocking_safely(
+                self._hook_runner.run,
+                event,
+                {
+                    "run_id": self.run_id,
+                    "task_id": self.task.task_id,
+                    "sequence": self._sequence,
+                    **payload,
+                },
+            )
+        except Exception as exc:
+            decision = HookDecision(
+                decision="deny",
+                reason=bounded_text(f"hook failed closed: {type(exc).__name__}: {exc}", 2_000),
+                hook=event.value,
+            )
+        await self._event(
+            "hook.completed" if decision is None else "hook.denied",
+            hook_event=event.value,
+            decision=decision.decision if decision is not None else None,
+            reason=decision.reason if decision is not None else "",
+            hook=decision.hook if decision is not None else "",
+        )
+        return decision
+
     async def _save_manifest(self) -> None:
         if self._session_store is None or self._session_lease is None or self._manifest is None:
             return
@@ -370,6 +449,13 @@ class AgentRunner:
             tool_call=tool_call,
             command=command,
         )
+        hook_decision = await self._run_hook(
+            HookEventName.APPROVAL_REQUEST,
+            {
+                "approval_request": request.model_dump(mode="json"),
+                "subjects": list(guard_subjects),
+            },
+        )
         if self.permission_guard is not None and effect is ToolEffect.EXECUTE:
             policy_reason = self.permission_guard.approval_policy_reason(
                 request, guard_subjects
@@ -378,7 +464,13 @@ class AgentRunner:
         # Deny-first guard: forbidden operations win even over session grants
         # and dangerous-mode auto-approval, so evaluate it before reuse.
         pre_decision: ApprovalDecision | None = None
-        if self.permission_guard is not None:
+        if hook_decision is not None:
+            pre_decision = ApprovalDecision.DENY
+            if not request.policy_reason:
+                request = request.model_copy(
+                    update={"policy_reason": f"hook denied: {hook_decision.reason}"}
+                )
+        elif self.permission_guard is not None:
             pre_decision = self.permission_guard.pre_decision(
                 request,
                 guard_subjects,
@@ -550,6 +642,18 @@ class AgentRunner:
                 )
                 if check is not None:
                     parts.append(" ".join(check.argv))
+            if tool_call.name == "tool_transaction" and self._executor is not None:
+                steps = tool_call.arguments.get("steps")
+                if isinstance(steps, Sequence) and not isinstance(steps, (str, bytes)):
+                    for step in steps:
+                        if not isinstance(step, Mapping) or step.get("op") != "run_check":
+                            continue
+                        args = step.get("args", {})
+                        if not isinstance(args, Mapping):
+                            continue
+                        check = self._executor.verification_commands.get(str(args.get("name", "")))
+                        if check is not None:
+                            parts.append(" ".join(check.argv))
             parts.extend(
                 str(value) for value in tool_call.arguments.values() if isinstance(value, str)
             )
@@ -611,6 +715,40 @@ class AgentRunner:
             )
         )
 
+    async def _record_provider_cache_trace(self, lane: str, model: ModelProvider) -> None:
+        trace = getattr(model, "last_cache_trace", None)
+        if not isinstance(trace, ProviderCacheTrace):
+            return
+        payload = {
+            "step": self._step,
+            "lane": lane,
+            "provider": model.provider_name,
+            "model": model.model_id,
+            "trace": {
+                "provider": trace.provider,
+                "prompt_cache_key": trace.prompt_cache_key,
+                "tool_schema_fingerprint": trace.tool_schema_fingerprint,
+                "cache_control_blocks": trace.cache_control_blocks,
+                "warnings": list(trace.warnings),
+                "cache_ready": trace.cache_ready,
+            },
+        }
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        with (self.run_dir / "cache-traces.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        await self._event(
+            "model.cache_trace",
+            step=self._step,
+            lane=lane,
+            provider=model.provider_name,
+            model=model.model_id,
+            cache_ready=trace.cache_ready,
+            prompt_cache_key=trace.prompt_cache_key,
+            tool_schema_fingerprint=trace.tool_schema_fingerprint,
+            cache_control_blocks=trace.cache_control_blocks,
+            warnings=list(trace.warnings),
+        )
+
     def _aggregate_cost(self):
         if not self._model_usage:
             return estimate_cost(self.model.provider_name, self.model.model_id, self._usage)
@@ -664,6 +802,24 @@ class AgentRunner:
             raise WorkspacePreparationError("could not resolve source repository HEAD")
         return sha
 
+    def _initial_git_status(self) -> tuple[str, ...]:
+        if self._executor is None:
+            return ("unavailable: workspace executor is not initialized",)
+        result = run_bounded_command(
+            ("git", "status", "--short", "--branch"),
+            cwd=self._executor.workspace,
+            timeout_seconds=10.0,
+            max_output_chars=4_000,
+            env=sanitized_subprocess_env(task_home=self._executor.workspace.parent / ".task-env"),
+        )
+        if not result.ok:
+            reason = result.stderr.strip() or result.stdout.strip() or "git status failed"
+            return (f"unavailable: {reason}",)
+        lines = tuple(line for line in result.stdout.splitlines() if line.strip())
+        if result.stdout_truncated:
+            return (*lines, "... truncated")
+        return lines
+
     def _initial_messages(self, base_sha: str) -> list[ConversationItem]:
         checks = "\n".join(
             f"- {command.name}: {list(command.argv)!r}" for command in self.task.verification
@@ -672,11 +828,54 @@ class AgentRunner:
         known_context = render_known_context(
             relevant_memory_entries(project=self.task.repository)
         )
-        instruction_context = render_instruction_context(
-            load_instruction_documents(
-                project_root=self.task.repository,
-                start_dir=Path.cwd(),
+        instruction_resolution = resolve_instruction_documents(
+            project_root=self.task.repository,
+            start_dir=Path.cwd(),
+        )
+        instruction_documents = instruction_resolution.documents
+        self._last_instruction_fingerprint = instruction_documents_fingerprint(
+            instruction_documents
+        )
+        instruction_context = render_instruction_context(instruction_documents)
+        instruction_diagnostics = render_instruction_diagnostics(
+            instruction_resolution.diagnostics
+        )
+        if instruction_diagnostics:
+            known_context = (
+                f"{known_context}\n\n{instruction_diagnostics}"
+                if known_context
+                else instruction_diagnostics
             )
+        skills = select_project_skills(
+            load_project_skills(self.task.repository),
+            self.task.enabled_skills,
+        )
+        skill_context = render_skill_context(skills)
+        provider_tools = self._provider_tool_definitions() if self._executor is not None else ()
+        tool_context_parts = [render_tool_prompt_context(provider_tools)]
+        if self._enable_subagent_dispatch:
+            tool_context_parts.append(render_subagent_planner_policy())
+        tool_context = "\n\n".join(part for part in tool_context_parts if part)
+        workspace_context = render_workspace_prompt_context(
+            base_sha=base_sha,
+            allowed_paths=self.task.allowed_paths,
+            verification=self.task.verification,
+            git_status=self._initial_git_status(),
+        )
+        interaction_context = render_interaction_prompt_context()
+        runtime_context = render_runtime_prompt_context(
+            {
+                "mode": "native_loop",
+                "sandbox_backend": self._sandbox_backend,
+                "sandbox_checks": self._sandbox_checks,
+                "sandbox_profile": self._sandbox_profile,
+                "max_steps": self.task.limits.max_steps,
+                "max_tool_output_bytes": self.task.limits.max_tool_output_bytes,
+            }
+        )
+        self._last_project_context_watch = project_context_watch_snapshot(
+            self.task.repository,
+            start_dir=Path.cwd(),
         )
         request = (
             f"Task: {self.task.instruction}\n"
@@ -691,6 +890,11 @@ class AgentRunner:
                 content=build_coding_agent_system_prompt(
                     known_context=known_context,
                     instruction_context=instruction_context,
+                    skill_context=skill_context,
+                    tool_context=tool_context,
+                    interaction_context=interaction_context,
+                    workspace_context=workspace_context,
+                    runtime_context=runtime_context,
                 ),
             ),
             Message(role="user", content=request),
@@ -718,8 +922,82 @@ class AgentRunner:
     def _tool_definition_by_name(self, name: str):
         assert self._executor is not None
         return next(
-            (definition for definition in self._executor.definitions if definition.name == name),
+            (
+                definition
+                for definition in self._provider_tool_definitions()
+                if definition.name == name
+            ),
             None,
+        )
+
+    def _provider_tool_definitions(self) -> tuple[ToolDefinition, ...]:
+        assert self._executor is not None
+        if not self._enable_subagent_dispatch:
+            return self._executor.definitions
+        return (*self._executor.definitions, self._dispatch_subagents_definition())
+
+    @staticmethod
+    def _dispatch_subagents_definition() -> ToolDefinition:
+        return ToolDefinition(
+            name="dispatch_subagents",
+            description=(
+                "Dispatch one or more named-role subagents in isolated Rivumi child workspaces. "
+                "Use this for parallel investigation, staged handoff, or a child-reviewed "
+                "transaction proposal. Each agent must have role scout, analyst, or reviewer, an "
+                "instruction, optional allowed_paths narrowed from the parent, optional "
+                "depends_on ids, and optional proposed_transaction steps. Child agents cannot "
+                "modify files, run checks, recurse, or bypass parent approvals; proposed "
+                "transactions are executed sequentially by the parent through tool_transaction."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "agents": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "minLength": 1, "maxLength": 64},
+                                "role": {
+                                    "type": "string",
+                                    "enum": ["scout", "analyst", "reviewer"],
+                                },
+                                "instruction": {"type": "string", "minLength": 1},
+                                "depends_on": {
+                                    "type": "array",
+                                    "items": {"type": "string", "minLength": 1, "maxLength": 64},
+                                    "default": [],
+                                },
+                                "allowed_paths": {
+                                    "type": "array",
+                                    "items": {"type": "string", "minLength": 1},
+                                },
+                                "max_steps": {"type": "integer", "minimum": 1, "maximum": 6},
+                                "proposed_transaction": {
+                                    "type": "object",
+                                    "properties": {
+                                        "steps": {
+                                            "type": "array",
+                                            "minItems": 1,
+                                            "maxItems": 8,
+                                            "items": {"type": "object"},
+                                        }
+                                    },
+                                    "required": ["steps"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "required": ["id", "role", "instruction"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["agents"],
+                "additionalProperties": False,
+            },
+            read_only=True,
         )
 
     def _can_execute_concurrently(self, call: ToolCall) -> bool:
@@ -751,8 +1029,8 @@ class AgentRunner:
         ):
             return
         self._messages.append(
-            Message(
-                role="user",
+            InjectedContext(
+                source="context_pressure",
                 content=build_context_pressure_reminder(
                     total_tokens=self._usage.total_tokens,
                     max_total_tokens=max_total_tokens,
@@ -785,19 +1063,54 @@ class AgentRunner:
         if end - start < 2:
             return
 
+        hook_payload = {
+            "compaction": {
+                "kind": "history_summary_fallback",
+                "source_start_index": start,
+                "source_end_index": end,
+                "source_message_count": end - start,
+                "message_count": len(self._messages),
+                "total_tokens": self._usage.total_tokens,
+                "max_total_tokens": max_total_tokens,
+            }
+        }
+        pre_decision = await self._run_hook(HookEventName.PRE_COMPACT, hook_payload)
+        if pre_decision is not None:
+            await self._event(
+                "context_pressure.summary_fallback_skipped",
+                reason=pre_decision.reason,
+                hook=pre_decision.hook,
+            )
+            return
+
         summary = build_history_summary_fallback_message(
             self._messages[start:end],
             source_start_index=start,
             source_end_index=end,
             max_chars=max(512, min(self.task.limits.max_tool_output_bytes, 12_000)),
         )
-        self._messages = [*self._messages[:start], summary, *self._messages[end:]]
+        self._messages = [
+            *self._messages[:start],
+            InjectedContext(source="history_summary_fallback", content=summary.content or ""),
+            *self._messages[end:],
+        ]
         self._history_summary_fallback_applied = True
         await self._event(
             "context_pressure.summary_fallback_applied",
             source_start_index=start,
             source_end_index=end,
             retained_messages=len(self._messages),
+        )
+        await self._run_hook(
+            HookEventName.POST_COMPACT,
+            {
+                **hook_payload,
+                "summary": {
+                    "source": "history_summary_fallback",
+                    "content_chars": len(summary.content or ""),
+                    "retained_messages": len(self._messages),
+                },
+            },
         )
 
     def _recent_important_paths(self, *, max_items: int = 12) -> tuple[str, ...]:
@@ -817,7 +1130,7 @@ class AgentRunner:
                 paths.append(normalized)
 
         for item in reversed(self._messages):
-            if isinstance(item, ToolObservation):
+            if not isinstance(item, Message):
                 continue
             for call in reversed(item.tool_calls):
                 add(call.arguments.get("path"))
@@ -882,12 +1195,16 @@ class AgentRunner:
             dict.fromkeys((*changed_files, *self._recent_important_paths())).keys()
         )
         self._messages.append(
-            build_workspace_context_reminder(
-                changed_files=changed_files,
-                check_status=self._check_status_lines(),
-                recent_paths=recent_paths,
-                constraints=self._constraint_lines(),
-                max_chars=max(512, min(self.task.limits.max_tool_output_bytes, 4_000)),
+            InjectedContext(
+                source="workspace_context_reminder",
+                content=build_workspace_context_reminder(
+                    changed_files=changed_files,
+                    check_status=self._check_status_lines(),
+                    recent_paths=recent_paths,
+                    constraints=self._constraint_lines(),
+                    max_chars=max(512, min(self.task.limits.max_tool_output_bytes, 4_000)),
+                ).content
+                or "",
             )
         )
         self._workspace_context_reminder_sent = True
@@ -895,6 +1212,190 @@ class AgentRunner:
             "context_pressure.workspace_reminder_injected",
             changed_files=changed_files,
             recent_paths=recent_paths,
+        )
+
+    async def _maybe_inject_runtime_context_providers(self) -> None:
+        if not self._context_provider_runner.enabled:
+            return
+        try:
+            items = await self._run_blocking_safely(
+                self._context_provider_runner.collect,
+                {
+                    "run_id": self.run_id,
+                    "task_id": self.task.task_id,
+                    "sequence": self._sequence,
+                    "step": self._step,
+                    "repository": str(self.task.repository),
+                },
+            )
+        except Exception as exc:
+            await self._event(
+                "context_provider.failed",
+                error=bounded_text(f"{type(exc).__name__}: {exc}", 2_000),
+            )
+            return
+        for item in items:
+            self._messages.append(
+                InjectedContext(
+                    source=bounded_text(f"context_provider:{item.source}", 128).rstrip(),
+                    content=item.content,
+                )
+            )
+        if items:
+            await self._event(
+                "context_provider.injected",
+                sources=[item.source for item in items],
+                items=len(items),
+            )
+
+    async def _maybe_inject_ide_diagnostics(self) -> None:
+        try:
+            snapshot = load_project_ide_diagnostics(self.task.repository)
+        except IdeBridgeError as exc:
+            await self._event("ide.diagnostics_ignored", error=str(exc))
+            return
+        if snapshot is None:
+            return
+        fingerprint = snapshot.fingerprint
+        if fingerprint == self._last_ide_diagnostics_fingerprint:
+            return
+        content = render_ide_diagnostics_context(
+            snapshot,
+            project_root=self.task.repository,
+        )
+        if not content:
+            self._last_ide_diagnostics_fingerprint = fingerprint
+            return
+        self._messages.append(InjectedContext(source="ide_diagnostics", content=content))
+        self._last_ide_diagnostics_fingerprint = fingerprint
+        paths = tuple(dict.fromkeys(diagnostic.path for diagnostic in snapshot.diagnostics))
+        await self._event(
+            "ide.diagnostics_injected",
+            diagnostic_count=len(snapshot.diagnostics),
+            paths=paths[:20],
+        )
+
+    async def _maybe_inject_ide_open_files(self) -> None:
+        try:
+            snapshot = load_project_open_files(self.task.repository)
+        except IdeBridgeError as exc:
+            await self._event("ide.open_files_ignored", error=str(exc))
+            return
+        if snapshot is None:
+            return
+        fingerprint = snapshot.fingerprint
+        if fingerprint == self._last_ide_open_files_fingerprint:
+            return
+        content = render_ide_open_files_context(
+            snapshot,
+            project_root=self.task.repository,
+        )
+        if not content:
+            self._last_ide_open_files_fingerprint = fingerprint
+            return
+        self._messages.append(InjectedContext(source="ide_open_files", content=content))
+        self._last_ide_open_files_fingerprint = fingerprint
+        await self._event(
+            "ide.open_files_injected",
+            file_count=len(snapshot.files),
+            paths=[file.path for file in snapshot.files[:20]],
+        )
+
+    async def _maybe_inject_instruction_reload(self) -> None:
+        try:
+            resolution = resolve_instruction_documents(
+                project_root=self.task.repository,
+                start_dir=Path.cwd(),
+            )
+        except ValueError as exc:
+            await self._event("instructions.reload_ignored", error=str(exc))
+            return
+        documents = resolution.documents
+        fingerprint = instruction_documents_fingerprint(documents)
+        if fingerprint == self._last_instruction_fingerprint:
+            return
+        self._last_instruction_fingerprint = fingerprint
+        content = render_instruction_context(documents)
+        diagnostics = render_instruction_diagnostics(resolution.diagnostics)
+        if not content:
+            content = "No configured user/project instruction files are currently loaded."
+        if diagnostics:
+            content = f"{content}\n\n{diagnostics}"
+        self._messages.append(
+            InjectedContext(
+                source="instruction_reload",
+                content=(
+                    "[instruction-reload-v1]\n"
+                    "Configured instruction files changed since the run started. "
+                    "Apply the following resolved instruction bundle below system/developer "
+                    f"priority and above ordinary repository content.\n\n{content}"
+                ),
+            )
+        )
+        await self._event(
+            "instructions.reloaded",
+            document_count=len(documents),
+            sources=[document.source for document in documents],
+            source_priority=[
+                {
+                    "source": diagnostic.source,
+                    "scope": diagnostic.scope,
+                    "status": diagnostic.status,
+                    "reason": diagnostic.reason,
+                }
+                for diagnostic in resolution.diagnostics
+            ],
+        )
+
+    async def _maybe_inject_project_context_reload(self) -> None:
+        previous = self._last_project_context_watch
+        if previous is None:
+            self._last_project_context_watch = project_context_watch_snapshot(
+                self.task.repository,
+                start_dir=Path.cwd(),
+            )
+            return
+        try:
+            current = project_context_watch_snapshot(
+                self.task.repository,
+                start_dir=Path.cwd(),
+            )
+        except ValueError as exc:
+            await self._event("project_context.reload_ignored", error=str(exc))
+            return
+        changed = current.changed_categories(previous)
+        if not changed:
+            return
+        self._last_project_context_watch = current
+        non_instruction_changes = tuple(
+            category for category in changed if category != "instructions"
+        )
+        if not non_instruction_changes:
+            return
+        content = render_project_context_reload(
+            previous,
+            current,
+            categories=non_instruction_changes,
+        )
+        if {"skills", "plugins"} & set(non_instruction_changes):
+            skills = select_project_skills(
+                load_project_skills(self.task.repository),
+                self.task.enabled_skills,
+            )
+            skill_context = render_skill_context(skills)
+            if skill_context:
+                content = f"{content}\n\nReloaded project skill context:\n{skill_context}"
+        if content:
+            self._messages.append(
+                InjectedContext(source="project_context_reload", content=content)
+            )
+        await self._event(
+            "project_context.reloaded",
+            categories=list(non_instruction_changes),
+            sources={
+                category: list(current.sources.get(category, ()))
+                for category in non_instruction_changes
+            },
         )
 
     async def _verify_all(self, deadline: float) -> tuple[VerificationOutcome, ...]:
@@ -1016,6 +1517,7 @@ class AgentRunner:
                 timeout=self._remaining(deadline),
             )
             self._record_model_usage("reviewer", self._review_model, turn.usage)
+            await self._record_provider_cache_trace("reviewer", self._review_model)
             review = bounded_text(turn.content or "", self.task.limits.max_tool_output_bytes)
             (self.run_dir / "review.md").write_text(review, encoding="utf-8")
             review_cost = self._model_usage[-1].cost
@@ -1053,7 +1555,7 @@ class AgentRunner:
         """Cancel a pure model wait immediately without interrupting side-effecting tools."""
 
         model_task = asyncio.create_task(
-            self.model.complete(self._messages, self._executor.definitions)
+            self.model.complete(self._messages, self._provider_tool_definitions())
         )
         cancel_task = asyncio.create_task(self._cancel_requested.wait())
         try:
@@ -1171,6 +1673,15 @@ class AgentRunner:
             effect=effect.value,
             arguments=self._event_arguments(call.arguments),
         )
+        hook_decision = await self._run_hook(
+            HookEventName.PRE_TOOL_USE,
+            {
+                "tool_call": call.model_dump(mode="json"),
+                "effect": effect.value,
+            },
+        )
+        if hook_decision is not None:
+            return ApprovalDecision.DENY, effect, None
         decision, request_id = await self._approval(
             action_id=call.tool_call_id,
             effect=effect,
@@ -1199,11 +1710,14 @@ class AgentRunner:
             pending = self._manifest.pending_action
             if pending is not None and pending.request_id == request_id:
                 await self._mark_approved_action_started(request_id)
-        observation = await self._run_blocking_safely(
-            self._executor.execute,
-            call,
-            timeout_seconds=self._remaining(deadline),
-        )
+        if call.name == "dispatch_subagents":
+            observation = await self._execute_dispatch_subagents(call, deadline=deadline)
+        else:
+            observation = await self._run_blocking_safely(
+                self._executor.execute,
+                call,
+                timeout_seconds=self._remaining(deadline),
+            )
         await self._event(
             "tool.completed",
             tool_call_id=call.tool_call_id,
@@ -1212,7 +1726,265 @@ class AgentRunner:
             error=observation.error,
             preview=bounded_text(observation.content, 2_000),
         )
+        await self._run_hook(
+            HookEventName.POST_TOOL_USE,
+            {
+                "tool_call": call.model_dump(mode="json"),
+                "observation": observation.model_dump(mode="json"),
+                "effect": effect.value,
+            },
+        )
         return observation
+
+    async def _execute_dispatch_subagents(
+        self,
+        call: ToolCall,
+        *,
+        deadline: float,
+    ) -> ToolObservation:
+        try:
+            content = await self._run_dispatch_subagents(call, deadline=deadline)
+            return ToolObservation(
+                tool_call_id=call.tool_call_id,
+                name=call.name,
+                ok=True,
+                content=bounded_text(content, self.task.limits.max_tool_output_bytes),
+            )
+        except (ValueError, TimeoutError) as exc:
+            return ToolObservation(
+                tool_call_id=call.tool_call_id,
+                name=call.name,
+                ok=False,
+                error=bounded_text(f"{type(exc).__name__}: {exc}", 2_000),
+            )
+
+    async def _run_dispatch_subagents(self, call: ToolCall, *, deadline: float) -> str:
+        from rivumi.subagents import (
+            ScheduledSubagent,
+            normalize_subagent_schedule,
+            run_subagent_task,
+            subagent_role_instruction,
+        )
+
+        scheduled = normalize_subagent_schedule(call.arguments.get("agents"))
+        specs = {spec.id: spec for spec in scheduled}
+        await self._event(
+            "subagents.schedule_normalized",
+            count=len(scheduled),
+            waves=max((spec.wave for spec in scheduled), default=-1) + 1,
+            agents=[
+                {
+                    "id": spec.id,
+                    "role": spec.role.value,
+                    "depends_on": list(spec.depends_on),
+                    "wave": spec.wave,
+                    "max_steps": spec.max_steps,
+                    "proposed_transaction": spec.proposed_transaction is not None,
+                }
+                for spec in scheduled
+            ],
+        )
+
+        def handoff_context(dependencies: tuple[str, ...], completed: dict[str, RunResult]) -> str:
+            if not dependencies:
+                return ""
+            blocks = ["Prior subagent handoff reports:"]
+            for dependency in dependencies:
+                result = completed[dependency]
+                blocks.append(
+                    "\n".join(
+                        (
+                            f"[{dependency}] status={result.status.value}",
+                            f"summary={bounded_text(result.summary, 2_000)}",
+                            f"changed_files={', '.join(result.changed_files) or '(none)'}",
+                        )
+                    )
+                )
+            return "\n\n".join(blocks)
+
+        async def execute_subagent_transaction(
+            agent_id: str,
+            proposed_transaction: object,
+            *,
+            deadline: float,
+        ) -> ToolObservation:
+            if not isinstance(proposed_transaction, Mapping):
+                raise ValueError("subagent proposed_transaction must be an object")
+            steps = proposed_transaction.get("steps")
+            if not isinstance(steps, Sequence) or isinstance(steps, (str, bytes)):
+                raise ValueError("subagent proposed_transaction.steps must be an array")
+            transaction_call = ToolCall(
+                name="tool_transaction",
+                arguments={"steps": list(steps)},
+                provider_metadata={"source": "dispatch_subagents", "subagent_id": agent_id},
+            )
+            await self._event(
+                "subagents.transaction_started",
+                id=agent_id,
+                tool_call_id=transaction_call.tool_call_id,
+            )
+            try:
+                decision, effect, request_id = await self._prepare_tool_call(transaction_call)
+            except ToolExecutionError as exc:
+                if str(exc) == "repeated_action":
+                    raise ValueError("subagent proposed_transaction repeated prior action") from exc
+                raise
+            if decision == ApprovalDecision.CANCEL:
+                raise ValueError("subagent proposed_transaction cancelled")
+            if decision == ApprovalDecision.DENY:
+                observation = ToolObservation(
+                    tool_call_id=transaction_call.tool_call_id,
+                    name=transaction_call.name,
+                    ok=False,
+                    error="subagent proposed_transaction denied by user",
+                )
+                await self._event(
+                    "tool.completed",
+                    tool_call_id=transaction_call.tool_call_id,
+                    name=transaction_call.name,
+                    ok=False,
+                    error=observation.error,
+                )
+            else:
+                observation = await self._execute_prepared_tool_call(
+                    transaction_call,
+                    effect=effect,
+                    request_id=request_id,
+                    deadline=deadline,
+                )
+            if observation.ok:
+                self._made_changes = True
+            await self._event(
+                "subagents.transaction_completed",
+                id=agent_id,
+                tool_call_id=transaction_call.tool_call_id,
+                ok=observation.ok,
+                error=observation.error,
+            )
+            return observation
+
+        async def run_one(
+            spec: ScheduledSubagent,
+            completed: dict[str, RunResult],
+        ) -> tuple[str, RunResult, str, str]:
+            agent_id = spec.id
+            role = spec.role
+            instruction = spec.instruction
+            dependencies = spec.depends_on
+            handoff = handoff_context(dependencies, completed)
+            if handoff:
+                instruction = (
+                    f"{subagent_role_instruction(role)}\n\n{handoff}\n\nTask: {instruction}"
+                )
+            else:
+                instruction = f"{subagent_role_instruction(role)}\n\nTask: {instruction}"
+            allowed_paths = spec.allowed_paths
+            if allowed_paths is not None:
+                if not isinstance(allowed_paths, Sequence) or isinstance(
+                    allowed_paths, (str, bytes)
+                ):
+                    raise ValueError("subagent allowed_paths must be an array")
+                child_allowed_paths = tuple(str(path) for path in allowed_paths)
+            else:
+                child_allowed_paths = self.task.allowed_paths
+            child_model = (
+                self._subagent_models.get(agent_id)
+                or self._subagent_models.get(role.value)
+                or self.model
+            )
+            result = await run_subagent_task(
+                self.task,
+                child_model,
+                self.run_dir,
+                instruction=instruction,
+                subagent_id=agent_id,
+                allowed_paths=child_allowed_paths,
+                limits=self.task.limits.model_copy(update={"max_steps": spec.max_steps}),
+                sandbox_checks=self._sandbox_checks,
+                allow_unsafe_local_exec=False,
+                approval_policy=HeadlessApprovalPolicy(
+                    allow_modify=False,
+                    allow_execute=False,
+                ),
+            )
+            return agent_id, result, child_model.provider_name, child_model.model_id
+
+        await self._event(
+            "subagents.dispatch_started",
+            count=len(scheduled),
+            ids=[spec.id for spec in scheduled],
+        )
+        completed: dict[str, RunResult] = {}
+        transaction_observations: dict[str, ToolObservation] = {}
+        results: list[tuple[str, RunResult, str, str]] = []
+        pending = dict(specs)
+        while pending:
+            ready_ids = [
+                agent_id
+                for agent_id, spec in pending.items()
+                if all(dep in completed for dep in spec.depends_on)
+            ]
+            if not ready_ids:
+                raise ValueError("subagent dependency cycle detected")
+            wave = [pending.pop(agent_id) for agent_id in ready_ids]
+            await self._event("subagents.wave_started", ids=ready_ids)
+            wave_results = await asyncio.wait_for(
+                asyncio.gather(*(run_one(spec, completed) for spec in wave)),
+                timeout=self._remaining(deadline),
+            )
+            for agent_id, result, _provider_name, _model_id in wave_results:
+                proposed_transaction = specs[agent_id].proposed_transaction
+                if proposed_transaction is not None:
+                    if result.status is not RunStatus.COMPLETED:
+                        raise ValueError(
+                            f"subagent {agent_id} did not complete; transaction not executed"
+                        )
+                    observation = await execute_subagent_transaction(
+                        agent_id,
+                        proposed_transaction,
+                        deadline=deadline,
+                    )
+                    transaction_observations[agent_id] = observation
+                    if not observation.ok:
+                        raise ValueError(
+                            "subagent proposed_transaction failed: "
+                            f"{observation.error or bounded_text(observation.content, 500)}"
+                        )
+                completed[agent_id] = result
+            results.extend(wave_results)
+            await self._event("subagents.wave_completed", ids=ready_ids)
+        await self._event(
+            "subagents.dispatch_completed",
+            count=len(results),
+            ids=[agent_id for agent_id, _result, _provider_name, _model_id in results],
+        )
+        lines = ["[subagents-v1]"]
+        for agent_id, result, provider_name, model_id in results:
+            role = specs[agent_id].role
+            depends_on = specs[agent_id].depends_on
+            transaction_observation = transaction_observations.get(agent_id)
+            transaction_status = (
+                "(none)"
+                if transaction_observation is None
+                else ("ok" if transaction_observation.ok else "failed")
+            )
+            lines.append(
+                "\n".join(
+                    (
+                        f"## {agent_id}",
+                        f"role: {role.value}",
+                        f"depends_on: {', '.join(str(dep) for dep in depends_on) or '(none)'}",
+                        f"model: {provider_name}/{model_id}",
+                        f"status: {result.status.value}",
+                        f"terminal_reason: {result.terminal_reason}",
+                        f"transaction: {transaction_status}",
+                        f"changed_files: {', '.join(result.changed_files) or '(none)'}",
+                        f"summary: {result.summary}",
+                        f"events: {result.artifacts.get('events', '')}",
+                    )
+                )
+            )
+        return "\n\n".join(lines)
 
     async def _execute_read_only_batch(
         self,
@@ -1296,6 +2068,11 @@ class AgentRunner:
                 "test_log": str(self.run_dir / "test.log"),
                 "result": str(self.run_dir / "result.json"),
             }
+            | (
+                {"cache_traces": str(self.run_dir / "cache-traces.jsonl")}
+                if (self.run_dir / "cache-traces.jsonl").is_file()
+                else {}
+            )
             | (
                 {"review": str(self.run_dir / "review.md")}
                 if (self.run_dir / "review.md").is_file()
@@ -1437,9 +2214,14 @@ class AgentRunner:
                         summary=final_summary,
                         patch_timeout_seconds=1.0,
                     )
+                await self._maybe_inject_instruction_reload()
+                await self._maybe_inject_project_context_reload()
                 await self._maybe_apply_history_summary_fallback()
                 await self._maybe_inject_context_pressure_reminder()
                 await self._maybe_inject_workspace_context_reminder(deadline)
+                await self._maybe_inject_runtime_context_providers()
+                await self._maybe_inject_ide_open_files()
+                await self._maybe_inject_ide_diagnostics()
                 mcp_tools_changed = await asyncio.to_thread(
                     self._executor.refresh_mcp_tool_definitions
                 )
@@ -1460,8 +2242,9 @@ class AgentRunner:
                         status=RunStatus.CANCELLED,
                         terminal_reason="user_cancelled",
                         summary="Run cancelled by user while waiting for the model.",
-                    )
+                )
                 self._record_model_usage("primary", self.model, turn.usage)
+                await self._record_provider_cache_trace("primary", self.model)
                 if error := self._token_budget_error():
                     return await self._finish(
                         status=RunStatus.FAILED,
@@ -1630,7 +2413,10 @@ class AgentRunner:
                             deadline=deadline,
                         )
                         self._messages.append(observation)
-                        if effect is ToolEffect.MODIFY and observation.ok:
+                        if (
+                            effect in {ToolEffect.MODIFY, ToolEffect.MODIFY_EXECUTE}
+                            and observation.ok
+                        ):
                             self._made_changes = True
                         await self._checkpoint(RunStatus.IMPLEMENTING, last_tool=call.name)
                         if self._cancel_requested.is_set():

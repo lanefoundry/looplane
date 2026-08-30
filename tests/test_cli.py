@@ -19,8 +19,9 @@ from rivumi.claude_conversation import IsolatedClaudeConversation
 from rivumi.codex_conversation import IsolatedCodexConversation
 from rivumi.codex_oauth import CodexCredentials, CodexCredentialStore
 from rivumi.contracts import ModelTurn, RunResult, RunStatus, TaskContract, ToolCall
-from rivumi.conversation_controller import ConversationController
+from rivumi.conversation_controller import BackendTurnLimiter, ConversationController
 from rivumi.loop import AgentRunner
+from rivumi.mcp_client import McpOAuthCredential, McpOAuthCredentialStore
 from rivumi.models import ScriptedModel
 
 FIX_PATCH = """\
@@ -85,6 +86,50 @@ def test_cli_help_exposes_interactive_options_headless_run_and_resume() -> None:
     assert "exec" in result.output
     assert "config" in result.output
     assert "run" in result.output
+    assert "plugin" in result.output
+
+
+def test_plugin_install_and_list_commands_install_local_package(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "review.md").write_text("---\nname: review\n---\nBody.", encoding="utf-8")
+    manifest = package / "plugin.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": "review-pack",
+                "discovery": {
+                    "keywords": ["review"],
+                    "homepage": "https://example.com/review-pack",
+                    "license": "MIT",
+                },
+                "skills": [{"path": "review.md"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    runner = CliRunner()
+
+    installed = runner.invoke(
+        cli.app,
+        ["plugin", "install", str(manifest), "--repo", str(repo), "--json"],
+    )
+    listed = runner.invoke(cli.app, ["plugin", "list", "--repo", str(repo), "--json"])
+
+    assert installed.exit_code == 0, installed.output
+    installed_payload = json.loads(installed.output)
+    assert installed_payload["name"] == "review-pack"
+    assert installed_payload["discovery"]["keywords"] == ["review"]
+    assert (repo / ".rivumi" / "plugins" / "review-pack.json").is_file()
+    assert (repo / ".rivumi" / "plugins" / "review.md").is_file()
+    assert listed.exit_code == 0, listed.output
+    payload = json.loads(listed.output)
+    assert payload[0]["name"] == "review-pack"
+    assert payload[0]["skills"] == ["review.md"]
+    assert payload[0]["discovery"]["homepage"] == "https://example.com/review-pack"
+    assert payload[0]["discovery"]["license"] == "MIT"
 
 
 def test_missing_textual_reports_editable_install_refresh(tmp_path: Path, monkeypatch) -> None:
@@ -562,6 +607,7 @@ def test_sandbox_checks_flag_reaches_native_runner(
 ) -> None:
     from rivumi import loop
 
+    monkeypatch.setattr(cli.sys, "platform", "linux")
     captured_runner_kwargs: dict[str, object] = {}
 
     class FakeRunner:
@@ -614,6 +660,7 @@ def test_sandbox_config_reaches_native_runner(
 ) -> None:
     from rivumi import loop
 
+    monkeypatch.setattr(cli.sys, "platform", "linux")
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
@@ -1182,6 +1229,57 @@ def test_sessions_replay_json_prints_deterministic_json(tmp_path: Path) -> None:
     assert payload["run_id"] == run_dir.name
     assert payload["event_count"] == 3
     assert [item["sequence"] for item in payload["timeline"]] == [0, 1, 2]
+
+
+def test_sessions_analyze_subagents_prints_schedule_analysis(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    run_dir = run_root / "abcdef1234567890"
+    run_dir.mkdir(parents=True)
+    events = [
+        {
+            "event_type": "subagents.schedule_normalized",
+            "run_id": run_dir.name,
+            "sequence": 1,
+            "data": {
+                "waves": 2,
+                "agents": [
+                    {
+                        "id": "analysis",
+                        "role": "analyst",
+                        "depends_on": [],
+                        "wave": 0,
+                        "max_steps": 1,
+                        "proposed_transaction": False,
+                    },
+                    {
+                        "id": "review",
+                        "role": "reviewer",
+                        "depends_on": ["analysis"],
+                        "wave": 1,
+                        "max_steps": 1,
+                        "proposed_transaction": True,
+                    },
+                ],
+            },
+        }
+    ]
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["sessions", "--run-root", str(run_root), "--analyze-subagents", "abcdef"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["trace_count"] == 1
+    assert payload["agent_count"] == 2
+    assert payload["role_counts"] == {"analyst": 1, "reviewer": 1}
+    assert payload["transaction_agent_count"] == 1
+    assert payload["warnings"] == []
 
 
 def test_sessions_fork_from_event_creates_side_effect_free_run(
@@ -1879,6 +1977,111 @@ def test_codex_status_is_redacted_and_logout_removes_only_app_grant(
     assert not credential_path.exists()
 
 
+def test_mcp_status_and_logout_use_rivumi_owned_grant(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    credential_path = tmp_path / "state" / "rivumi" / "auth" / "mcp-remote.json"
+    McpOAuthCredentialStore(credential_path).save(
+        McpOAuthCredential(
+            accessToken="access-secret",
+            refreshToken="refresh-secret",
+            expiresAt=4_000_000_000,
+        )
+    )
+
+    status = CliRunner().invoke(cli.app, ["auth", "status-mcp", "remote"])
+    logout = CliRunner().invoke(cli.app, ["auth", "logout-mcp", "remote"])
+    missing = CliRunner().invoke(cli.app, ["auth", "status-mcp", "remote"])
+
+    assert status.exit_code == 0
+    assert "configured (valid)" in status.output
+    assert "secret" not in status.output
+    assert logout.exit_code == 0
+    assert not credential_path.exists()
+    assert missing.exit_code == 1
+    assert "not configured" in missing.output
+
+
+def test_mcp_manual_login_hides_callback_and_persists_app_grant(
+    tmp_path: Path, monkeypatch
+) -> None:
+    closed = False
+    prompt_options: dict[str, object] = {}
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "remote": {
+                        "url": "https://mcp.example.test/mcp",
+                        "oauth": {
+                            "authorizationEndpoint": "https://auth.example.test/authorize",
+                            "tokenEndpoint": "https://auth.example.test/token",
+                            "clientId": "rivumi",
+                            "redirectUri": "http://localhost:1455/callback",
+                            "accessTokenEnvVar": "REMOTE_MCP_ACCESS_TOKEN",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeOAuth:
+        def begin_login(self, config: object):
+            return SimpleNamespace(
+                url="https://auth.example.test/authorize?state=expected",
+                state="expected",
+                verifier="verifier",
+            )
+
+        def exchange_code(
+            self,
+            config: object,
+            *,
+            code: str,
+            verifier: str,
+        ) -> McpOAuthCredential:
+            assert code == "short-lived"
+            assert verifier == "verifier"
+            return McpOAuthCredential(
+                accessToken="access-secret",
+                refreshToken="refresh-secret",
+                expiresAt=4_000_000_000,
+            )
+
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
+
+    def prompt(_: str, **kwargs: object) -> str:
+        prompt_options.update(kwargs)
+        return "http://localhost:1455/callback?code=short-lived&state=expected"
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr("rivumi.mcp_client.McpOAuthClient", FakeOAuth)
+    monkeypatch.setattr(cli.typer, "prompt", prompt)
+    monkeypatch.setattr(
+        cli.webbrowser,
+        "open",
+        lambda _: (_ for _ in ()).throw(AssertionError("browser must not open")),
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["auth", "login-mcp", "remote", "--repo", str(tmp_path), "--manual"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert closed is True
+    assert prompt_options["hide_input"] is True
+    assert "short-lived" not in result.output
+    assert "access-secret" not in result.output
+    credential_path = tmp_path / "state" / "rivumi" / "auth" / "mcp-remote.json"
+    credential = McpOAuthCredentialStore(credential_path).load()
+    assert credential is not None
+    assert credential.access_token == "access-secret"
+
+
 def _stub_verification(monkeypatch, *, ok: bool, message: str = "") -> None:
     from rivumi.provider_verification import VerificationResult
 
@@ -2176,10 +2379,17 @@ def test_acquire_native_controller_reuses_open_and_recreates_closed(
     cache: dict = {}
     identity = ("codex-cli", tmp_path, None, None)
     adapter = cli.runtime_registry.RUNTIME_REGISTRY["codex-cli"]
+    limiter = BackendTurnLimiter(max_active_turns=1)
     first = cli._acquire_native_controller(
-        cache, identity, adapter=adapter, repository=tmp_path, model=None
+        cache,
+        identity,
+        adapter=adapter,
+        repository=tmp_path,
+        model=None,
+        backend_limiter=limiter,
     )
     assert isinstance(first, ConversationController)
+    assert first.backend_limiter is limiter
     assert not first.is_closed
     assert cache[identity] is first
 
@@ -2200,6 +2410,46 @@ def test_acquire_native_controller_reuses_open_and_recreates_closed(
     assert rebuilt.is_closed is False
     assert cache[identity] is rebuilt
     assert first.is_closed is True
+
+
+def test_conversation_server_wires_native_runtime(
+    tiny_bug_repo: Path, monkeypatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs: object) -> None:
+            captured["session_kwargs"] = kwargs
+
+    def fake_run(app: object, **kwargs: object) -> None:
+        captured["app"] = app
+        captured["uvicorn_kwargs"] = kwargs
+
+    monkeypatch.setattr(cli.runtime_registry, "_resolve_class", lambda _: FakeSession)
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "conversation-server",
+            "--repo",
+            str(tiny_bug_repo),
+            "--runtime",
+            "codex-cli",
+            "--model",
+            "auto",
+            "--port",
+            "8799",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["session_kwargs"] == {"source_repository": tiny_bug_repo, "model": "auto"}
+    assert captured["uvicorn_kwargs"] == {
+        "host": "127.0.0.1",
+        "port": 8799,
+        "lifespan": "off",
+    }
 
 
 def test_rebuild_controller_after_failure(tmp_path: Path, monkeypatch) -> None:

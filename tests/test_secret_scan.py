@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rivumi.secret_scan import scan_patch_for_secrets
+from rivumi.secret_scan import redact_secrets, scan_file_for_secrets, scan_patch_for_secrets
 
 
 def test_scan_patch_for_secrets_reports_added_secret_without_value() -> None:
@@ -35,3 +35,18 @@ diff --git a/config.py b/config.py
 """
 
     assert scan_patch_for_secrets(patch) == ()
+
+
+def test_scan_file_and_redact_terminal_output_without_echoing_secret(tmp_path) -> None:
+    secret = "Bearer abcdefghijklmnopqrstuvwxyz123456"
+    path = tmp_path / "terminal.log"
+    path.write_text(f"stderr: {secret}\n", encoding="utf-8")
+
+    findings = scan_file_for_secrets(path)
+    redacted = redact_secrets(path.read_text(encoding="utf-8"))
+
+    assert len(findings) == 1
+    assert findings[0].pattern == "bearer-token"
+    assert secret not in findings[0].label()
+    assert secret not in redacted
+    assert "[REDACTED_SECRET]" in redacted

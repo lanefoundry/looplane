@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -21,6 +22,7 @@ from rivumi.external_runner import (
     ExternalModificationApprovalError,
     UnsafeExternalVerificationError,
     external_failure_hint,
+    native_instruction_suppression_policy,
 )
 from rivumi.runtime import WorkspacePreparationError
 
@@ -33,6 +35,7 @@ class EditingBackend(ExternalAgentBackend):
     def __init__(self, *, changed_path: str = "src/tiny_python_bug/calculator.py") -> None:
         self.changed_path = changed_path
         self.saw_origin = True
+        self.last_instruction = ""
 
     async def run(
         self,
@@ -42,6 +45,7 @@ class EditingBackend(ExternalAgentBackend):
         event_sink=None,
     ) -> ExternalAgentResult:
         assert working_directory is not None
+        self.last_instruction = task.instruction
         self.saw_origin = (working_directory / ".git").exists()
         target = working_directory / self.changed_path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +173,19 @@ class MissingExecutableBackend(EditingBackend):
         )
 
 
-def _task(repository: Path, *, allowed_paths=("src/**",)) -> TaskContract:
+class NativeSuppressionBackend(EditingBackend):
+    backend_name = "native-suppression-fixture"
+    native_instruction_suppression_args = ("--no-project-docs", "--no-user-rules")
+    native_instruction_suppression_env = {"RIVUMI_TEST_NO_DISCOVERY": "1"}
+    native_instruction_suppression_note = "Fixture backend declares native discovery suppression."
+
+
+def _task(
+    repository: Path,
+    *,
+    allowed_paths=("src/**",),
+    enabled_skills: tuple[str, ...] = (),
+) -> TaskContract:
     return TaskContract(
         repository=repository,
         instruction="Fix the calculator addition bug.",
@@ -179,6 +195,7 @@ def _task(repository: Path, *, allowed_paths=("src/**",)) -> TaskContract:
         ),
         limits=Limits(wall_time_seconds=60),
         task_id="external-fixture",
+        enabled_skills=enabled_skills,
     )
 
 
@@ -211,6 +228,184 @@ async def test_external_runner_verifies_patch_and_preserves_source(
     assert all(
         stat.S_IMODE(Path(path).stat().st_mode) == 0o600 for path in result.artifacts.values()
     )
+
+
+@pytest.mark.asyncio
+async def test_external_runner_projects_resolved_instructions(
+    tmp_path: Path, tiny_bug_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    (tiny_bug_repo / "AGENTS.md").write_text(
+        "External project guidance.",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=tiny_bug_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add instructions"], cwd=tiny_bug_repo, check=True)
+    backend = EditingBackend()
+    runner = ExternalCodingRunner(
+        _task(tiny_bug_repo),
+        backend,
+        tmp_path / "runs",
+        allow_external_modify=True,
+        allow_unsafe_local_exec=True,
+    )
+
+    result = await runner.run()
+
+    assert result.status is RunStatus.COMPLETED
+    assert "Resolved Rivumi instruction bundle" in backend.last_instruction
+    assert "[external-instruction-policy-v1]" in backend.last_instruction
+    assert "Do not run or apply the external CLI runtime's own" in backend.last_instruction
+    assert "External project guidance." in backend.last_instruction
+    assert "[instruction-source-priority-v1]" in backend.last_instruction
+    resolution = json.loads(
+        Path(result.artifacts["instruction_resolution"]).read_text(encoding="utf-8")
+    )
+    assert resolution["documents"] == [{"source": "AGENTS.md", "scope": "project"}]
+    assert resolution["source_priority"][0]["status"] == "active"
+    assert resolution["source_priority"][0]["source"] == "AGENTS.md"
+    policy = json.loads(
+        Path(result.artifacts["external_instruction_policy"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert policy["version"] == "external-instruction-policy-v1"
+    assert policy["owner"] == "rivumi"
+    assert policy["duplicate_discovery"] == "disabled_by_policy"
+    assert policy["native_suppression"]["status"] == "prompt_only"
+    assert policy["native_suppression"]["argv"] == []
+    assert "Native suppression status: prompt_only" in backend.last_instruction
+    assert policy["documents"] == resolution["documents"]
+
+
+@pytest.mark.asyncio
+async def test_external_runner_records_native_instruction_suppression_controls(
+    tmp_path: Path, tiny_bug_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    (tiny_bug_repo / "AGENTS.md").write_text(
+        "External project guidance.",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=tiny_bug_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add instructions"], cwd=tiny_bug_repo, check=True)
+    backend = NativeSuppressionBackend()
+    runner = ExternalCodingRunner(
+        _task(tiny_bug_repo),
+        backend,
+        tmp_path / "runs",
+        allow_external_modify=True,
+        allow_unsafe_local_exec=True,
+    )
+
+    result = await runner.run()
+
+    assert result.status is RunStatus.COMPLETED
+    policy = json.loads(
+        Path(result.artifacts["external_instruction_policy"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert policy["native_suppression"] == {
+        "backend_name": "native-suppression-fixture",
+        "status": "configured",
+        "argv": ["--no-project-docs", "--no-user-rules"],
+        "env": {"RIVUMI_TEST_NO_DISCOVERY": "1"},
+        "note": "Fixture backend declares native discovery suppression.",
+    }
+    assert "Native suppression status: configured" in backend.last_instruction
+    assert "Fixture backend declares native discovery suppression." in backend.last_instruction
+
+
+def test_native_instruction_suppression_policy_rejects_unsafe_backend_contract() -> None:
+    class UnsafeBackend(EditingBackend):
+        native_instruction_suppression_env = {"BAD-NAME": "1"}
+
+    with pytest.raises(ValueError, match="env-var shaped"):
+        native_instruction_suppression_policy(UnsafeBackend())
+
+
+@pytest.mark.asyncio
+async def test_external_runner_projects_resolved_skills(
+    tmp_path: Path, tiny_bug_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    skills = tiny_bug_repo / ".rivumi" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "review.md").write_text(
+        "---\nname: reviewer\ndescription: Review risks.\n---\nCheck regression risk.",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".rivumi/skills/review.md"], cwd=tiny_bug_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add skill"], cwd=tiny_bug_repo, check=True)
+    backend = EditingBackend()
+    runner = ExternalCodingRunner(
+        _task(tiny_bug_repo),
+        backend,
+        tmp_path / "runs",
+        allow_external_modify=True,
+        allow_unsafe_local_exec=True,
+    )
+
+    result = await runner.run()
+
+    assert result.status is RunStatus.COMPLETED
+    assert "Resolved Rivumi skill bundle" in backend.last_instruction
+    assert "## reviewer - Review risks." in backend.last_instruction
+    assert "Check regression risk." in backend.last_instruction
+    resolution = json.loads(
+        Path(result.artifacts["skill_resolution"]).read_text(encoding="utf-8")
+    )
+    assert resolution["enabled_skills"] == []
+    assert resolution["skills"] == [
+        {
+            "name": "reviewer",
+            "description": "Review risks.",
+            "source": ".rivumi/skills/review.md",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_external_runner_projects_only_enabled_skills(
+    tmp_path: Path, tiny_bug_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RIVUMI_USER_INSTRUCTIONS", str(tmp_path / "missing.md"))
+    skills = tiny_bug_repo / ".rivumi" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "review.md").write_text(
+        "---\nname: reviewer\n---\nReview changed code.",
+        encoding="utf-8",
+    )
+    (skills / "test.md").write_text(
+        "---\nname: test-writer\n---\nWrite regression tests.",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "add", ".rivumi/skills/review.md", ".rivumi/skills/test.md"],
+        cwd=tiny_bug_repo,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-m", "add skills"], cwd=tiny_bug_repo, check=True)
+    backend = EditingBackend()
+    runner = ExternalCodingRunner(
+        _task(tiny_bug_repo, enabled_skills=("test-writer",)),
+        backend,
+        tmp_path / "runs",
+        allow_external_modify=True,
+        allow_unsafe_local_exec=True,
+    )
+
+    result = await runner.run()
+
+    assert result.status is RunStatus.COMPLETED
+    assert "Write regression tests." in backend.last_instruction
+    assert "Review changed code." not in backend.last_instruction
+    resolution = json.loads(
+        Path(result.artifacts["skill_resolution"]).read_text(encoding="utf-8")
+    )
+    assert resolution["enabled_skills"] == ["test-writer"]
+    assert [skill["name"] for skill in resolution["skills"]] == ["test-writer"]
 
 
 @pytest.mark.asyncio

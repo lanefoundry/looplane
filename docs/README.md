@@ -5,6 +5,7 @@ All project documents live under `docs/`. Root-level `progress.md` is a stub poi
 - [progress.md](progress.md) — rolling development progress, milestone status, acceptance criteria, and security invariants.
 - [agent-diff-report.md](agent-diff-report.md) — agent-capability gap report against Claude Code's architecture.
 - [startup-performance-playbook.md](startup-performance-playbook.md) — measured startup-performance playbook and budgets.
+- [sdk.md](sdk.md) — stable Python SDK facade, WebSocket attach, replay/fork API, role lanes, and policy boundaries.
 - [opencode-zen-protocol-mismatch.md](opencode-zen-protocol-mismatch.md) — diagnosis of the OpenCode Zen protocol mismatch.
 
 ## plans/

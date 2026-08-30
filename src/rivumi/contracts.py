@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -9,6 +10,8 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+
+_SAFE_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 class ContractModel(BaseModel):
@@ -58,6 +61,7 @@ class TaskContract(ContractModel):
     allowed_paths: tuple[str, ...] = Field(min_length=1)
     verification: tuple[VerificationCommand, ...] = Field(min_length=1)
     limits: Limits = Field(default_factory=Limits)
+    enabled_skills: tuple[str, ...] = ()
     task_id: str = Field(default_factory=lambda: uuid4().hex, min_length=1)
     base_sha: str | None = None
 
@@ -93,6 +97,19 @@ class TaskContract(ContractModel):
             raise ValueError("allowed_paths cannot contain duplicates")
         return tuple(normalized)
 
+    @field_validator("enabled_skills")
+    @classmethod
+    def validate_enabled_skills(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for name in value:
+            name = name.strip()
+            if not _SAFE_SKILL_NAME.fullmatch(name):
+                raise ValueError(f"enabled skill name is invalid: {name!r}")
+            normalized.append(name)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("enabled_skills cannot contain duplicates")
+        return tuple(normalized)
+
 
 class ToolDefinition(ContractModel):
     """Canonical tool schema; adapters translate it to provider-specific payloads."""
@@ -119,6 +136,7 @@ class Message(ContractModel):
     role: Literal["system", "user", "assistant"]
     content: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
+    provider_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_content(self) -> Message:
@@ -149,7 +167,21 @@ class ToolObservation(ContractModel):
         return self
 
 
-ConversationItem = Message | ToolObservation
+class InjectedContext(ContractModel):
+    """Harness-injected context distinct from ordinary user messages."""
+
+    item_type: Literal["injected_context"] = "injected_context"
+    source: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=16_000)
+
+    @model_validator(mode="after")
+    def validate_injected_context(self) -> InjectedContext:
+        if "\x00" in self.source or "\x00" in self.content:
+            raise ValueError("injected context cannot contain NUL")
+        return self
+
+
+ConversationItem = Message | ToolObservation | InjectedContext
 
 
 class Usage(ContractModel):

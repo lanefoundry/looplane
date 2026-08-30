@@ -18,6 +18,7 @@ from rivumi.conversation_runtime import (
     ContextUsageUpdatedEvent,
     ConversationProtocolError,
     NoticeEvent,
+    RuntimeSkillsChangedEvent,
     RuntimeToolKind,
     RuntimeToolStatus,
     RuntimeTurnStatus,
@@ -370,6 +371,33 @@ async def test_token_usage_notification_emits_exact_context_telemetry(tmp_path: 
     assert event.telemetry.reasoning_output_tokens == 2
     assert event.telemetry.total_tokens == 15
     assert event.telemetry.context_window == 100
+
+
+@pytest.mark.asyncio
+async def test_skills_changed_notification_is_normalized_to_runtime_timeline(
+    tmp_path: Path,
+) -> None:
+    session = CodexAppServerSession(working_directory=tmp_path)
+    session._native_thread_id = "thread"
+    session._bind_turn("native-turn", "local-turn")
+    session._active_turn = "local-turn"
+
+    session._handle_notification(
+        "skills/changed",
+        {
+            "threadId": "thread",
+            "skills": [{"name": "review"}, {"name": "test-writer"}],
+            "source": "local skills",
+            "message": "Skill registry refreshed.",
+        },
+    )
+
+    event = await _next(session.events())
+    assert isinstance(event, RuntimeSkillsChangedEvent)
+    assert event.turn_id == "local-turn"
+    assert event.skill_names == ("review", "test-writer")
+    assert event.source == "local skills"
+    assert event.summary == "Skill registry refreshed."
 
 
 @pytest.mark.asyncio

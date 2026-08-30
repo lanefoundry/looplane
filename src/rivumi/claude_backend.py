@@ -57,6 +57,10 @@ class ClaudeCodeBackend:
     backend_name = "claude-code"
     local_only = True
     experimental = True
+    native_instruction_suppression_args = ("--safe-mode",)
+    native_instruction_suppression_note = (
+        "Claude Code wrapper launches with --safe-mode."
+    )
 
     def __init__(
         self,

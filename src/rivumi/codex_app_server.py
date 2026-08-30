@@ -32,6 +32,7 @@ from rivumi.conversation_runtime import (
     NoticeEvent,
     RuntimeApprovalKind,
     RuntimeApprovalRequest,
+    RuntimeSkillsChangedEvent,
     RuntimeToolKind,
     RuntimeToolStatus,
     RuntimeTurnStatus,
@@ -91,7 +92,6 @@ _IGNORED_NOTIFICATIONS = {
     "item/reasoning/summaryPartAdded",
     "item/reasoning/textDelta",
     "serverRequest/resolved",
-    "skills/changed",
 }
 _TOOL_ITEM_TYPES = {
     "collabAgentToolCall",
@@ -698,6 +698,9 @@ class CodexAppServerSession:
         if method == "turn/diff/updated":
             self._observe_turn_diff(params)
             return
+        if method == "skills/changed":
+            self._observe_skills_changed(params)
+            return
         if method == "item/agentMessage/delta":
             turn = self._correlated_turn(params, context=method)
             delta = params.get("delta")
@@ -759,6 +762,75 @@ class CodexAppServerSession:
                 "recent stderr: %s",
                 self._stderr_tail_text(),
             )
+
+    def _observe_skills_changed(self, params: dict[str, Any]) -> None:
+        # Observational runtime metadata: surfacing should not end the turn if
+        # Codex changes this notification shape.
+        try:
+            thread = params.get("threadId")
+            if thread is not None and thread != self._native_thread_id:
+                raise ConversationProtocolError("skills change references the wrong thread")
+            native_turn = params.get("turnId")
+            if native_turn is not None:
+                if not self._safe_id(native_turn):
+                    raise ConversationProtocolError("skills change has invalid turn id")
+                turn = self._local_turn(native_turn, context="skills/changed")
+            else:
+                turn = self._active_turn or self._starting_turn
+                if turn is None:
+                    return
+            self._emit(
+                RuntimeSkillsChangedEvent,
+                turn_id=turn,
+                source=self._skills_changed_source(params),
+                skill_names=self._skills_changed_names(params.get("skills")),
+                summary=self._skills_changed_summary(params),
+            )
+        except ConversationProtocolError:
+            _LOG.warning(
+                "codex app-server: dropping malformed skills/changed notification; "
+                "recent stderr: %s",
+                self._stderr_tail_text(),
+            )
+
+    def _skills_changed_source(self, params: dict[str, Any]) -> str | None:
+        value = params.get("source") or params.get("reason")
+        if value is None:
+            return None
+        if not isinstance(value, str) or "\x00" in value:
+            raise ConversationProtocolError("skills change source is malformed")
+        value = self._bounded(value).strip()
+        return value[:256] or None
+
+    def _skills_changed_summary(self, params: dict[str, Any]) -> str:
+        value = params.get("message") or params.get("summary")
+        if value is None:
+            return "Runtime skill set changed."
+        if not isinstance(value, str) or "\x00" in value:
+            raise ConversationProtocolError("skills change summary is malformed")
+        return self._bounded(value).strip()[:4000] or "Runtime skill set changed."
+
+    def _skills_changed_names(self, raw: object) -> tuple[str, ...]:
+        if raw is None:
+            return ()
+        if not isinstance(raw, list):
+            raise ConversationProtocolError("skills change list is malformed")
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in raw[:256]:
+            if isinstance(item, str):
+                name = item
+            elif isinstance(item, dict):
+                name = item.get("name")
+            else:
+                raise ConversationProtocolError("skills change entry is malformed")
+            if not isinstance(name, str) or "\x00" in name:
+                raise ConversationProtocolError("skills change name is malformed")
+            name = self._bounded(name).strip()[:256]
+            if name and name not in seen:
+                names.append(name)
+                seen.add(name)
+        return tuple(names)
 
     def _observe_warning(self, params: dict[str, Any]) -> None:
         # Secondary notice: a drifted payload must not end the conversation.

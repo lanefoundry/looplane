@@ -12,8 +12,15 @@ from urllib.parse import urlsplit
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
+from rivumi.cache_strategy import (
+    ProviderCacheTrace,
+    apply_provider_cache_defaults,
+    provider_cache_trace,
+)
 from rivumi.contracts import (
     ConversationItem,
+    InjectedContext,
+    Message,
     ModelCapabilities,
     ModelProtocol,
     ModelTurn,
@@ -295,6 +302,147 @@ def _observation_content(observation: ToolObservation) -> str:
     )
 
 
+def _injected_context_content(item: InjectedContext) -> str:
+    return f"[injected_context:{item.source}]\n{item.content}"
+
+
+_NATIVE_IMAGE_MEDIA_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+_NATIVE_FILE_MEDIA_TYPES = {"application/pdf", "text/plain", "text/markdown"}
+
+
+def _message_attachments(message: Message) -> tuple[dict[str, str], ...]:
+    raw = message.provider_metadata.get("attachments")
+    if raw is None or isinstance(raw, (str, bytes, bytearray)) or not isinstance(raw, Sequence):
+        return ()
+    attachments: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("name") or "attachment").strip()
+        media_type = str(item.get("media_type") or "text/plain").strip()
+        if not name or not media_type:
+            continue
+        attachment = {"name": name, "media_type": media_type}
+        for field in ("content", "uri", "data_base64"):
+            value = item.get(field)
+            if isinstance(value, str) and value.strip():
+                attachment[field] = value.strip()
+                break
+        if len(attachment) > 2:
+            attachments.append(attachment)
+    return tuple(attachments)
+
+
+def _attachment_fallback_text(attachment: Mapping[str, str]) -> str:
+    payload = attachment.get("content")
+    if payload is None:
+        payload = f"(file reference: {attachment.get('uri', attachment.get('name'))})"
+    return (
+        f"[attachment:{attachment['name']}; media_type={attachment['media_type']}]\n"
+        f"{payload}"
+    )
+
+
+def _data_url(media_type: str, data_base64: str) -> str:
+    return f"data:{media_type};base64,{data_base64}"
+
+
+def _openai_user_content(message: Message) -> str | list[dict[str, Any]]:
+    attachments = _message_attachments(message)
+    if not attachments:
+        return message.content or ""
+    content: list[dict[str, Any]] = []
+    if message.content:
+        content.append({"type": "text", "text": message.content})
+    fallback: list[str] = []
+    for attachment in attachments:
+        media_type = attachment["media_type"]
+        data_base64 = attachment.get("data_base64")
+        uri = attachment.get("uri")
+        if media_type in _NATIVE_IMAGE_MEDIA_TYPES and data_base64:
+            content.append(
+                {"type": "image_url", "image_url": {"url": _data_url(media_type, data_base64)}}
+            )
+        elif media_type in _NATIVE_IMAGE_MEDIA_TYPES and uri:
+            content.append({"type": "image_url", "image_url": {"url": uri}})
+        else:
+            fallback.append(_attachment_fallback_text(attachment))
+    if fallback:
+        content.append({"type": "text", "text": "\n\n".join(fallback)})
+    return content or ""
+
+
+def _responses_user_content(message: Message) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = []
+    if message.content:
+        content.append({"type": "input_text", "text": message.content})
+    fallback: list[str] = []
+    for attachment in _message_attachments(message):
+        media_type = attachment["media_type"]
+        data_base64 = attachment.get("data_base64")
+        uri = attachment.get("uri")
+        if media_type in _NATIVE_IMAGE_MEDIA_TYPES and data_base64:
+            content.append({"type": "input_image", "image_url": _data_url(media_type, data_base64)})
+        elif media_type in _NATIVE_IMAGE_MEDIA_TYPES and uri:
+            content.append({"type": "input_image", "image_url": uri})
+        elif media_type in _NATIVE_FILE_MEDIA_TYPES and uri:
+            content.append({"type": "input_file", "file_url": uri})
+        else:
+            fallback.append(_attachment_fallback_text(attachment))
+    if fallback:
+        content.append({"type": "input_text", "text": "\n\n".join(fallback)})
+    return content or [{"type": "input_text", "text": ""}]
+
+
+def _anthropic_user_content(message: Message) -> str | list[dict[str, Any]]:
+    attachments = _message_attachments(message)
+    if not attachments:
+        return message.content or ""
+    content: list[dict[str, Any]] = []
+    if message.content:
+        content.append({"type": "text", "text": message.content})
+    fallback: list[str] = []
+    for attachment in attachments:
+        media_type = attachment["media_type"]
+        data_base64 = attachment.get("data_base64")
+        if media_type in _NATIVE_IMAGE_MEDIA_TYPES and data_base64:
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data_base64,
+                    },
+                }
+            )
+        else:
+            fallback.append(_attachment_fallback_text(attachment))
+    if fallback:
+        content.append({"type": "text", "text": "\n\n".join(fallback)})
+    return content or ""
+
+
+def _gemini_user_parts(message: Message) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    if message.content:
+        parts.append({"text": message.content})
+    fallback: list[str] = []
+    for attachment in _message_attachments(message):
+        media_type = attachment["media_type"]
+        data_base64 = attachment.get("data_base64")
+        uri = attachment.get("uri")
+        if media_type in _NATIVE_IMAGE_MEDIA_TYPES and data_base64:
+            parts.append({"inline_data": {"mime_type": media_type, "data": data_base64}})
+        elif media_type in _NATIVE_IMAGE_MEDIA_TYPES and uri:
+            parts.append({"file_data": {"mime_type": media_type, "file_uri": uri}})
+        else:
+            fallback.append(_attachment_fallback_text(attachment))
+    if fallback:
+        parts.append({"text": "\n\n".join(fallback)})
+    return parts
+
+
 def _openai_tools(tools: Sequence[ToolDefinition]) -> list[dict[str, Any]]:
     return [
         {
@@ -321,7 +469,11 @@ def _openai_messages(messages: Sequence[ConversationItem]) -> list[dict[str, Any
                 }
             )
             continue
-        message: dict[str, Any] = {"role": item.role, "content": item.content}
+        if isinstance(item, InjectedContext):
+            result.append({"role": "user", "content": _injected_context_content(item)})
+            continue
+        content = _openai_user_content(item) if item.role == "user" else item.content
+        message: dict[str, Any] = {"role": item.role, "content": content}
         if item.tool_calls:
             message["tool_calls"] = [
                 {
@@ -429,6 +581,7 @@ class OpenAICompatibleModel:
                 f"extra_body cannot override canonical request fields: {sorted(reserved)}"
             )
         self._owns_client = client is None
+        self.last_cache_trace: ProviderCacheTrace | None = None
         self._client = client or AsyncOpenAI(
             # OpenAI-compatible local servers such as Ollama do not authenticate,
             # while the SDK requires a non-empty value. This placeholder is only
@@ -460,9 +613,17 @@ class OpenAICompatibleModel:
         if tools:
             request["tools"] = _openai_tools(tools)
         if self._extra_body:
-            request["extra_body"] = self._extra_body
+            request["extra_body"] = dict(self._extra_body)
         if self._max_tokens is not None:
             request["max_tokens"] = self._max_tokens
+        request = apply_provider_cache_defaults(
+            self.provider_name,
+            request,
+            tuple(messages),
+            tuple(tools),
+            namespace="rivumi-openai",
+        )
+        self.last_cache_trace = provider_cache_trace(self.provider_name, request)
         try:
             response = await self._client.chat.completions.create(**request)
         except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
@@ -570,6 +731,7 @@ class ResponsesModel(_HttpModel):
         self.base_url = validated_base_url
         self.max_output_tokens = max_output_tokens
         self.capabilities = _capabilities(capabilities, supports_tool_calling)
+        self.last_cache_trace: ProviderCacheTrace | None = None
 
     async def complete(
         self,
@@ -586,6 +748,14 @@ class ResponsesModel(_HttpModel):
             payload["instructions"] = instructions
         if tools:
             payload["tools"] = _responses_tools(tools)
+        payload = apply_provider_cache_defaults(
+            self.provider_name,
+            payload,
+            tuple(messages),
+            tuple(tools),
+            namespace="rivumi-responses",
+        )
+        self.last_cache_trace = provider_cache_trace(self.provider_name, payload)
         body = await _post_json(
             self._http,
             provider_name=self.provider_name,
@@ -658,13 +828,22 @@ def _responses_input(
                     "output": _observation_content(item),
                 }
             )
+        elif isinstance(item, InjectedContext):
+            result.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": _injected_context_content(item)}
+                    ],
+                }
+            )
         elif item.role == "system":
             instructions.append(item.content or "")
         elif item.role == "user":
             result.append(
                 {
                     "role": "user",
-                    "content": [{"type": "input_text", "text": item.content or ""}],
+                    "content": _responses_user_content(item),
                 }
             )
         else:
@@ -755,6 +934,7 @@ class AnthropicModel(_HttpModel):
         self.base_url = validated_base_url
         self.anthropic_version = anthropic_version
         self.capabilities = _capabilities(capabilities, supports_tool_calling)
+        self.last_cache_trace: ProviderCacheTrace | None = None
 
     async def complete(
         self,
@@ -778,6 +958,14 @@ class AnthropicModel(_HttpModel):
                 }
                 for tool in tools
             ]
+        payload = apply_provider_cache_defaults(
+            self.provider_name,
+            payload,
+            tuple(messages),
+            tuple(tools),
+            namespace="rivumi-anthropic",
+        )
+        self.last_cache_trace = provider_cache_trace(self.provider_name, payload)
         body = await _post_json(
             self._http,
             provider_name=self.provider_name,
@@ -842,6 +1030,13 @@ def _anthropic_messages(
                     ],
                 }
             )
+        elif isinstance(item, InjectedContext):
+            result.append(
+                {
+                    "role": "user",
+                    "content": _injected_context_content(item),
+                }
+            )
         elif item.role == "system":
             system_parts.append(item.content or "")
         elif item.role == "assistant" and item.tool_calls:
@@ -859,7 +1054,8 @@ def _anthropic_messages(
             )
             result.append({"role": "assistant", "content": content})
         else:
-            result.append({"role": item.role, "content": item.content})
+            content = _anthropic_user_content(item) if item.role == "user" else item.content
+            result.append({"role": item.role, "content": content})
     return "\n\n".join(system_parts) or None, result
 
 
@@ -1003,11 +1199,18 @@ def _gemini_messages(
                     ],
                 }
             )
+        elif isinstance(item, InjectedContext):
+            result.append(
+                {
+                    "role": "user",
+                    "parts": [{"text": _injected_context_content(item)}],
+                }
+            )
         elif item.role == "system":
             system_parts.append(item.content or "")
         else:
-            parts: list[dict[str, Any]] = []
-            if item.content:
+            parts = _gemini_user_parts(item) if item.role == "user" else []
+            if item.role != "user" and item.content:
                 parts.append({"text": item.content})
             parts.extend(_gemini_tool_call_part(call) for call in item.tool_calls)
             result.append({"role": "model" if item.role == "assistant" else "user", "parts": parts})

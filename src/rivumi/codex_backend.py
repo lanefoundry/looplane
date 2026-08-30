@@ -67,6 +67,10 @@ class CodexCliBackend:
     backend_name = "codex-cli"
     local_only = True
     experimental = True
+    native_instruction_suppression_args = ("--ignore-user-config", "--ignore-rules")
+    native_instruction_suppression_note = (
+        "Codex CLI wrapper launches with --ignore-user-config and --ignore-rules."
+    )
 
     def __init__(
         self,

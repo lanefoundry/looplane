@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
-from rivumi.contracts import ConversationItem, Message, ToolObservation
+from rivumi.contracts import (
+    ConversationItem,
+    InjectedContext,
+    Message,
+    ToolDefinition,
+    ToolObservation,
+    VerificationCommand,
+)
 
 CODING_AGENT_PROMPT_VERSION = "m3-exact-edit-v4"
+TOOL_POLICY_CONTEXT_VERSION = "b1-tool-policy-v1"
+A10_SUBAGENT_PLANNER_POLICY_VERSION = "a10-subagent-planner-policy-v1"
+INTERACTION_CONTEXT_VERSION = "b1-interaction-context-v1"
+WORKSPACE_STATE_CONTEXT_VERSION = "b1-workspace-state-v1"
+RUNTIME_CONTEXT_VERSION = "b1-runtime-context-v1"
 CONTEXT_PRESSURE_REMINDER_VERSION = "b9-b1-context-pressure-v1"
 CONTEXT_SUMMARY_FALLBACK_VERSION = "b9-summary-fallback-v1"
 WORKSPACE_CONTEXT_REMINDER_VERSION = "b9-post-compact-workspace-context-v1"
+MAX_PROMPT_CONTEXT_CHARS = 16_000
 
 CODING_AGENT_SYSTEM_PROMPT = """You are a coding agent operating in a disposable Git workspace.
 
@@ -44,21 +58,191 @@ Response style:
 """
 
 
+@dataclass(frozen=True)
+class PromptSection:
+    """One named prompt section with explicit cache-stability metadata."""
+
+    name: str
+    content: str
+    cache_stable: bool = False
+
+
+def render_prompt_sections(sections: Sequence[PromptSection]) -> str:
+    """Render ordered named prompt sections with deterministic boundaries."""
+
+    rendered: list[str] = []
+    for section in sections:
+        name = section.name.strip()
+        content = section.content.strip()
+        if not name or "\x00" in name:
+            raise ValueError("prompt section names must be non-empty and NUL-free")
+        if not content or "\x00" in content:
+            raise ValueError("prompt section content must be non-empty and NUL-free")
+        cache_marker = "stable" if section.cache_stable else "dynamic"
+        rendered.append(f"<section name={name!r} cache={cache_marker!r}>\n{content}\n</section>")
+    return "\n\n".join(rendered) + ("\n" if rendered else "")
+
+
 def build_coding_agent_system_prompt(
     *,
     known_context: str = "",
     instruction_context: str = "",
+    skill_context: str = "",
+    tool_context: str = "",
+    interaction_context: str = "",
+    workspace_context: str = "",
+    runtime_context: str = "",
 ) -> str:
     """Compose the native loop system prompt from stable sections."""
 
     known_context = known_context.strip()
     instruction_context = instruction_context.strip()
-    sections = [CODING_AGENT_SYSTEM_PROMPT.rstrip()]
+    skill_context = skill_context.strip()
+    tool_context = tool_context.strip()
+    interaction_context = interaction_context.strip()
+    workspace_context = workspace_context.strip()
+    runtime_context = runtime_context.strip()
+    sections = [
+        PromptSection("core_policy", CODING_AGENT_SYSTEM_PROMPT, cache_stable=True),
+    ]
+    if tool_context:
+        sections.append(PromptSection("tool_policy", tool_context, cache_stable=True))
+    if interaction_context:
+        sections.append(PromptSection("interaction_policy", interaction_context, cache_stable=True))
+    if runtime_context:
+        sections.append(PromptSection("runtime_context", runtime_context))
     if instruction_context:
-        sections.append(instruction_context)
+        sections.append(PromptSection("instructions", instruction_context))
+    if skill_context:
+        sections.append(PromptSection("skills", skill_context))
+    if workspace_context:
+        sections.append(PromptSection("workspace_state", workspace_context))
     if known_context:
-        sections.append(known_context)
-    return "\n\n".join(sections) + "\n"
+        sections.append(PromptSection("memory", known_context))
+    return render_prompt_sections(sections)
+
+
+def render_tool_prompt_context(tools: Sequence[ToolDefinition]) -> str:
+    """Render stable native tool policy facts as a prompt section."""
+
+    if not tools:
+        return ""
+    lines = [
+        f"[{TOOL_POLICY_CONTEXT_VERSION}]",
+        "Available tool contracts. Use the provider tool schemas as the execution authority; "
+        "this section is a compact policy index for planning.",
+    ]
+    for tool in tools:
+        attributes = []
+        if tool.read_only:
+            attributes.append("read_only")
+        if tool.concurrency_safe:
+            attributes.append("concurrency_safe")
+        flags = f" ({', '.join(attributes)})" if attributes else ""
+        description = tool.description.strip()
+        line = f"- {tool.name}{flags}"
+        if description:
+            line += f": {description}"
+        lines.append(line)
+    return _bounded_prompt_context("\n".join(lines))
+
+
+def render_subagent_planner_policy() -> str:
+    """Render stable policy for deciding when to use native subagent dispatch."""
+
+    return _bounded_prompt_context(
+        "\n".join(
+            (
+                f"[{A10_SUBAGENT_PLANNER_POLICY_VERSION}]",
+                "Use dispatch_subagents only when parallel or staged review is useful enough to "
+                "offset the extra turn cost.",
+                "- Use scout for bounded repository discovery across unclear files or ownership "
+                "areas.",
+                "- Use analyst after scout findings when a tradeoff, implementation plan, or "
+                "child-reviewed transaction proposal would reduce risk.",
+                "- Use reviewer after a proposed approach or patch when independent risk and "
+                "verification review matters.",
+                "- Use depends_on to pass bounded summaries between staged agents; do not rely on "
+                "unstated shared context.",
+                "- Use proposed_transaction only for a child-reviewed modify/check batch that "
+                "the parent can approve and execute through tool_transaction.",
+                "- Do not spawn subagents for trivial single-file edits, direct user questions, "
+                "or tasks already clear enough for one local tool sequence.",
+            )
+        )
+    )
+
+
+def render_interaction_prompt_context(
+    *,
+    response_style: str = "concise_markdown_with_path_line_references",
+    ask_mode: str = "ask_only_when_required_or_high_risk",
+    direct_answer_policy: str = "answer_without_tools_for_conversation-only_requests",
+) -> str:
+    """Render stable interaction policy facts as a prompt section."""
+
+    facts = {
+        "ask_mode": ask_mode,
+        "direct_answer_policy": direct_answer_policy,
+        "response_style": response_style,
+    }
+    lines = [f"[{INTERACTION_CONTEXT_VERSION}]"]
+    for key, value in facts.items():
+        value = value.strip()
+        if not value or "\x00" in value:
+            raise ValueError("interaction prompt context values must be non-empty and NUL-free")
+        lines.append(f"{key}: {value}")
+    return _bounded_prompt_context("\n".join(lines))
+
+
+def render_workspace_prompt_context(
+    *,
+    base_sha: str,
+    allowed_paths: Sequence[str],
+    verification: Sequence[VerificationCommand],
+    git_status: Sequence[str] = (),
+) -> str:
+    """Render workspace state and mutation boundary facts."""
+
+    status_lines = tuple(line.strip() for line in git_status if line.strip())
+    lines = [
+        f"[{WORKSPACE_STATE_CONTEXT_VERSION}]",
+        f"base_sha: {base_sha}",
+        "allowed_paths:",
+        *(f"- {path}" for path in allowed_paths),
+        "required_verification:",
+        *(f"- {command.name}: {list(command.argv)!r}" for command in verification),
+        "git_status_short:",
+    ]
+    if status_lines:
+        lines.extend(f"- {line}" for line in status_lines)
+    else:
+        lines.append("- clean")
+    return _bounded_prompt_context("\n".join(lines))
+
+
+def render_runtime_prompt_context(facts: Mapping[str, object]) -> str:
+    """Render bounded runtime facts that may vary by run."""
+
+    if not facts:
+        return ""
+    lines = [f"[{RUNTIME_CONTEXT_VERSION}]"]
+    for key in sorted(facts):
+        value = str(facts[key]).strip()
+        if not key or "\x00" in key or "\x00" in value:
+            raise ValueError("runtime prompt context facts must be NUL-free")
+        lines.append(f"{key}: {value}")
+    return _bounded_prompt_context("\n".join(lines))
+
+
+def _bounded_prompt_context(text: str) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= MAX_PROMPT_CONTEXT_CHARS:
+        return text
+    return (
+        encoded[:MAX_PROMPT_CONTEXT_CHARS].decode("utf-8", errors="ignore").rstrip()
+        + "\n[truncated]"
+    )
 
 
 def build_context_pressure_reminder(
@@ -85,6 +269,11 @@ def _summary_line(item: ConversationItem, index: int, *, max_field_chars: int) -
         if len(preview) > max_field_chars:
             preview = preview[: max_field_chars - 3].rstrip() + "..."
         return f"- #{index} tool {item.name}: {status}; output={preview!r}"
+    if isinstance(item, InjectedContext):
+        preview = item.content.strip().replace("\n", "\\n")
+        if len(preview) > max_field_chars:
+            preview = preview[: max_field_chars - 3].rstrip() + "..."
+        return f"- #{index} injected_context {item.source}: {preview!r}"
 
     content = (item.content or "").strip().replace("\n", "\\n")
     if len(content) > max_field_chars:

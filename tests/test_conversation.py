@@ -230,6 +230,66 @@ async def test_change_context_rejects_active_turn_without_persisting_event(
 
 
 @pytest.mark.asyncio
+async def test_append_context_checkpoint_persists_between_completed_turns(
+    tmp_path: Path,
+) -> None:
+    store = ConversationStore(tmp_path / "conversations", durable=False)
+    created = await store.create(runtime="claude-code")
+    conversation_id = created.manifest.conversation_id
+    turn_id = await _completed_turn(store, conversation_id, "question", ("answer",))
+
+    _, lease = await store.resume(conversation_id)
+    try:
+        compacted = await store.append_context_checkpoint(
+            lease,
+            {"checkpoint_id": "c1", "summary": {"text": "kept"}},
+        )
+    finally:
+        lease.release()
+
+    loaded = await store.load(conversation_id)
+    assert compacted.event_type is ConversationEventKind.CONTEXT_COMPACTED
+    assert compacted.turn_id is None
+    assert loaded.events[-1] == compacted
+    assert json.loads(compacted.text or "{}") == {
+        "checkpoint_id": "c1",
+        "summary": {"text": "kept"},
+    }
+    assert [
+        (message.role, message.content, message.turn_id)
+        for message in await store.completed_turns(conversation_id)
+    ] == [
+        ("user", "question", turn_id),
+        ("assistant", "answer", turn_id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_append_context_checkpoint_rejects_active_turn_without_persisting_event(
+    tmp_path: Path,
+) -> None:
+    store = ConversationStore(tmp_path / "conversations", durable=False)
+    created = await store.create(runtime="codex-cli")
+    conversation_id = created.manifest.conversation_id
+    _, lease = await store.resume(conversation_id)
+    try:
+        await store.append(
+            lease,
+            ConversationEventKind.USER_MESSAGE,
+            turn_id=uuid4().hex,
+            text="still running",
+        )
+        before = await store.load(conversation_id)
+        with pytest.raises(ConversationValidationError, match="compact during a turn"):
+            await store.append_context_checkpoint(lease, {"checkpoint_id": "blocked"})
+        after = await store.load(conversation_id)
+    finally:
+        lease.release()
+
+    assert after == before
+
+
+@pytest.mark.asyncio
 async def test_resume_repairs_context_event_first_manifest_crash_window(
     tmp_path: Path,
 ) -> None:

@@ -89,3 +89,11 @@ def test_export_run_writes_file(tmp_path: Path) -> None:
     output = tmp_path / "export.json"
     export_run(run_dir, output)
     assert json.loads(output.read_text())["resourceSpans"]
+
+
+def test_export_run_rejects_secret_looking_output_path(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "abc123"
+    _write_run(run_dir)
+
+    with pytest.raises(ValueError, match="output path"):
+        export_run(run_dir, tmp_path / "Bearer abcdefghijklmnopqrstuvwxyz123456.json")

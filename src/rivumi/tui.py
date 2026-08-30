@@ -92,6 +92,7 @@ from rivumi.runtime_semantics import (
     ProcessLocalGrant,
     RuntimeCapabilities,
     decide_permission,
+    input_cache_hit_rate,
     should_auto_compact_context,
 )
 from rivumi.slash_commands import (
@@ -501,6 +502,17 @@ class TextualEventSink:
             if isinstance(event, TextDeltaEvent):
                 self.app._external_message_generations.add(self.generation)
             self.app.post_message(ConversationRuntimeEventMessage(event, self.generation))
+
+
+class RecordingConversationEventSink:
+    def __init__(self, wrapped: TextualEventSink) -> None:
+        self.wrapped = wrapped
+        self.compaction_checkpoint = None
+
+    async def emit(self, event: ConversationRuntimeEvent) -> None:
+        if isinstance(event, CompactionCompletedEvent):
+            self.compaction_checkpoint = event.checkpoint
+        await self.wrapped.emit(event)
 
 
 class TextualApprovalPolicy:
@@ -3090,7 +3102,14 @@ class RivumiApp(App[RunResult | None]):
                     f"input {telemetry.input_tokens:,} · output {telemetry.output_tokens:,}"
                 )
                 if telemetry.cached_input_tokens:
-                    usage += f" · cached input {telemetry.cached_input_tokens:,}"
+                    hit_rate = telemetry.input_cache_hit_rate
+                    if hit_rate is None:
+                        usage += f" · cached input {telemetry.cached_input_tokens:,}"
+                    else:
+                        usage += (
+                            f" · cached input {telemetry.cached_input_tokens:,}"
+                            f" ({hit_rate * 100:.1f}% hit)"
+                        )
                 if telemetry.context_window is not None:
                     percent = telemetry.total_tokens / telemetry.context_window * 100
                     usage += f" · {percent:.1f}% of {telemetry.context_window:,}"
@@ -3108,10 +3127,20 @@ class RivumiApp(App[RunResult | None]):
                 detail = (
                     f"total {session.total_tokens:,} · "
                     f"input {session.input_tokens:,} "
-                    f"(cached {session.cached_input_tokens:,}) · "
                     f"output {session.output_tokens:,} "
                     f"(reasoning {session.reasoning_tokens:,})"
                 )
+                hit_rate = input_cache_hit_rate(
+                    input_tokens=session.input_tokens,
+                    cached_input_tokens=session.cached_input_tokens,
+                )
+                if hit_rate is None:
+                    detail += f" · cached input {session.cached_input_tokens:,}"
+                else:
+                    detail += (
+                        f" · cached input {session.cached_input_tokens:,}"
+                        f" ({hit_rate * 100:.1f}% hit)"
+                    )
                 turns = self._session_turns
                 if turns:
                     average = session.total_tokens // turns
@@ -3334,8 +3363,7 @@ class RivumiApp(App[RunResult | None]):
             (
                 candidate
                 for candidate in reversed(self._persistent_resources)
-                if getattr(getattr(candidate, "capabilities", None), "native_compaction", False)
-                and callable(getattr(candidate, "compact_context", None))
+                if callable(getattr(candidate, "compact_context", None))
             ),
             None,
         )
@@ -3398,10 +3426,11 @@ class RivumiApp(App[RunResult | None]):
             self.query_one("#status", Static).update("Native context compaction unavailable")
             return False
         self.query_one("#status", Static).update("Compacting native context…")
+        event_sink = RecordingConversationEventSink(TextualEventSink(self, self._generation))
         try:
             compact_id = await resource.compact_context(
                 guidance,
-                event_sink=TextualEventSink(self, self._generation),
+                event_sink=event_sink,
             )
         except Exception as exc:
             self.query_one("#status", Static).update(f"Context compaction failed: {exc}")
@@ -3413,6 +3442,22 @@ class RivumiApp(App[RunResult | None]):
                     severity="failure",
                 )
             return False
+        if (
+            event_sink.compaction_checkpoint is not None
+            and self.conversation_store is not None
+            and self._conversation_lease is not None
+        ):
+            try:
+                await self.conversation_store.append_context_checkpoint(
+                    self._conversation_lease,
+                    event_sink.compaction_checkpoint,
+                )
+            except Exception as exc:
+                self._write_timeline(
+                    "Context checkpoint not persisted",
+                    str(exc),
+                    severity="failure",
+                )
         self._auto_compaction_armed = False
         detail = f"Native compaction requested · {compact_id}"
         if guidance:

@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from rivumi.approvals import TTYApprovalPolicy
     from rivumi.codex_oauth import CodexOAuthClient
     from rivumi.console import ConsoleEventSink
-    from rivumi.conversation_controller import ConversationController
+    from rivumi.conversation_controller import BackendTurnLimiter, ConversationController
     from rivumi.loop import AgentRunner
     from rivumi.models import ModelProvider
 
@@ -109,6 +109,7 @@ def _acquire_native_controller(
     adapter: runtime_registry.RuntimeAdapter,
     repository: Path,
     model: str | None,
+    backend_limiter: BackendTurnLimiter | None = None,
 ) -> ConversationController:
     """Return the cached controller for ``identity`` or build a fresh one.
 
@@ -122,6 +123,7 @@ def _acquire_native_controller(
     """
 
     from rivumi.conversation_controller import ConversationController
+    from rivumi.hooks import load_project_hook_runner
 
     assert adapter.native_session is not None
     controller = cache.get(identity)
@@ -133,7 +135,11 @@ def _acquire_native_controller(
         with _STARTUP.span("controller.build"):
             session_cls = runtime_registry._resolve_class(adapter.native_session)
             session = session_cls(repository, model=model)
-            controller = ConversationController(session)
+            controller = ConversationController(
+                session,
+                backend_limiter=backend_limiter,
+                hook_runner=load_project_hook_runner(repository),
+            )
             cache[identity] = controller
     return controller
 
@@ -218,9 +224,11 @@ app = typer.Typer(
 auth_app = typer.Typer(help="Manage provider credentials owned by this application.")
 backend_app = typer.Typer(help="Run a clearly separated external agent backend.")
 policy_app = typer.Typer(help="Inspect effective permission policy.")
+plugin_app = typer.Typer(help="Install and inspect repository-local plugin packages.")
 app.add_typer(auth_app, name="auth")
 app.add_typer(backend_app, name="backend")
 app.add_typer(policy_app, name="policy")
+app.add_typer(plugin_app, name="plugin")
 
 
 def _default_run_root() -> Path:
@@ -256,6 +264,112 @@ def _show_result(result: RunResult) -> None:
     typer.echo(f"\n{status}: {result.summary}")
     typer.echo(f"session: {result.run_id}")
     typer.echo(f"patch: {result.artifacts['patch']}")
+
+
+@plugin_app.command("list")
+def plugin_list(
+    repo: Annotated[Path | None, typer.Option("--repo", "-C", help="Repository root.")] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable JSON."),
+    ] = False,
+) -> None:
+    """List installed repository-local plugin manifests."""
+
+    from rivumi.plugins import PluginError, load_project_plugins
+
+    project_root = repo or Path.cwd()
+    try:
+        plugins = load_project_plugins(project_root)
+    except PluginError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if json_output:
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "name": plugin.name,
+                        "description": plugin.description,
+                        "discovery": plugin.discovery.model_dump(mode="json"),
+                        "source": plugin.source,
+                        "skills": [skill.path for skill in plugin.skills],
+                        "hook_events": sorted(plugin.hooks),
+                    }
+                    for plugin in plugins
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return
+    if not plugins:
+        typer.echo("No repository plugins installed.")
+        return
+    for plugin in plugins:
+        skills = ", ".join(skill.path for skill in plugin.skills) or "-"
+        hooks = ", ".join(sorted(plugin.hooks)) or "-"
+        description = f" - {plugin.description}" if plugin.description else ""
+        typer.echo(f"{plugin.name}{description}")
+        typer.echo(f"  source: {plugin.source}")
+        typer.echo(f"  skills: {skills}")
+        typer.echo(f"  hooks: {hooks}")
+        if plugin.discovery.keywords:
+            typer.echo(f"  keywords: {', '.join(plugin.discovery.keywords)}")
+        if plugin.discovery.homepage:
+            typer.echo(f"  homepage: {plugin.discovery.homepage}")
+        if plugin.discovery.repository:
+            typer.echo(f"  repository: {plugin.discovery.repository}")
+        if plugin.discovery.license:
+            typer.echo(f"  license: {plugin.discovery.license}")
+        if plugin.discovery.author:
+            typer.echo(f"  author: {plugin.discovery.author}")
+
+
+@plugin_app.command("install")
+def plugin_install(
+    manifest: Annotated[Path, typer.Argument(help="Local plugin manifest JSON to install.")],
+    repo: Annotated[Path | None, typer.Option("--repo", "-C", help="Repository root.")] = None,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Override installed plugin name."),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        typer.Option("--overwrite", help="Replace an existing plugin."),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable JSON."),
+    ] = False,
+) -> None:
+    """Install a local plugin manifest and referenced skills into `.rivumi/plugins`."""
+
+    from rivumi.plugins import PluginError, install_project_plugin_manifest
+
+    project_root = repo or Path.cwd()
+    try:
+        plugin = install_project_plugin_manifest(
+            manifest,
+            project_root=project_root,
+            name=name,
+            overwrite=overwrite,
+        )
+    except PluginError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    payload = {
+        "name": plugin.name,
+        "description": plugin.description,
+        "discovery": plugin.discovery.model_dump(mode="json"),
+        "source": plugin.source,
+        "skills": [skill.path for skill in plugin.skills],
+        "hook_events": sorted(plugin.hooks),
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    typer.echo(f"Installed plugin {plugin.name} at {plugin.source}.")
 
 
 def _stdin_is_tty() -> bool:
@@ -716,9 +830,9 @@ def chat(
         bool,
         typer.Option(
             "--sandbox-checks/--no-sandbox-checks",
-            help="Run native verification checks through the local OS sandbox when available.",
+            help="Run native verification checks through the local OS sandbox.",
         ),
-    ] = False,
+    ] = True,
 ) -> None:
     """Start this agent's own loop in the current repository."""
 
@@ -875,6 +989,9 @@ def chat(
         native_controllers: dict[
             tuple[str, Path, str | None, str | None], ConversationController
         ] = {}
+        from rivumi.conversation_controller import BackendTurnLimiter
+
+        native_backend_limiter = BackendTurnLimiter()
 
         def make_runner(request: TuiRunRequest, approval_policy, event_sink):
             approval_policy = guarded(approval_policy)
@@ -894,6 +1011,7 @@ def chat(
                     adapter=adapter,
                     repository=request.repository,
                     model=request.model,
+                    backend_limiter=native_backend_limiter,
                 )
                 return (
                     controller.turn(
@@ -960,7 +1078,7 @@ def chat(
                     permission_guard=permission_guard,
                     fallback_models=build_fallback_models(),
                     review_model=build_review_model(request.provider),
-                    sandbox_checks=sandbox_checks,
+                    sandbox_checks=_effective_sandbox_checks(sandbox_checks),
                     sandbox_profile=initial_config.sandbox_profile,
                     sandbox_backend=initial_config.sandbox_backend,
                     sandbox_read_roots=tuple(
@@ -991,6 +1109,7 @@ def chat(
                     adapter=adapter,
                     repository=repository,
                     model=model,
+                    backend_limiter=native_backend_limiter,
                 )
                 await controller._ensure_started()
             except BaseException:
@@ -1093,7 +1212,7 @@ def chat(
                     permission_guard=permission_guard,
                     fallback_models=build_fallback_models(),
                     review_model=build_review_model(provider),
-                    sandbox_checks=sandbox_checks,
+                    sandbox_checks=_effective_sandbox_checks(sandbox_checks),
                     sandbox_profile=current_config.sandbox_profile,
                     sandbox_backend=current_config.sandbox_backend,
                     sandbox_read_roots=tuple(
@@ -1115,6 +1234,12 @@ def chat(
         _show_result(result)
     if result.status != "completed":
         raise typer.Exit(code=1)
+
+
+def _effective_sandbox_checks(requested: bool) -> bool:
+    """Enable default verification sandboxing only where the local profile is reliable."""
+
+    return requested and sys.platform.startswith("linux")
 
 
 def _required_env(name: str) -> str:
@@ -1760,6 +1885,103 @@ def logout_codex() -> None:
     typer.echo("ChatGPT/Codex authorization removed from Rivumi.")
 
 
+@auth_app.command("login-mcp")
+def login_mcp(
+    server: Annotated[str, typer.Argument(help="Allowlisted MCP server name from .mcp.json")],
+    repository: Annotated[
+        Path | None,
+        typer.Option("--repo", "--cd", "-C", exists=True, file_okay=False),
+    ] = None,
+    manual: Annotated[
+        bool,
+        typer.Option("--manual", help="Print the authorization URL instead of opening a browser."),
+    ] = False,
+) -> None:
+    """Create this application's own MCP OAuth authorization-code grant."""
+
+    from rivumi.mcp_client import (
+        McpError,
+        McpOAuthClient,
+        McpOAuthCredentialStore,
+        load_native_mcp_server_configs,
+        mcp_oauth_credential_path,
+        parse_mcp_oauth_callback,
+    )
+
+    try:
+        repository = repository or Path.cwd()
+        configs = load_native_mcp_server_configs(repository, allowlist=(server,))
+        if len(configs) != 1 or configs[0].oauth is None:
+            raise typer.BadParameter("MCP server must exist and define oauth metadata")
+        oauth = McpOAuthClient()
+        try:
+            authorization = oauth.begin_login(configs[0].oauth)
+            typer.echo("This creates a Rivumi-owned MCP grant; no other client store is read.")
+            if manual:
+                typer.echo(authorization.url)
+            elif not webbrowser.open(authorization.url):
+                typer.echo("The browser did not open. Open this URL manually:")
+                typer.echo(authorization.url)
+            callback_url = typer.prompt("Paste the final OAuth callback URL", hide_input=True)
+            code = parse_mcp_oauth_callback(callback_url, expected_state=authorization.state)
+            credential = oauth.exchange_code(
+                configs[0].oauth,
+                code=code,
+                verifier=authorization.verifier,
+            )
+        finally:
+            oauth.close()
+        path = mcp_oauth_credential_path(server)
+        McpOAuthCredentialStore(path).save(credential)
+    except (McpError, OSError, PermissionError, ValueError) as exc:
+        typer.echo(f"error: MCP authorization failed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"MCP authorization saved for {server!r}.")
+
+
+@auth_app.command("status-mcp")
+def status_mcp(
+    server: Annotated[str, typer.Argument(help="MCP server name")],
+) -> None:
+    """Report redacted status for one Rivumi-owned MCP OAuth grant."""
+
+    from rivumi.mcp_client import McpOAuthCredentialStore, mcp_oauth_credential_path
+
+    try:
+        credential = McpOAuthCredentialStore(mcp_oauth_credential_path(server)).load()
+    except (OSError, PermissionError, ValueError) as exc:
+        typer.echo(f"error: MCP authorization is unreadable: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if credential is None:
+        typer.echo(f"MCP authorization for {server!r}: not configured")
+        raise typer.Exit(code=1)
+    expiry = (
+        "unknown"
+        if credential.expires_at is None
+        else ("expired" if credential.expires_at <= time.time() else "valid")
+    )
+    typer.echo(f"MCP authorization for {server!r}: configured ({expiry})")
+
+
+@auth_app.command("logout-mcp")
+def logout_mcp(
+    server: Annotated[str, typer.Argument(help="MCP server name")],
+) -> None:
+    """Delete this application's MCP OAuth grant for one server."""
+
+    from rivumi.mcp_client import McpOAuthCredentialStore, mcp_oauth_credential_path
+
+    try:
+        cleared = McpOAuthCredentialStore(mcp_oauth_credential_path(server)).clear()
+    except (OSError, PermissionError, ValueError) as exc:
+        typer.echo(f"error: MCP authorization could not be removed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if cleared:
+        typer.echo(f"MCP authorization for {server!r} removed from Rivumi.")
+    else:
+        typer.echo(f"MCP authorization for {server!r} was not configured.")
+
+
 @auth_app.command("set-key")
 def auth_set_key(
     provider: Annotated[
@@ -1992,6 +2214,13 @@ def sessions(
             help="Print a safe fork seed artifact for one run id or id prefix.",
         ),
     ] = None,
+    analyze_subagents: Annotated[
+        str | None,
+        typer.Option(
+            "--analyze-subagents",
+            help="Analyze subagent schedule traces for one run id or id prefix.",
+        ),
+    ] = None,
     sequence: Annotated[
         int | None,
         typer.Option(
@@ -2022,6 +2251,7 @@ def sessions(
             ("--replay", replay),
             ("--replay-json", replay_json),
             ("--fork-from-event", fork_from_event),
+            ("--analyze-subagents", analyze_subagents),
         )
         if value is not None
     )
@@ -2263,6 +2493,24 @@ def sessions(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=2) from exc
         typer.echo(fork_seed.canonical_json())
+        return
+
+    if analyze_subagents is not None:
+        from rivumi.subagents import analyze_subagent_schedule_jsonl
+
+        run_dir = _resolve_run_dir(analyze_subagents)
+        if run_dir is None:
+            typer.echo(
+                f"error: no unique run matching {analyze_subagents!r} under {run_root}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        try:
+            analysis = analyze_subagent_schedule_jsonl(run_dir / "events.jsonl")
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        typer.echo(json.dumps(analysis.as_dict(), ensure_ascii=False, sort_keys=True))
         return
 
     rows: list[tuple[float, str, str, str, str, str]] = []
@@ -2578,6 +2826,38 @@ def serve_gateway(
     uvicorn.run(gateway, host=host, port=port, lifespan="on")
 
 
+@app.command("conversation-server")
+def serve_conversation_server(
+    repository: Annotated[
+        Path | None,
+        typer.Option("--repo", "--cd", "-C", exists=True, file_okay=False),
+    ] = None,
+    runtime: Annotated[
+        str,
+        typer.Option("--runtime", help="Native conversation runtime to attach."),
+    ] = "codex-cli",
+    model: Annotated[str | None, typer.Option("--model", "-m")] = None,
+    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)] = 8788,
+    path: Annotated[str, typer.Option("--path")] = "/v1/conversation/attach",
+) -> None:
+    """Expose a native conversation runtime through the WebSocket attach protocol."""
+
+    import uvicorn
+
+    from rivumi.conversation_websocket import ConversationWebSocketApp
+
+    if host not in {"localhost", "127.0.0.1", "::1"}:
+        raise typer.BadParameter("conversation-server only binds loopback")
+    repository = repository or Path.cwd()
+    adapter = runtime_registry.RUNTIME_REGISTRY.get(runtime)
+    if adapter is None or adapter.native_session is None:
+        raise typer.BadParameter("runtime does not expose a native conversation session")
+    session_cls = runtime_registry._resolve_class(adapter.native_session)
+    session = session_cls(source_repository=repository, model=model)
+    uvicorn.run(ConversationWebSocketApp(session, path=path), host=host, port=port, lifespan="off")
+
+
 @app.command("exec")
 @app.command("run")
 def run(
@@ -2637,10 +2917,17 @@ def run(
             "--unsafe-local-exec",
             help=(
                 "Acknowledge that checks execute trusted repository code; "
-                "use --sandbox-checks to wrap verification commands."
+                "use --no-sandbox-checks only for a trusted local escape hatch."
             ),
         ),
     ] = False,
+    sandbox_checks: Annotated[
+        bool,
+        typer.Option(
+            "--sandbox-checks/--no-sandbox-checks",
+            help="Run native verification checks through the local OS sandbox.",
+        ),
+    ] = True,
 ) -> None:
     """Run one non-interactive task (Codex-style `exec`; `run` remains an alias)."""
 
@@ -2699,6 +2986,7 @@ def run(
                         Path(root).expanduser()
                         for root in current_config.sandbox_read_roots
                     ),
+                    sandbox_checks=_effective_sandbox_checks(sandbox_checks),
                 ),
                 selected_model,
             )

@@ -1,9 +1,10 @@
-"""Conservative secret-pattern checks for reviewable patches."""
+"""Conservative secret-pattern checks for patches, terminal text, and exports."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,42 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("bearer-token", _BEARER_TOKEN),
     ("secret-assignment", _SECRET_ASSIGNMENT),
 )
+
+
+def scan_text_for_secrets(text: str, *, path: str = "<text>") -> tuple[SecretFinding, ...]:
+    """Return secret-looking lines in arbitrary terminal/export text without echoing values."""
+
+    findings: list[SecretFinding] = []
+    for line_number, line in enumerate(text.splitlines(), 1):
+        for name, pattern in _PATTERNS:
+            if pattern.search(line):
+                findings.append(SecretFinding(path=path, line=line_number, pattern=name))
+                break
+    return tuple(findings)
+
+
+def scan_file_for_secrets(
+    path: str | Path,
+    *,
+    max_bytes: int = 1_000_000,
+) -> tuple[SecretFinding, ...]:
+    """Scan one bounded UTF-8-ish artifact file for secret-looking text."""
+
+    artifact = Path(path)
+    with artifact.open("rb") as handle:
+        payload = handle.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        payload = payload[:max_bytes]
+    return scan_text_for_secrets(payload.decode("utf-8", errors="replace"), path=str(artifact))
+
+
+def redact_secrets(text: str, *, marker: str = "[REDACTED_SECRET]") -> str:
+    """Redact known secret-looking values before terminal output or exported artifacts."""
+
+    redacted = text
+    for _name, pattern in _PATTERNS:
+        redacted = pattern.sub(marker, redacted)
+    return redacted
 
 
 def scan_patch_for_secrets(patch: str) -> tuple[SecretFinding, ...]:

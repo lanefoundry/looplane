@@ -61,9 +61,300 @@ def test_read_only_tool_definitions_mark_concurrency_safe(tiny_bug_repo: Path) -
     for name in ("list_files", "read_file", "search_text", "git_diff"):
         assert definitions[name].read_only is True
         assert definitions[name].concurrency_safe is True
+    assert definitions["tool_program"].read_only is True
+    assert definitions["tool_program"].concurrency_safe is False
+    assert definitions["tool_transaction"].read_only is False
+    assert definitions["tool_transaction"].concurrency_safe is False
+    program_ops = definitions["tool_program"].input_schema["properties"]["steps"]["items"][
+        "properties"
+    ]["op"]["enum"]
+    transaction_ops = definitions["tool_transaction"].input_schema["properties"]["steps"]["items"][
+        "properties"
+    ]["op"]["enum"]
+    assert "repeat" in program_ops
+    assert "if_contains" in program_ops
+    assert "repeat" in transaction_ops
+    assert "if_contains" in transaction_ops
     for name in ("replace_text", "apply_patch", "run_check"):
         assert definitions[name].read_only is False
         assert definitions[name].concurrency_safe is False
+
+
+def test_tool_program_executes_bounded_read_only_steps(tiny_bug_repo: Path) -> None:
+    executor = make_executor(tiny_bug_repo, allowed_paths=("src/**",))
+
+    observation = executor.execute(
+        ToolCall(
+            name="tool_program",
+            arguments={
+                "steps": [
+                    {"op": "list_files", "args": {"path": "src"}},
+                    {
+                        "op": "read_file",
+                        "args": {"path": "src/tiny_python_bug/calculator.py"},
+                    },
+                    {"op": "search_text", "args": {"query": "return", "path": "src"}},
+                ]
+            },
+        )
+    )
+
+    assert observation.ok is True
+    assert observation.content.startswith("[tool-program-v1]")
+    assert "## step 1: list_files" in observation.content
+    assert "src/tiny_python_bug/calculator.py" in observation.content
+    assert "## step 3: search_text" in observation.content
+
+
+def test_tool_program_rejects_modify_steps(tiny_bug_repo: Path) -> None:
+    executor = make_executor(tiny_bug_repo, allowed_paths=("src/**",))
+
+    observation = executor.execute(
+        ToolCall(
+            name="tool_program",
+            arguments={
+                "steps": [
+                    {
+                        "op": "replace_text",
+                        "args": {
+                            "path": "src/tiny_python_bug/calculator.py",
+                            "old_text": "left - right",
+                            "new_text": "left + right",
+                        },
+                    }
+                ]
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert "unsupported tool program op" in (observation.error or "")
+
+
+def test_tool_program_supports_bounded_repeat_and_branch(tiny_bug_repo: Path) -> None:
+    executor = make_executor(tiny_bug_repo, allowed_paths=("src/**",))
+
+    observation = executor.execute(
+        ToolCall(
+            name="tool_program",
+            arguments={
+                "steps": [
+                    {
+                        "op": "repeat",
+                        "count": 2,
+                        "steps": [
+                            {
+                                "op": "search_text",
+                                "args": {"query": "return", "path": "src"},
+                            }
+                        ],
+                    },
+                    {
+                        "op": "if_contains",
+                        "contains": "calculator.py",
+                        "then_steps": [
+                            {
+                                "op": "read_file",
+                                "args": {"path": "src/tiny_python_bug/calculator.py"},
+                            }
+                        ],
+                        "else_steps": [{"op": "git_diff"}],
+                    },
+                ]
+            },
+        )
+    )
+
+    assert observation.ok is True
+    assert observation.content.count("## step") == 3
+    assert "matched: true" in observation.content
+    assert "return left - right" in observation.content
+
+
+def test_tool_program_rejects_expanded_loop_over_step_limit(tiny_bug_repo: Path) -> None:
+    executor = make_executor(
+        tiny_bug_repo,
+        allowed_paths=("src/**",),
+        limits={"max_tool_program_steps": 2},
+    )
+
+    observation = executor.execute(
+        ToolCall(
+            name="tool_program",
+            arguments={
+                "steps": [
+                        {
+                            "op": "repeat",
+                            "count": 2,
+                            "steps": [{"op": "git_diff"}, {"op": "git_diff"}],
+                        }
+                ]
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert "exceeds 2 steps" in (observation.error or "")
+
+
+def test_tool_transaction_applies_edit_and_check_as_one_unit(tiny_bug_repo: Path) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    command = VerificationCommand(
+        name="ok",
+        argv=(sys.executable, "-c", "raise SystemExit(0)"),
+        timeout_seconds=5,
+    )
+    executor = make_executor(tiny_bug_repo, verification_commands=(command,))
+
+    observation = executor.execute(
+        ToolCall(
+            name="tool_transaction",
+            arguments={
+                "steps": [
+                    {
+                        "op": "read_file",
+                        "args": {"path": "src/tiny_python_bug/calculator.py"},
+                    },
+                    {
+                        "op": "replace_text",
+                        "args": {
+                            "path": "src/tiny_python_bug/calculator.py",
+                            "old_text": "return left - right",
+                            "new_text": "return left + right",
+                        },
+                    },
+                    {"op": "run_check", "args": {"name": "ok"}},
+                ]
+            },
+        )
+    )
+
+    assert observation.ok is True
+    assert observation.content.startswith("[tool-transaction-v1]")
+    assert "## step 3: run_check" in observation.content
+    assert target.read_text().endswith("return left + right\n")
+
+
+def test_tool_transaction_supports_branch_and_rolls_back_taken_edit(
+    tiny_bug_repo: Path,
+) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    before = target.read_bytes()
+    command = VerificationCommand(
+        name="fail",
+        argv=(sys.executable, "-c", "raise SystemExit(7)"),
+        timeout_seconds=5,
+    )
+    executor = make_executor(tiny_bug_repo, verification_commands=(command,))
+
+    observation = executor.execute(
+        ToolCall(
+            name="tool_transaction",
+            arguments={
+                "steps": [
+                    {
+                        "op": "read_file",
+                        "args": {"path": "src/tiny_python_bug/calculator.py"},
+                    },
+                    {
+                        "op": "if_contains",
+                        "contains": "return left - right",
+                        "then_steps": [
+                            {
+                                "op": "replace_text",
+                                "args": {
+                                    "path": "src/tiny_python_bug/calculator.py",
+                                    "old_text": "return left - right",
+                                    "new_text": "return left + right",
+                                },
+                            },
+                            {"op": "run_check", "args": {"name": "fail"}},
+                        ],
+                        "else_steps": [{"op": "git_diff"}],
+                    },
+                ]
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert "rolled back touched paths" in (observation.error or "")
+    assert target.read_bytes() == before
+    assert executor.git_diff() == ""
+
+
+def test_tool_transaction_rolls_back_edit_when_check_fails(tiny_bug_repo: Path) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    before = target.read_bytes()
+    command = VerificationCommand(
+        name="fail",
+        argv=(sys.executable, "-c", "raise SystemExit(7)"),
+        timeout_seconds=5,
+    )
+    executor = make_executor(tiny_bug_repo, verification_commands=(command,))
+
+    observation = executor.execute(
+        ToolCall(
+            name="tool_transaction",
+            arguments={
+                "steps": [
+                    {
+                        "op": "read_file",
+                        "args": {"path": "src/tiny_python_bug/calculator.py"},
+                    },
+                    {
+                        "op": "replace_text",
+                        "args": {
+                            "path": "src/tiny_python_bug/calculator.py",
+                            "old_text": "return left - right",
+                            "new_text": "return left + right",
+                        },
+                    },
+                    {"op": "run_check", "args": {"name": "fail"}},
+                ]
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert "rolled back touched paths" in (observation.error or "")
+    assert target.read_bytes() == before
+    assert executor.git_diff() == ""
+
+
+def test_tool_transaction_rolls_back_new_file_when_check_fails(tiny_bug_repo: Path) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "generated.py"
+    command = VerificationCommand(
+        name="fail",
+        argv=(sys.executable, "-c", "raise SystemExit(7)"),
+        timeout_seconds=5,
+    )
+    executor = make_executor(tiny_bug_repo, verification_commands=(command,))
+    patch = """\
+diff --git a/src/tiny_python_bug/generated.py b/src/tiny_python_bug/generated.py
+new file mode 100644
+--- /dev/null
++++ b/src/tiny_python_bug/generated.py
+@@ -0,0 +1 @@
++VALUE = 1
+"""
+
+    observation = executor.execute(
+        ToolCall(
+            name="tool_transaction",
+            arguments={
+                "steps": [
+                    {"op": "apply_patch", "args": {"patch": patch}},
+                    {"op": "run_check", "args": {"name": "fail"}},
+                ]
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert "rolled back touched paths" in (observation.error or "")
+    assert not target.exists()
+    assert executor.git_diff() == ""
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep is not installed")
