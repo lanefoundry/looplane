@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from conftest import plain_cli_output
 from typer.testing import CliRunner
 
 from looplane import cli
@@ -107,6 +108,7 @@ def test_cloudflare_provider_apply_help_exposes_batch_inputs() -> None:
     )
 
     assert result.exit_code == 0, result.output
-    assert "--secrets-env" in result.output
-    assert "--dry-run" in result.output
-    assert "--allow-custom-endpoint" in result.output
+    output = plain_cli_output(result)
+    assert "--secrets-env" in output
+    assert "--dry-run" in output
+    assert "--allow-custom-endpoint" in output

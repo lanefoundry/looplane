@@ -13,8 +13,8 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from looplane.landlock_run import landlock_available
 
+from looplane.landlock_run import landlock_available
 
 _FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _SAFE_ENV_KEYS = {
@@ -110,6 +110,19 @@ def sanitized_subprocess_env(*, task_home: Path | None = None) -> dict[str, str]
         env["TMPDIR"] = str(task_tmp)
     assert not any(marker in key.upper() for key in env for marker in _SENSITIVE_ENV_MARKERS)
     return env
+
+
+def python_runtime_read_roots() -> tuple[Path, ...]:
+    """Return narrow trusted roots required by this Python sandbox wrapper."""
+
+    roots: list[Path] = []
+    home = Path.home().resolve(strict=False)
+    for value in (sys.prefix, sys.base_prefix):
+        root = Path(value).resolve(strict=False)
+        if root == Path(root.anchor) or home == root or home.is_relative_to(root):
+            continue
+        roots.append(root)
+    return tuple(dict.fromkeys(roots))
 
 
 class _BoundedCapture:
@@ -291,7 +304,7 @@ def resolve_command_sandbox(
         raise ValueError(f"unsupported command sandbox backend: {backend_name}")
     task_home = task_home.expanduser().resolve(strict=False)
     read_roots = _normalize_sandbox_roots(
-        (cwd, task_home, *extra_read_roots),
+        (cwd, task_home, *extra_read_roots, *python_runtime_read_roots()),
         label="read",
     )
     return CommandSandbox(

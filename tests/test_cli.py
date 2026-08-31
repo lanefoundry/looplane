@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import typer
+from conftest import plain_cli_output
 from typer.testing import CliRunner
 
 from looplane import cli
@@ -81,7 +82,7 @@ def test_cli_help_exposes_interactive_options_headless_run_and_resume() -> None:
     result = CliRunner().invoke(cli.app, ["--help"])
 
     assert result.exit_code == 0
-    assert "--api-url" in result.output
+    assert "--api-url" in plain_cli_output(result)
     assert "resume" in result.output
     assert "exec" in result.output
     assert "config" in result.output
@@ -261,7 +262,8 @@ def test_config_command_and_cli_env_config_precedence(tmp_path: Path, monkeypatc
     assert switched_config.api_url is None
 
 
-def test_root_completion_option_is_not_routed_as_a_prompt() -> None:
+def test_root_completion_option_is_not_routed_as_a_prompt(monkeypatch) -> None:
+    monkeypatch.setattr("typer.completion._get_shell_name", lambda: None)
     result = CliRunner().invoke(cli.app, ["--show-completion"])
 
     assert result.exit_code == 1
@@ -310,8 +312,9 @@ def test_routed_help_never_exposes_hidden_chat_command() -> None:
     result = CliRunner().invoke(cli.app, ["-p", "--help"])
 
     assert result.exit_code == 0
-    assert "Usage: root [OPTIONS] [PROMPT]" in result.output
-    assert "root chat" not in result.output
+    output = plain_cli_output(result)
+    assert "Usage: root [OPTIONS] [PROMPT]" in output
+    assert "root chat" not in output
 
 
 def test_legacy_short_provider_option_has_actionable_migration_error(
@@ -324,9 +327,10 @@ def test_legacy_short_provider_option_has_actionable_migration_error(
     )
 
     assert result.exit_code == 2
-    assert "-p now means --print" in result.output
-    assert "--provider" in result.output
-    assert "looplane chat" not in result.output
+    output = plain_cli_output(result)
+    assert "-p now means --print" in output
+    assert "--provider" in output
+    assert "looplane chat" not in output
 
 
 def test_exec_positional_and_legacy_run_flags_share_headless_contract(
@@ -1395,7 +1399,7 @@ def test_sessions_fork_from_event_rejects_invalid_sequence(tmp_path: Path) -> No
     assert missing.exit_code == 2
     assert "fork sequence 99 was not found" in missing.output
     assert omitted.exit_code == 2
-    assert "--fork-from-event requires --sequence" in omitted.output
+    assert "--fork-from-event requires --sequence" in plain_cli_output(omitted)
 
 
 def test_policy_inspect_reports_sources_precedence_and_effective_rules(
@@ -1532,7 +1536,7 @@ def test_sessions_show_and_replay_are_mutually_exclusive(tmp_path: Path) -> None
     )
 
     assert result.exit_code == 2
-    assert "--show and --replay cannot be used together" in result.output
+    assert "--show and --replay cannot be used together" in plain_cli_output(result)
 
 
 def test_model_role_alias_honors_explicit_provider_filter(
@@ -1839,7 +1843,7 @@ def test_claude_backend_requires_explicit_coding_boundaries(
         ],
     )
     assert missing_check.exit_code == 2
-    assert "requires at least one explicit --check" in missing_check.output
+    assert "requires at least one explicit --check" in plain_cli_output(missing_check)
 
 
 def test_codex_login_closes_oauth_client_when_callback_fails(monkeypatch) -> None:

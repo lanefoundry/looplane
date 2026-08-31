@@ -948,6 +948,7 @@ class ToolExecutor:
                 max_output_bytes=self.max_output_chars,
             )
         else:
+            command_env = sanitized_subprocess_env(task_home=self._task_home)
             sandbox = (
                 resolve_command_sandbox(
                     profile=self._sandbox_profile,
@@ -964,7 +965,7 @@ class ToolExecutor:
                 cwd=self.workspace,
                 timeout_seconds=effective_timeout,
                 max_output_chars=self.max_output_chars,
-                env=sanitized_subprocess_env(task_home=self._task_home),
+                env=command_env,
                 sandbox=sandbox,
             )
             if (
@@ -981,7 +982,7 @@ class ToolExecutor:
                     cwd=self.workspace,
                     timeout_seconds=effective_timeout,
                     max_output_chars=self.max_output_chars,
-                    env=sanitized_subprocess_env(task_home=self._task_home),
+                    env=command_env,
                 )
         duration = time.monotonic() - started_at
         status = "passed" if result.ok else "failed"

@@ -11,6 +11,7 @@ from looplane.runtime import (
     CommandSandbox,
     LocalGitWorkspace,
     WorkspacePreparationError,
+    python_runtime_read_roots,
     resolve_command_sandbox,
     run_bounded_command,
     sandboxed_command_argv,
@@ -86,6 +87,7 @@ def test_resolve_command_sandbox_adds_named_profile_and_read_roots(tmp_path: Pat
         workspace.resolve(strict=False),
         task_home.resolve(strict=False),
         extra.resolve(strict=False),
+        *python_runtime_read_roots(),
     )
     assert sandbox.writable_roots == (task_home.resolve(strict=False),)
 
@@ -99,6 +101,25 @@ def test_resolve_command_sandbox_accepts_landlock_backend(tmp_path: Path) -> Non
     )
 
     assert sandbox.backend == "landlock"
+
+
+def test_python_runtime_read_roots_include_prefixes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "prefix", "/opt/looplane/.venv")
+    monkeypatch.setattr(sys, "base_prefix", "/opt/python")
+
+    assert python_runtime_read_roots() == (
+        Path("/opt/looplane/.venv"),
+        Path("/opt/python"),
+    )
+
+
+def test_python_runtime_read_roots_reject_broad_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "prefix", str(Path.home().parent))
+    monkeypatch.setattr(sys, "base_prefix", str(Path.home()))
+
+    assert python_runtime_read_roots() == ()
 
 
 def test_sandboxed_command_rejects_unknown_profile_before_execution(tmp_path: Path) -> None:

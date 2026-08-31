@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from conftest import plain_cli_output
 from typer.testing import CliRunner
 
 from looplane import cli
@@ -129,8 +130,9 @@ def test_non_tty_missing_model_has_actionable_setup_error(tmp_path: Path, monkey
     result = CliRunner().invoke(cli.app, ["-p", "Explain this repository"])
 
     assert result.exit_code == 2
-    assert "looplane config --interactive" in result.output
-    assert "--provider PROVIDER --model MODEL" in result.output
+    output = plain_cli_output(result)
+    assert "looplane config --interactive" in output
+    assert "--provider PROVIDER --model MODEL" in output
     assert not path.exists()
 
 
@@ -256,7 +258,7 @@ def test_print_mode_never_runs_setup_when_tty_is_attached(tmp_path: Path, monkey
     result = CliRunner().invoke(cli.app, ["-p", "Explain this repository"])
 
     assert result.exit_code == 2
-    assert "looplane config --interactive" in result.output
+    assert "looplane config --interactive" in plain_cli_output(result)
 
 
 def test_print_mode_never_prompts_for_missing_task_on_tty(tmp_path: Path, monkeypatch) -> None:

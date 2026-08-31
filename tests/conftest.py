@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from click import unstyle
+from click.testing import Result
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +45,12 @@ def _force_tty_width(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "evals" / "fixtures" / "tiny-python-bug"
+
+
+def plain_cli_output(result: Result) -> str:
+    """Return CLI output without host-specific terminal styling."""
+
+    return unstyle(result.output)
 
 
 def run_git(repository: Path, *args: str) -> str:
