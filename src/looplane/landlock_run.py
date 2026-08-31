@@ -65,6 +65,7 @@ _WRITE_ACCESS = (
     | _ACCESS_TRUNCATE
 )
 _HANDLED_ACCESS = _WRITE_ACCESS
+_DEVICE_FILE_ACCESS = _ACCESS_READ_FILE | _ACCESS_WRITE_FILE | _ACCESS_TRUNCATE
 
 
 class LandlockRulesetAttr(ctypes.Structure):
@@ -283,6 +284,29 @@ def _add_path_rule(ruleset_fd: int, root: Path, access: int) -> None:
         os.close(fd)
 
 
+def _add_device_file_rule(ruleset_fd: int, path: Path) -> None:
+    resolved = path.resolve(strict=True)
+    if resolved != Path("/dev/null"):
+        raise ValueError(f"unsupported Landlock device path: {resolved}")
+    flags = os.O_PATH | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(resolved, flags)
+    try:
+        if not stat.S_ISCHR(os.fstat(fd).st_mode):
+            raise ValueError(f"Landlock device path is not a character device: {resolved}")
+        attr = LandlockPathBeneathAttr(_DEVICE_FILE_ACCESS, fd)
+        _syscall(
+            _SYS_LANDLOCK_ADD_RULE,
+            ruleset_fd,
+            _LANDLOCK_RULE_PATH_BENEATH,
+            ctypes.byref(attr),
+            0,
+        )
+    finally:
+        os.close(fd)
+
+
 def _paths(values: object) -> tuple[Path, ...]:
     if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
         raise ValueError("Landlock policy paths must be a list of strings")
@@ -309,6 +333,7 @@ def _apply_policy(policy: dict[str, Any]) -> None:
         ):
             if root.exists():
                 _add_path_rule(ruleset_fd, root, _READ_ACCESS)
+        _add_device_file_rule(ruleset_fd, Path(os.devnull))
         write_roots = tuple(dict.fromkeys((cwd, *writable_roots)))
         for root in write_roots:
             _add_path_rule(ruleset_fd, root, _WRITE_ACCESS)

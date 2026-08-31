@@ -68,6 +68,34 @@ def test_bounded_command_fails_closed_when_required_sandbox_is_unavailable(
     assert not marker.exists()
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Landlock is Linux-specific")
+def test_landlock_sandbox_allows_dev_null(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    task_home = tmp_path / "task-home"
+    workspace.mkdir()
+    task_home.mkdir()
+    script = (
+        "import os; "
+        "open(os.devnull, encoding='utf-8').close(); "
+        "open(os.devnull, 'w', encoding='utf-8').close()"
+    )
+
+    result = run_bounded_command(
+        (sys.executable, "-c", script),
+        cwd=workspace,
+        timeout_seconds=5,
+        max_output_chars=1_000,
+        sandbox=resolve_command_sandbox(
+            profile="verification",
+            backend="landlock",
+            cwd=workspace,
+            task_home=task_home,
+        ),
+    )
+
+    assert result.ok, result.stderr
+
+
 def test_resolve_command_sandbox_adds_named_profile_and_read_roots(tmp_path: Path) -> None:
     workspace = tmp_path / "repo"
     task_home = tmp_path / ".task-home"

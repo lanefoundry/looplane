@@ -30,11 +30,16 @@ PY
 
 uv run python src/looplane/landlock_run.py --policy-json "$policy" -- \
   python - "$task_home" <<'PY'
+import os
 from pathlib import Path
 import sys
 
 Path("input.txt").read_text()
 Path(sys.argv[1], "ok.txt").write_text("ok")
+with open(os.devnull, encoding="utf-8") as handle:
+    handle.read()
+with open(os.devnull, "w", encoding="utf-8") as handle:
+    handle.write("discarded")
 PY
 
 if uv run python src/looplane/landlock_run.py --policy-json "$policy" -- \

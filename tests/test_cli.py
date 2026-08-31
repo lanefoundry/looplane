@@ -70,7 +70,11 @@ def test_bare_looplane_runs_our_agent_loop_with_trace_and_session(
         ],
     )
 
-    assert result.exit_code == 0, result.output
+    diagnostics = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in run_root.glob("*/verification.json")
+    )
+    assert result.exit_code == 0, f"{result.output}\nverification:\n{diagnostics}"
     assert "completed: Fixed through the interactive CLI." in result.output
     assert "session:" in result.output
     sessions = list(run_root.glob("*/session.json"))
