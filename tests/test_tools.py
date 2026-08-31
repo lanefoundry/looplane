@@ -22,6 +22,8 @@ def make_executor(
     sandbox_profile: str | None = None,
     sandbox_backend: str | None = None,
     sandbox_read_roots: tuple[Path, ...] = (),
+    base_sha: str | None = None,
+    preexisting_dirty_paths: frozenset[str] = frozenset(),
 ) -> ToolExecutor:
     return ToolExecutor(
         workspace=workspace,
@@ -33,6 +35,8 @@ def make_executor(
         sandbox_profile=sandbox_profile,
         sandbox_backend=sandbox_backend,
         sandbox_read_roots=sandbox_read_roots,
+        base_sha=base_sha,
+        preexisting_dirty_paths=preexisting_dirty_paths,
     )
 
 
@@ -965,6 +969,55 @@ deleted file mode 100644
     )
     assert "new file mode 100644" in review.content
     assert "deleted file mode 100644" in review.content
+
+
+def test_reviewable_patch_pinned_ignores_preexisting_dirty_index(tiny_bug_repo: Path) -> None:
+    source_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tiny_bug_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    unrelated_file = tiny_bug_repo / "TASK.md"
+    unrelated_file.write_text(unrelated_file.read_text() + "\npre-existing local note\n")
+    subprocess.run(["git", "add", "TASK.md"], cwd=tiny_bug_repo, check=True)
+
+    executor = make_executor(
+        tiny_bug_repo, base_sha=source_sha, preexisting_dirty_paths=frozenset({"TASK.md"})
+    )
+    executor.execute(
+        ToolCall(
+            name="read_file", arguments={"path": "src/tiny_python_bug/calculator.py"}
+        )
+    )
+    edit = executor.execute(
+        ToolCall(
+            name="replace_text",
+            arguments={
+                "path": "src/tiny_python_bug/calculator.py",
+                "old_text": "return left - right",
+                "new_text": "return left + right",
+            },
+        )
+    )
+    assert edit.ok is True, edit.error
+
+    patch = executor.reviewable_patch()
+
+    assert patch.changed_paths == ("src/tiny_python_bug/calculator.py",)
+    assert "TASK.md" not in patch.content
+    assert "left + right" in patch.content
+
+    # The real .git/index was never touched: the pre-existing staged dirt is still there.
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=tiny_bug_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "TASK.md" in status
 
 
 def test_cumulative_workspace_patch_cannot_exceed_limit(tiny_bug_repo: Path) -> None:

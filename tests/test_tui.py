@@ -190,6 +190,14 @@ class FakeRunner:
         )
 
 
+class RunDirRunner(FakeRunner):
+    """A FakeRunner that also exposes ``run_dir``, like the real AgentRunner."""
+
+    def __init__(self, *, run_dir: Path, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.run_dir = run_dir
+
+
 async def _wait_until(predicate, *, attempts: int = 50) -> None:
     for _ in range(attempts):
         if predicate():
@@ -240,6 +248,45 @@ async def test_configured_tui_runs_task_and_projects_raw_events(tmp_path: Path) 
         assert app._result.status == RunStatus.COMPLETED
         assert captured["request"].instruction == "Fix tests"
         assert app.query_one("#status").content == "completed · verified · 0 changed file(s)"
+
+
+async def test_agent_mode_threads_continuation_run_dir_across_turns_and_resets_on_new(
+    tmp_path: Path,
+) -> None:
+    requests: list[object] = []
+    run_dir = tmp_path / "runs" / "abc123"
+
+    def factory(request, approval_policy, event_sink):
+        requests.append(request)
+        runner = RunDirRunner(
+            run_dir=run_dir, approval_policy=approval_policy, event_sink=event_sink
+        )
+        return runner, FakeModel()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)):
+        task = app.query_one("#task", MessageComposer)
+        task.load_text("Fix tests")
+        app._submit_current_task()
+        await _wait_until(lambda: len(requests) == 1 and not app._agent_running)
+        assert requests[0].continuation_run_dir is None
+        assert app._active_agent_run_dir == run_dir
+
+        task.load_text("Now also add docs")
+        app._submit_current_task()
+        await _wait_until(lambda: len(requests) == 2 and not app._agent_running)
+        assert requests[1].continuation_run_dir == run_dir
+        assert app._active_agent_run_dir == run_dir
+
+        task.load_text("/new")
+        app._submit_current_task()
+        await _wait_until(lambda: app._active_agent_run_dir is None)
 
 
 async def test_persistent_resource_closes_on_textual_event_loop(tmp_path: Path) -> None:

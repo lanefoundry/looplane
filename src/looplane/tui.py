@@ -353,6 +353,7 @@ class TuiRunRequest:
     api_url: str | None
     mode: str = "agent"
     context_id: str | None = None
+    continuation_run_dir: Path | None = None
 
 
 RunnerFactory = Callable[
@@ -2107,6 +2108,7 @@ class looplaneApp(App[RunResult | None]):
         self._conversation_has_chunk = False
         self._runtime_context_id = uuid4().hex
         self._native_session_has_context = False
+        self._active_agent_run_dir: Path | None = None
         self._auto_compaction_armed = True
         self._auto_compaction_failed_contexts: set[str] = set()
         self._native_compaction_reminder_pending = False
@@ -3394,6 +3396,7 @@ class looplaneApp(App[RunResult | None]):
         self._auto_compaction_armed = True
         self._auto_compaction_failed_contexts.clear()
         self._native_compaction_reminder_pending = False
+        self._active_agent_run_dir = None
 
     async def _native_post_compaction_instruction(self, instruction: str) -> str:
         if not self._native_compaction_reminder_pending or not self._uses_native_conversation():
@@ -3712,6 +3715,11 @@ class looplaneApp(App[RunResult | None]):
             ),
             api_url=self.config.api_url,
             context_id=self._runtime_context_id,
+            continuation_run_dir=(
+                self._active_agent_run_dir
+                if self._mode == "agent" and not self._uses_native_conversation()
+                else None
+            ),
         )
         try:
             runner, resource = self.runner_factory(
@@ -3755,6 +3763,11 @@ class looplaneApp(App[RunResult | None]):
                 await self._finish_conversation_turn(self._result)
             if self._uses_native_conversation() and self._result.status == RunStatus.COMPLETED:
                 self._native_session_has_context = True
+            if self._mode == "agent" and not self._uses_native_conversation():
+                run_dir = getattr(self._runner, "run_dir", None)
+                self._active_agent_run_dir = (
+                    run_dir if self._result.status == RunStatus.COMPLETED else None
+                )
             if self.query("#status"):
                 self._mark_turn_finished()
                 self.query_one("#status", Static).update(self._result_status(self._result))

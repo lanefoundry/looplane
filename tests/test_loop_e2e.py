@@ -13,6 +13,7 @@ from looplane.approvals import (
     ApprovalDecision,
     ApprovalReason,
     ApprovalRequest,
+    CallbackApprovalPolicy,
     HeadlessApprovalPolicy,
     ToolEffect,
 )
@@ -76,6 +77,18 @@ diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.
 -    return left - right
 +    return left + right
 """
+
+# A verification command that checks the fix landed without writing stray cache
+# files into the workspace -- unlike `pytest`, whose own `.pytest_cache` output
+# would itself count as an (unrelated) change when direct-edit mode diffs the
+# real repository against base_sha.
+IMPORT_CHECK_ARGV = (
+    sys.executable,
+    "-c",
+    "import sys; sys.path.insert(0, 'src'); "
+    "from tiny_python_bug.calculator import add; "
+    "assert add(2, 3) == 5",
+)
 
 
 def make_task(
@@ -733,6 +746,277 @@ async def test_scripted_model_fixes_bug_verifies_and_writes_auditable_bundle(
     assert "-    return left - right" in patch
     assert "+    return left + right" in patch
     assert "passed" in test_log.lower()
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_continues_conversation_with_prior_messages_and_workspace_edits(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    source_sha = run_git(tiny_bug_repo, "rev-parse", "HEAD")
+    run_root = tmp_path / "runs"
+    task = TaskContract(
+        task_id="tiny-python-bug",
+        repository=tiny_bug_repo,
+        base_sha=source_sha,
+        instruction="Fix add so the existing test passes. Do not change tests.",
+        allowed_paths=("src/**",),
+        verification=(
+            VerificationCommand(name="tests", argv=("pytest", "-q"), timeout_seconds=30),
+        ),
+        limits=Limits(max_steps=4, wall_time_seconds=60),
+    )
+    model_turn1 = ScriptedModel(
+        turns=[
+            ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)),
+            ModelTurn(tool_calls=(ToolCall(name="run_check", arguments={"name": "tests"}),)),
+            ModelTurn(content="Fixed the calculator and verified the test suite."),
+        ]
+    )
+    runner1 = AgentRunner(
+        task=task,
+        model=model_turn1,
+        run_root=run_root,
+        allow_unsafe_local_exec=True,
+        approval_policy=CallbackApprovalPolicy(lambda _request: ApprovalDecision.ALLOW_SESSION),
+    )
+    result1 = await runner1.run()
+
+    assert result1.status == RunStatus.COMPLETED, result1.model_dump()
+    assert result1.changed_files == ("src/tiny_python_bug/calculator.py",)
+    assert runner1._manifest is not None
+    assert ToolEffect.MODIFY in runner1._manifest.granted_effects
+
+    workspace_file = runner1.run_dir / "workspace" / "src" / "tiny_python_bug" / "calculator.py"
+    edited_contents = workspace_file.read_bytes()
+    assert b"left + right" in edited_contents
+
+    # A single-step budget would immediately exceed the guard if the step count carried
+    # over cumulatively from turn 1 instead of resetting per turn.
+    follow_up_task = TaskContract(
+        task_id="tiny-python-bug",
+        repository=tiny_bug_repo,
+        base_sha=source_sha,
+        instruction="Now also add a docstring example.",
+        allowed_paths=("src/**",),
+        verification=(
+            VerificationCommand(name="tests", argv=("pytest", "-q"), timeout_seconds=30),
+        ),
+        limits=Limits(max_steps=1, wall_time_seconds=60),
+    )
+    model_turn2 = ScriptedModel(
+        turns=[ModelTurn(content="Already fixed in the previous turn; nothing further needed.")]
+    )
+    runner2 = AgentRunner(
+        task=follow_up_task,
+        model=model_turn2,
+        run_root=run_root,
+        run_id=runner1.run_id,
+        continuation=True,
+        allow_unsafe_local_exec=True,
+    )
+    result2 = await runner2.run()
+
+    assert result2.status == RunStatus.COMPLETED, result2.model_dump()
+    assert result2.run_id == runner1.run_id
+    assert len(model_turn2.calls) == 1
+
+    call_messages, _tools = model_turn2.calls[0]
+    text_contents = [
+        message.content
+        for message in call_messages
+        if isinstance(message, Message) and isinstance(message.content, str)
+    ]
+    assert any("Fix add so the existing test passes" in text for text in text_contents)
+    assert any("Now also add a docstring example." in text for text in text_contents)
+
+    # The disposable clone was reused, not re-cloned from HEAD: turn 1's edit is still there.
+    assert workspace_file.read_bytes() == edited_contents
+    assert runner2._manifest is not None
+    assert ToolEffect.MODIFY in runner2._manifest.granted_effects
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_continuation_falls_back_to_fresh_run_on_model_mismatch(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    run_root = tmp_path / "runs"
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
+    model1 = ScriptedModel(turns=[ModelTurn(content="Hello!")])
+    runner1 = AgentRunner(
+        task=task,
+        model=model1,
+        run_root=run_root,
+        allow_unsafe_local_exec=True,
+    )
+    result1 = await runner1.run()
+    assert result1.status == RunStatus.COMPLETED, result1.model_dump()
+
+    other_model = ScriptedModel(
+        turns=[ModelTurn(content="Hello again!")], model_id="scripted-other"
+    )
+    followup_task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
+    runner2 = AgentRunner(
+        task=followup_task,
+        model=other_model,
+        run_root=run_root,
+        run_id=runner1.run_id,
+        continuation=True,
+        allow_unsafe_local_exec=True,
+    )
+    result2 = await runner2.run()
+
+    assert result2.status == RunStatus.COMPLETED, result2.model_dump()
+    assert result2.run_id != runner1.run_id
+    events = read_events(result2)
+    assert any(event["event_type"] == "run.continuation_fallback" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_continuation_falls_back_when_workspace_missing(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    run_root = tmp_path / "runs"
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
+    model1 = ScriptedModel(turns=[ModelTurn(content="Nothing to fix yet.")])
+    runner1 = AgentRunner(
+        task=task,
+        model=model1,
+        run_root=run_root,
+        allow_unsafe_local_exec=True,
+    )
+    result1 = await runner1.run()
+    assert result1.status == RunStatus.COMPLETED, result1.model_dump()
+
+    shutil.rmtree(runner1.run_dir / "workspace")
+
+    model2 = ScriptedModel(turns=[ModelTurn(content="Starting fresh.")])
+    followup_task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
+    runner2 = AgentRunner(
+        task=followup_task,
+        model=model2,
+        run_root=run_root,
+        run_id=runner1.run_id,
+        continuation=True,
+        allow_unsafe_local_exec=True,
+    )
+    result2 = await runner2.run()
+
+    assert result2.status == RunStatus.COMPLETED, result2.model_dump()
+    assert result2.run_id != runner1.run_id
+    events = read_events(result2)
+    assert any(event["event_type"] == "run.continuation_fallback" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_scripted_model_edits_real_repo_directly_when_direct_edit_enabled(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    source_sha = run_git(tiny_bug_repo, "rev-parse", "HEAD")
+    source_file = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    source_contents = source_file.read_bytes()
+    task = TaskContract(
+        task_id="tiny-python-bug",
+        repository=tiny_bug_repo,
+        base_sha=source_sha,
+        instruction="Fix add so the existing test passes. Do not change tests.",
+        allowed_paths=("src/**",),
+        verification=(
+            VerificationCommand(name="tests", argv=IMPORT_CHECK_ARGV, timeout_seconds=30),
+        ),
+        limits=Limits(max_steps=4, wall_time_seconds=60),
+    )
+    model = ScriptedModel(
+        turns=[
+            ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)),
+            ModelTurn(tool_calls=(ToolCall(name="run_check", arguments={"name": "tests"}),)),
+            ModelTurn(content="Fixed the calculator directly in the real repository."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+        allow_direct_repo_edit=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert result.changed_files == ("src/tiny_python_bug/calculator.py",)
+    assert all(outcome.ok for outcome in result.verification)
+
+    # No disposable clone: the edit landed directly in the real repository, in place.
+    assert run_git(tiny_bug_repo, "rev-parse", "HEAD") == source_sha
+    assert source_file.read_bytes() != source_contents
+    assert b"left + right" in source_file.read_bytes()
+    assert run_git(tiny_bug_repo, "status", "--porcelain=v1") != ""
+
+    patch = Path(result.artifacts["patch"]).read_text()
+    assert "-    return left - right" in patch
+    assert "+    return left + right" in patch
+
+    events = read_events(result)
+    assert any(event["event_type"] == "workspace.direct_edit_enabled" for event in events)
+    assert not [
+        event for event in events if event["event_type"] == "workspace.dirty_source_detected"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_direct_repo_edit_reports_dirty_source_warning(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    source_sha = run_git(tiny_bug_repo, "rev-parse", "HEAD")
+    unrelated_file = tiny_bug_repo / "TASK.md"
+    unrelated_file.write_text(unrelated_file.read_text() + "\npre-existing local note\n")
+
+    task = TaskContract(
+        task_id="tiny-python-bug",
+        repository=tiny_bug_repo,
+        base_sha=source_sha,
+        instruction="Fix add so the existing test passes. Do not change tests.",
+        allowed_paths=("src/**",),
+        verification=(
+            VerificationCommand(name="tests", argv=IMPORT_CHECK_ARGV, timeout_seconds=30),
+        ),
+        limits=Limits(max_steps=4, wall_time_seconds=60),
+    )
+    model = ScriptedModel(
+        turns=[
+            ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)),
+            ModelTurn(tool_calls=(ToolCall(name="run_check", arguments={"name": "tests"}),)),
+            ModelTurn(content="Fixed the calculator."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task=task,
+        model=model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+        allow_direct_repo_edit=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    # Pre-existing dirt is left exactly as the user had it, and never reported.
+    patch = Path(result.artifacts["patch"]).read_text()
+    assert "TASK.md" not in patch
+    assert "pre-existing local note" in unrelated_file.read_text()
+
+    events = read_events(result)
+    dirty_events = [
+        event for event in events if event["event_type"] == "workspace.dirty_source_detected"
+    ]
+    assert len(dirty_events) == 1
+    assert "TASK.md" in dirty_events[0]["data"]["status_lines"]
+
+    call_messages, _tools = model.calls[0]
+    text_contents = [
+        message.content
+        for message in call_messages
+        if isinstance(message, Message) and isinstance(message.content, str)
+    ]
+    assert any("direct_edit_warning" in text for text in text_contents)
 
 
 @pytest.mark.parametrize(

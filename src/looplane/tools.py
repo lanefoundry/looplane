@@ -66,6 +66,9 @@ class ToolExecutor:
         limits: object | None = None,
         *,
         git_dir: Path | None = None,
+        base_sha: str | None = None,
+        task_home: Path | None = None,
+        preexisting_dirty_paths: frozenset[str] = frozenset(),
         mcp_servers: Sequence[NativeMcpServerConfig] = (),
         sandbox_checks: bool = False,
         sandbox_profile: str | None = None,
@@ -95,7 +98,13 @@ class ToolExecutor:
         self.max_list_files = self._limit(limits, "max_list_files", 500)
         self.max_search_results = self._limit(limits, "max_search_results", 100)
         self.max_tool_program_steps = self._limit(limits, "max_tool_program_steps", 8)
-        self._task_home = self.workspace.parent / ".check-task-env"
+        self.base_sha = base_sha
+        self._preexisting_dirty_paths = frozenset(preexisting_dirty_paths)
+        self._task_home = (
+            Path(task_home).resolve(strict=False)
+            if task_home is not None
+            else self.workspace.parent / ".check-task-env"
+        )
         self._sandbox_checks = sandbox_checks
         self._sandbox_profile = sandbox_profile or "verification"
         self._sandbox_backend = sandbox_backend or "auto"
@@ -722,6 +731,7 @@ class ToolExecutor:
         stdin: str | None = None,
         timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
+        extra_env: Mapping[str, str] | None = None,
     ):
         prefix: tuple[str, ...] = ()
         if self.git_dir is not None:
@@ -733,12 +743,15 @@ class ToolExecutor:
                 "-c",
                 "core.hooksPath=/dev/null",
             )
+        env = sanitized_subprocess_env(task_home=self._task_home)
+        if extra_env:
+            env.update(extra_env)
         return run_bounded_command(
             ("git", *prefix, *argv),
             cwd=self.workspace,
             timeout_seconds=self._effective_timeout(30.0, timeout_seconds),
             max_output_chars=max_output_bytes or self.max_output_chars,
-            env=sanitized_subprocess_env(task_home=self._task_home),
+            env=env,
             stdin=stdin,
         )
 
@@ -1014,6 +1027,8 @@ class ToolExecutor:
         return outcome
 
     def reviewable_patch(self, *, timeout_seconds: float | None = None) -> ReviewablePatch:
+        if self.base_sha is not None:
+            return self._reviewable_patch_pinned(timeout_seconds=timeout_seconds)
         budget = self._effective_timeout(30.0, timeout_seconds)
         deadline = time.monotonic() + budget
 
@@ -1059,6 +1074,118 @@ class ToolExecutor:
         for path in changed_paths:
             self.policy.resolve(path)
         return ReviewablePatch(content=result.stdout, changed_paths=changed_paths)
+
+    def _reviewable_patch_pinned(self, *, timeout_seconds: float | None = None) -> ReviewablePatch:
+        """Diff against an isolated index pinned to base_sha, never touching the real index.
+
+        Used when ``self.workspace`` is the caller's real repository rather than a
+        disposable clone: an unpinned ``git diff`` there would pick up whatever the
+        real repo's ambient index happens to contain (unrelated staged/unstaged
+        changes), so this reproduces every change since ``base_sha`` in a throwaway
+        index instead.
+
+        Paths present in ``self._preexisting_dirty_paths`` are excluded wholesale, not
+        just from the reported patch content but from ``changed_paths`` and the
+        allowed_paths check too: pre-existing dirt outside allowed_paths must not fail
+        every subsequent tool call. The tradeoff is that if the agent further edits an
+        already-dirty file, that file's changes are excluded from the report entirely
+        rather than partially reported — a known limitation of diffing against a
+        single base_sha snapshot rather than the file's content at run start.
+        """
+
+        assert self.base_sha is not None
+        budget = self._effective_timeout(30.0, timeout_seconds)
+        deadline = time.monotonic() + budget
+
+        def remaining() -> float:
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise ToolExecutionError("reviewable_patch exceeded the harness timeout")
+            return value
+
+        git_dir_result = self._git(("rev-parse", "--git-dir"), timeout_seconds=remaining())
+        if not git_dir_result.ok:
+            raise ToolExecutionError(f"could not resolve git dir: {git_dir_result.stderr.strip()}")
+        git_dir = Path(git_dir_result.stdout.strip())
+        if not git_dir.is_absolute():
+            git_dir = (self.workspace / git_dir).resolve(strict=True)
+        review_index = git_dir / f"looplane-review-index-{uuid4().hex}"
+        extra_env = {"GIT_INDEX_FILE": str(review_index)}
+        try:
+            read_tree = self._git(
+                ("read-tree", self.base_sha),
+                timeout_seconds=remaining(),
+                extra_env=extra_env,
+            )
+            if not read_tree.ok:
+                raise ToolExecutionError(
+                    f"could not initialize the isolated review index: {read_tree.stderr.strip()}"
+                )
+            added = self._git(
+                ("add", "-A", "-f", "--", "."),
+                timeout_seconds=remaining(),
+                extra_env=extra_env,
+                max_output_bytes=20_000,
+            )
+            if not added.ok:
+                raise ToolExecutionError(
+                    f"could not index workspace changes: {added.stderr.strip()}"
+                )
+
+            names = self._git(
+                ("diff", "--cached", "--name-only", "--no-renames", "-z", self.base_sha, "--"),
+                timeout_seconds=remaining(),
+                extra_env=extra_env,
+                max_output_bytes=self.max_output_chars,
+            )
+            if not names.ok:
+                raise ToolExecutionError(f"git diff --name-only failed: {names.stderr.strip()}")
+            if names.stdout_truncated:
+                raise ToolExecutionError("changed path list exceeded the tool output limit")
+            all_changed_paths = tuple(sorted(path for path in names.stdout.split("\x00") if path))
+            # Pre-existing dirt (present before this run started) is not this agent's
+            # change to report or be held to allowed_paths for: exclude it entirely.
+            changed_paths = tuple(
+                path for path in all_changed_paths if path not in self._preexisting_dirty_paths
+            )
+            if len(changed_paths) > self.max_changed_files:
+                raise ToolExecutionError(
+                    f"final patch exceeds {self.max_changed_files} changed files"
+                )
+            for path in changed_paths:
+                self.policy.resolve(path)
+            if not changed_paths:
+                return ReviewablePatch(content="", changed_paths=())
+
+            result = self._git(
+                (
+                    "diff",
+                    "--cached",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-color",
+                    "--no-renames",
+                    self.base_sha,
+                    "--",
+                    *changed_paths,
+                ),
+                timeout_seconds=remaining(),
+                extra_env=extra_env,
+                max_output_bytes=self.max_patch_bytes + 1,
+            )
+            if not result.ok:
+                raise ToolExecutionError(f"git diff failed: {result.stderr.strip()}")
+            if result.stdout_bytes > self.max_patch_bytes or result.stdout_truncated:
+                raise ToolExecutionError(
+                    f"final patch exceeds {self.max_patch_bytes} bytes; "
+                    "refusing truncated artifact"
+                )
+            if len(result.stdout.splitlines()) > self.max_patch_lines:
+                raise ToolExecutionError(f"final patch exceeds {self.max_patch_lines} lines")
+
+            return ReviewablePatch(content=result.stdout, changed_paths=changed_paths)
+        finally:
+            review_index.unlink(missing_ok=True)
 
     def git_diff(self, *, timeout_seconds: float | None = None) -> str:
         return self.reviewable_patch(timeout_seconds=timeout_seconds).content

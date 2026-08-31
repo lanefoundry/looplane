@@ -105,5 +105,13 @@ def test_tool_effects_are_explicit_and_unknown_tools_fail_closed() -> None:
     assert effect_for_tool("apply_patch") == ToolEffect.MODIFY
     assert effect_for_tool("tool_transaction") == ToolEffect.MODIFY_EXECUTE
     assert effect_for_tool("run_check") == ToolEffect.EXECUTE
+    assert effect_for_tool("tool_program") == ToolEffect.READ
     with pytest.raises(ValueError, match="no approval effect"):
         effect_for_tool("future_network_tool")
+
+
+def test_every_registered_tool_has_an_approval_effect_classification() -> None:
+    from looplane.tools import ToolExecutor
+
+    for definition in ToolExecutor._tool_definitions():
+        effect_for_tool(definition.name)  # must not raise

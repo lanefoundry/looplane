@@ -201,6 +201,7 @@ def render_workspace_prompt_context(
     allowed_paths: Sequence[str],
     verification: Sequence[VerificationCommand],
     git_status: Sequence[str] = (),
+    direct_edit_warning: str | None = None,
 ) -> str:
     """Render workspace state and mutation boundary facts."""
 
@@ -218,6 +219,8 @@ def render_workspace_prompt_context(
         lines.extend(f"- {line}" for line in status_lines)
     else:
         lines.append("- clean")
+    if direct_edit_warning:
+        lines.append(direct_edit_warning)
     return _bounded_prompt_context("\n".join(lines))
 
 

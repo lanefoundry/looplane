@@ -339,7 +339,9 @@ Every milestone is closed independently so later work can be compared against a 
 
 ## Security invariants
 
-- Never edit the supplied source repository.
+- Never edit the supplied source repository, unless the caller explicitly opted in via
+  `allow_direct_repo_edit`/`--edit-real-repo` (native `looplane-agent` runtime only); external
+  runtimes and the Cloudflare remote sandbox always keep this invariant unconditionally.
 - Never silently execute against the host when a disposable workspace cannot be prepared.
 - Tool paths stay within the copied workspace and allowed path patterns.
 - Checks run only from exact argv allowlists; no shell expansion.

@@ -25,7 +25,7 @@ The project provides a provider-neutral `ModelProvider` contract with canonical 
 
 ## What Works Today / 目前能力
 
-- Full-screen `looplane` TUI with runtime/model selection, inline slash commands, approvals, streaming tool activity, transcript scrollback, `/new`, `/resume`, `/history`, `/usage`, `/context`, and cooperative stop.
+- Full-screen `looplane` TUI with runtime/model selection, inline slash commands, approvals, streaming tool activity, transcript scrollback, `/new`, `/resume`, `/history`, `/usage`, `/context`, and cooperative stop. The native `looplane-agent` runtime carries conversation history and the same disposable workspace across follow-up turns within one session, falling back to a fresh run if the model/provider changes or the prior workspace is gone.
 - Headless `looplane exec` / `looplane -p` runs with path allowlists, exact check commands, deterministic run bundles, and `looplane resume` for validated non-terminal runs.
 - Provider-neutral native loop for OpenAI-compatible APIs, Ollama, Anthropic, Gemini, Cloudflare Workers AI, and the explicit experimental app-owned ChatGPT/Codex OAuth transport.
 - First-run provider setup, local Ollama discovery, provider credential storage, live credential verification, and dynamic model listing where supported.
@@ -38,7 +38,7 @@ The project provides a provider-neutral `ModelProvider` contract with canonical 
 
 中文摘要：
 
-- `looplane` 會開全螢幕 TUI，支援 runtime/model 選擇、slash commands、approval、tool stream、scrollback、resume/history、usage/context 與可控停止。
+- `looplane` 會開全螢幕 TUI，支援 runtime/model 選擇、slash commands、approval、tool stream、scrollback、resume/history、usage/context 與可控停止。native `looplane-agent` runtime 在同一個 session 裡的後續訊息會延續對話歷史與同一份 disposable workspace；若 model/provider 換了或前一份 workspace 不在了，會自動 fallback 成全新的一輪。
 - `looplane exec` 和 `looplane -p` 可做 headless run，保留 path allowlist、精準 check command、run bundle 與可恢復的 non-terminal session。
 - 原生 loop 支援 OpenAI-compatible、Ollama、Anthropic、Gemini、Cloudflare Workers AI，以及明確標成 experimental 的 app-owned ChatGPT/Codex OAuth。
 - 外部 runtime 可接 Claude Code、Codex CLI、OpenCode、Pi、OMP；它們只改 disposable clone，looplane 仍負責 patch audit 和 final checks。
@@ -97,6 +97,12 @@ looplane exec "Fix the bounded bug and keep existing behavior." \
 # Fallback for limited terminals and SSH troubleshooting.
 # 給受限 terminal 或 SSH troubleshooting 使用的 plain mode。
 looplane --plain
+
+# Edit this repository's real working tree directly instead of a disposable
+# clone (native `looplane-agent` runtime only; see Safety Boundary below).
+# 直接編輯這個 repo 的真實 working tree，而不是 disposable clone（只影響
+# native `looplane-agent` runtime；見下方 Safety Boundary）。
+looplane --edit-real-repo "Fix the failing test."
 ```
 
 `looplane [PROMPT]` is interactive. `looplane -p [PROMPT]` and `looplane exec [PROMPT]` are non-interactive. `looplane run`, `--task`, and `--repo` remain compatibility aliases. `-p` means `--print`; use `--provider` or `looplane config` to choose the provider.
@@ -210,7 +216,11 @@ looplane's default local boundary is a disposable Git workspace plus Python poli
 
 `--unsafe-local-exec` allows trusted repository checks to run on the host. Use `--sandbox-checks` where available for additional verification-command containment. On macOS this uses the platform sandbox wrapper; on Linux, `sandbox_backend` can select `auto`, `bubblewrap`, or `landlock`.
 
+`--edit-real-repo` (native `looplane-agent` runtime only) is an explicit opt-in that turns off the disposable clone and lets the agent edit this repository's real working tree directly, so changes are visible in `git status`/`git diff` immediately instead of requiring a manual `git apply` of the run's `changes.patch` artifact afterward. Approvals still show a diff before every file change; a pre-existing dirty repository is left alone (its files are excluded from the reported patch and never checked against the allowed-path policy) and a warning is injected into the model's context. Combining `--edit-real-repo` with `--dangerous` — which auto-approves modify actions with no diff shown at all — requires one extra one-time interactive acknowledgment (or `LOOPLANE_ACCEPT_DANGEROUS_MODE=1`), separate from `--dangerous`'s own acknowledgment. External runtimes (Claude Code, Codex CLI, OpenCode, Pi, OMP) and the Cloudflare remote sandbox are unaffected; they keep the disposable-clone/patch-audit boundary described above regardless of this flag.
+
 本機預設安全邊界是 disposable Git workspace 加上 Python policy checks。互動模式下修改與執行需要 approval；verification command 是 exact argv，不是 shell string；provider credential 留在 coordinator process，不會轉交給 repository checks。`--unsafe-local-exec` 表示你同意在 host 上跑 trusted repo 的檢查。
+
+`--edit-real-repo`（只影響 native `looplane-agent` runtime）是明確的 opt-in：關掉 disposable clone，讓 agent 直接改這個 repo 的真實 working tree，改完立刻反映在 `git status`/`git diff`，不用再手動 `git apply` run 結束後的 `changes.patch`。每次檔案變更前仍會顯示 diff 給你核准；repo 原本就有的未提交變更會被排除在回報的 patch 之外、也不會被 allowed-path policy 卡住，並會在丟給 model 的 context 裡加一段警告。`--edit-real-repo` 跟 `--dangerous`（會直接自動核准修改、完全不顯示 diff）疊加使用時，需要額外一次獨立的互動確認（或設定 `LOOPLANE_ACCEPT_DANGEROUS_MODE=1`）。外部 runtime（Claude Code、Codex CLI、OpenCode、Pi、OMP）與 Cloudflare 遠端 sandbox 不受這個 flag 影響，仍維持上述 disposable clone／patch audit 邊界。
 
 ## Cloudflare Control Plane / Cloudflare 控制平面
 

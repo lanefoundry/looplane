@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from looplane.contracts import Limits, ModelTurn, RunStatus, TaskContract, VerificationCommand
+from looplane.contracts import (
+    Limits,
+    ModelTurn,
+    RunStatus,
+    TaskContract,
+    ToolCall,
+    VerificationCommand,
+)
 from looplane.models import ScriptedModel
 from looplane.subagents import (
     analyze_subagent_schedule_events,
@@ -166,3 +173,65 @@ async def test_run_subagent_task_uses_isolated_subagent_run_root(
     assert result.run_id == "inspect"
     assert Path(result.artifacts["request"]).parent == tmp_path / "runs" / "subagents" / "inspect"
     assert (tiny_bug_repo / "src/tiny_python_bug/calculator.py").read_bytes() == original
+
+
+_SUBAGENT_FIX_PATCH = """\
+diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
+--- a/src/tiny_python_bug/calculator.py
++++ b/src/tiny_python_bug/calculator.py
+@@ -1,3 +1,3 @@
+ def add(left: int, right: int) -> int:
+     \"\"\"Return the sum of two integers.\"\"\"
+-    return left - right
++    return left + right
+"""
+
+
+@pytest.mark.asyncio
+async def test_subagent_always_edits_its_own_disposable_clone_never_the_real_repo(
+    tiny_bug_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """A subagent's own edits stay isolated regardless of any parent-level setting.
+
+    ``run_subagent_task`` never accepts (and never forwards) an
+    ``allow_direct_repo_edit``-style flag: every subagent always gets its own
+    disposable clone, deliberately independent of how the top-level run is
+    configured.
+    """
+
+    parent = make_parent(tiny_bug_repo)
+    original = (tiny_bug_repo / "src/tiny_python_bug/calculator.py").read_bytes()
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(name="apply_patch", arguments={"patch": _SUBAGENT_FIX_PATCH}),
+                )
+            ),
+            ModelTurn(content="Fixed it in my own workspace."),
+        ]
+    )
+
+    result = await run_subagent_task(
+        parent,
+        model,
+        tmp_path / "runs",
+        instruction="Fix the calculator.",
+        subagent_id="fixer",
+        allow_unsafe_local_exec=True,
+        limits=Limits(max_steps=3),
+        # This test is about workspace isolation, not the platform sandbox
+        # wrapper's ability to run a verification subprocess.
+        sandbox_checks=False,
+    )
+
+    assert result.status is RunStatus.COMPLETED, result.model_dump()
+    assert result.changed_files == ("src/tiny_python_bug/calculator.py",)
+    # The subagent's edit landed in its own disposable clone, not the real repo.
+    assert (tiny_bug_repo / "src/tiny_python_bug/calculator.py").read_bytes() == original
+    child_workspace_file = (
+        tmp_path / "runs" / "subagents" / "fixer" / "workspace" / "src" / "tiny_python_bug"
+        / "calculator.py"
+    )
+    assert b"left + right" in child_workspace_file.read_bytes()

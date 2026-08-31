@@ -699,6 +699,46 @@ def _enter_dangerous_mode(dangerous: bool):
     return ApprovalMode.DANGEROUS
 
 
+def _direct_edit_dangerous_acceptance_path() -> Path:
+    state_root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return state_root / "looplane" / "direct-edit-dangerous-mode-accepted"
+
+
+def _confirm_direct_edit_with_dangerous_mode(*, edit_real_repo: bool, dangerous: bool) -> None:
+    """Require one extra acknowledgment when --edit-real-repo and --dangerous combine.
+
+    --edit-real-repo alone still shows a diff preview for approval before every
+    MODIFY tool call; --dangerous alone still only ever touches a disposable clone.
+    Combined, MODIFY tool calls land on the real repository with no per-call review
+    at all, so this compounds two independent risks and gets its own one-time gate.
+    """
+
+    if not (edit_real_repo and dangerous):
+        return
+    acceptance_path = _direct_edit_dangerous_acceptance_path()
+    if acceptance_path.exists() or os.environ.get("LOOPLANE_ACCEPT_DANGEROUS_MODE") == "1":
+        return
+    if not _stdin_is_tty():
+        raise typer.BadParameter(
+            "--edit-real-repo combined with --dangerous requires interactive "
+            "acknowledgment once per machine (or LOOPLANE_ACCEPT_DANGEROUS_MODE=1)"
+        )
+    typer.confirm(
+        "You are combining --edit-real-repo with --dangerous: modify actions will land "
+        "directly on this repository's real working tree with NO diff shown for "
+        "approval. Continue?",
+        default=False,
+        abort=True,
+    )
+    try:
+        acceptance_path.parent.mkdir(parents=True, exist_ok=True)
+        acceptance_path.write_text(f"accepted {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"could not record direct-edit-dangerous-mode acceptance: {exc}"
+        ) from exc
+
+
 def _permission_guard_from_config(
     *,
     config: CliConfig,
@@ -799,6 +839,17 @@ def chat(
             ),
         ),
     ] = False,
+    edit_real_repo: Annotated[
+        bool,
+        typer.Option(
+            "--edit-real-repo",
+            help=(
+                "Let the agent edit this repository's real working tree directly "
+                "instead of a disposable clone. Diffs are still shown for approval "
+                "unless combined with --dangerous."
+            ),
+        ),
+    ] = False,
     deny_tool: Annotated[
         list[str] | None,
         typer.Option(
@@ -859,6 +910,7 @@ def chat(
         deny_tool=deny_tool,
         dangerous=dangerous,
     )
+    _confirm_direct_edit_with_dangerous_mode(edit_real_repo=edit_real_repo, dangerous=dangerous)
 
     def guarded(policy):
         if not guard_needed:
@@ -1066,12 +1118,23 @@ def chat(
                 allow_custom_provider_endpoint=allow_custom_provider_endpoint,
                 experimental_subscription=experimental_subscription,
             )
+            if request.continuation_run_dir is not None:
+                run_root_for_call: Path = request.continuation_run_dir.parent
+                run_id_for_call: str | None = request.continuation_run_dir.name
+                continuation = True
+            else:
+                run_root_for_call = run_root
+                run_id_for_call = None
+                continuation = False
             return (
                 AgentRunner(
                     task,
                     selected_model,
-                    run_root,
+                    run_root_for_call,
+                    run_id=run_id_for_call,
+                    continuation=continuation,
                     allow_unsafe_local_exec=unsafe_local_exec,
+                    allow_direct_repo_edit=edit_real_repo,
                     approval_policy=approval_policy,
                     permission_guard=permission_guard,
                     fallback_models=build_fallback_models(),
@@ -1203,6 +1266,7 @@ def chat(
                     selected_model,
                     run_root,
                     allow_unsafe_local_exec=unsafe_local_exec,
+                    allow_direct_repo_edit=edit_real_repo,
                     approval_policy=guarded(
                         None if print_mode else TTYApprovalPolicy(sys.stdin, sys.stderr)
                     ),

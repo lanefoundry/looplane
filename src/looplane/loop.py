@@ -102,6 +102,7 @@ from looplane.runtime_semantics import (
 )
 from looplane.session import (
     ApprovalAuditRecord,
+    SessionBusyError,
     SessionManifest,
     SessionPhase,
     SessionStore,
@@ -149,7 +150,9 @@ class AgentRunner:
         *,
         run_id: str | None = None,
         durable_events: bool = True,
+        continuation: bool = False,
         allow_unsafe_local_exec: bool = False,
+        allow_direct_repo_edit: bool = False,
         approval_policy: ApprovalPolicy | None = None,
         permission_guard: PermissionGuard | None = None,
         fallback_models: Sequence[ModelProvider] = (),
@@ -190,6 +193,7 @@ class AgentRunner:
         self.run_dir = self.run_root / self.run_id
         self.events = EventWriter(self.run_dir / "events.jsonl", durable=durable_events)
         self.allow_unsafe_local_exec = allow_unsafe_local_exec
+        self.allow_direct_repo_edit = allow_direct_repo_edit
         self.permission_guard = permission_guard
         self._hook_runner = hook_runner or load_project_hook_runner(self.task.repository)
         self._context_provider_runner = (
@@ -202,6 +206,7 @@ class AgentRunner:
             allow_execute=allow_unsafe_local_exec,
         )
         self._interactive_approvals = approval_policy is not None
+        self._external_event_sink = event_sink
         durable_sink = JsonlEventSink(self.events)
         self._event_sink: EventSink = (
             CompositeEventSink((durable_sink, event_sink)) if event_sink else durable_sink
@@ -227,6 +232,10 @@ class AgentRunner:
         self._session_lease: SessionWriterLease | None = None
         self._manifest: SessionManifest | None = None
         self._resume_ready = False
+        self._continuation = continuation
+        self._continuation_fallback_reason: str | None = None
+        self._turn_start_step = 0
+        self._is_continuation_turn = False
         self._context_pressure_reminder_sent = False
         self._history_summary_fallback_applied = False
         self._workspace_context_reminder_sent = False
@@ -280,14 +289,7 @@ class AgentRunner:
         lease = store.acquire_writer()
         try:
             manifest, task = await store.claim_and_validate_resume(lease)
-            if (
-                manifest.provider_name != model.provider_name
-                or manifest.model_id != model.model_id
-                or manifest.protocol != str(model.protocol)
-            ):
-                raise SessionValidationError(
-                    "resume provider/protocol/model must match the persisted session"
-                )
+            cls._check_resume_identity(manifest, model)
             runner = cls(
                 task,
                 model,
@@ -299,53 +301,124 @@ class AgentRunner:
             )
             runner._session_store = store
             runner._session_lease = lease
-            runner._manifest = manifest
-            runner._sequence = manifest.last_event_sequence + 1
-            runner._messages = list(manifest.messages)
-            runner._usage = manifest.usage
-            runner._model_usage = list(manifest.model_usage)
-            runner._step = manifest.step
-            runner._last_fingerprint = manifest.last_action_fingerprint
-            runner._last_verification = manifest.verification
-            runner._context_pressure_reminder_sent = any(
-                isinstance(item, InjectedContext)
-                and item.source == "context_pressure"
-                and item.content is not None
-                and CONTEXT_PRESSURE_REMINDER_VERSION in item.content
-                for item in runner._messages
-            )
-            runner._history_summary_fallback_applied = any(
-                isinstance(item, InjectedContext)
-                and item.source == "history_summary_fallback"
-                and item.content is not None
-                and CONTEXT_SUMMARY_FALLBACK_VERSION in item.content
-                for item in runner._messages
-            )
-            runner._workspace_context_reminder_sent = any(
-                isinstance(item, InjectedContext)
-                and item.source == "workspace_context_reminder"
-                and item.content is not None
-                and WORKSPACE_CONTEXT_REMINDER_VERSION in item.content
-                for item in runner._messages
-            )
+            runner._restore_state_from_manifest(manifest)
             # A resumed workspace may already contain modifications from before the
             # interruption, so keep the final-verification gate conservatively armed.
             runner._made_changes = True
             runner._run_dir_initialized = True
-            workspace = resolved / "workspace"
-            runner._executor = ToolExecutor(
-                workspace=workspace,
-                policy=SafePathPolicy(workspace, task.allowed_paths),
-                verification_commands=task.verification,
-                limits=task.limits,
-                mcp_servers=load_native_mcp_server_configs(task.repository),
-                sandbox_checks=runner._sandbox_checks,
-                sandbox_profile=runner._sandbox_profile,
-                sandbox_backend=runner._sandbox_backend,
-                sandbox_read_roots=runner._sandbox_read_roots,
-            )
+            runner._rebuild_executor_for(resolved / "workspace")
             runner._resume_ready = True
             return runner
+        except BaseException:
+            lease.release()
+            raise
+
+    @staticmethod
+    def _check_resume_identity(manifest: SessionManifest, model: ModelProvider) -> None:
+        if (
+            manifest.provider_name != model.provider_name
+            or manifest.model_id != model.model_id
+            or manifest.protocol != str(model.protocol)
+        ):
+            raise SessionValidationError(
+                "resume provider/protocol/model must match the persisted session"
+            )
+
+    def _restore_state_from_manifest(self, manifest: SessionManifest) -> None:
+        self._manifest = manifest
+        self._sequence = manifest.last_event_sequence + 1
+        self._messages = list(manifest.messages)
+        self._usage = manifest.usage
+        self._model_usage = list(manifest.model_usage)
+        self._step = manifest.step
+        self._last_fingerprint = manifest.last_action_fingerprint
+        self._last_verification = manifest.verification
+        self._context_pressure_reminder_sent = any(
+            isinstance(item, InjectedContext)
+            and item.source == "context_pressure"
+            and item.content is not None
+            and CONTEXT_PRESSURE_REMINDER_VERSION in item.content
+            for item in self._messages
+        )
+        self._history_summary_fallback_applied = any(
+            isinstance(item, InjectedContext)
+            and item.source == "history_summary_fallback"
+            and item.content is not None
+            and CONTEXT_SUMMARY_FALLBACK_VERSION in item.content
+            for item in self._messages
+        )
+        self._workspace_context_reminder_sent = any(
+            isinstance(item, InjectedContext)
+            and item.source == "workspace_context_reminder"
+            and item.content is not None
+            and WORKSPACE_CONTEXT_REMINDER_VERSION in item.content
+            for item in self._messages
+        )
+
+    def _rebuild_executor_for(self, workspace_path: Path) -> None:
+        self._executor = ToolExecutor(
+            workspace=workspace_path,
+            policy=SafePathPolicy(workspace_path, self.task.allowed_paths),
+            verification_commands=self.task.verification,
+            limits=self.task.limits,
+            mcp_servers=load_native_mcp_server_configs(self.task.repository),
+            sandbox_checks=self._sandbox_checks,
+            sandbox_profile=self._sandbox_profile,
+            sandbox_backend=self._sandbox_backend,
+            sandbox_read_roots=self._sandbox_read_roots,
+        )
+
+    def _rebind_run_location(self, run_id: str) -> None:
+        """Point this runner at a different run_id/run_dir, rebuilding the event sink."""
+
+        self.run_id = run_id
+        self.run_dir = self.run_root / self.run_id
+        self.events = EventWriter(self.run_dir / "events.jsonl", durable=self.events.durable)
+        durable_sink = JsonlEventSink(self.events)
+        self._event_sink = (
+            CompositeEventSink((durable_sink, self._external_event_sink))
+            if self._external_event_sink
+            else durable_sink
+        )
+
+    async def _open_continuation(self) -> None:
+        """Reopen this run's completed session and append a new user turn."""
+
+        resolved = self.run_dir.resolve(strict=True)
+        store = SessionStore(resolved, durable=self.events.durable)
+        lease = store.acquire_writer()
+        try:
+            manifest, persisted_task = await store.claim_and_validate_resume(
+                lease, allow_terminal=True
+            )
+            self._check_resume_identity(manifest, self.model)
+            new_instruction = self.task.instruction
+            self.task = persisted_task
+            self._restore_state_from_manifest(manifest)
+            self._made_changes = True
+            self._run_dir_initialized = True
+            self._rebuild_executor_for(resolved / "workspace")
+            self._messages.append(Message(role="user", content=new_instruction))
+            self._turn_start_step = self._step
+            self._repeat_count = 0
+            self._last_fingerprint = None
+            assert self._manifest is not None
+            self._manifest = self._manifest.model_copy(
+                update={
+                    "phase": SessionPhase.RUNNING,
+                    "terminal": False,
+                    "messages": tuple(self._messages),
+                    "repeat_count": 0,
+                    "last_action_fingerprint": None,
+                    "active_wall_time_seconds": 0.0,
+                    "active_started_at": None,
+                }
+            )
+            self._session_store = store
+            self._session_lease = lease
+            await self._save_manifest()
+            self._is_continuation_turn = True
+            self._resume_ready = True
         except BaseException:
             lease.release()
             raise
@@ -799,15 +872,42 @@ class AgentRunner:
             raise WorkspacePreparationError("could not resolve source repository HEAD")
         return sha
 
+    def _preexisting_dirty_paths(self, deadline: float) -> frozenset[str]:
+        """Paths already dirty in the real repo before this run touched anything.
+
+        Read-only; used only to exclude pre-existing dirt from what this run reports
+        or is held accountable for when editing the real repository directly.
+        """
+
+        result = run_bounded_command(
+            ("git", "status", "--porcelain=v1", "--no-renames", "-z"),
+            cwd=self.task.repository.resolve(strict=True),
+            timeout_seconds=min(30.0, self._remaining(deadline)),
+            max_output_chars=2_000_000,
+            env=sanitized_subprocess_env(task_home=self.run_dir / ".task-env"),
+        )
+        if not result.ok or result.stdout_truncated:
+            return frozenset()
+        paths: set[str] = set()
+        for entry in result.stdout.split("\x00"):
+            if len(entry) > 3:
+                paths.add(entry[3:])
+        return frozenset(paths)
+
     def _initial_git_status(self) -> tuple[str, ...]:
         if self._executor is None:
             return ("unavailable: workspace executor is not initialized",)
+        task_home = (
+            self.run_dir / ".task-env"
+            if self.allow_direct_repo_edit
+            else self._executor.workspace.parent / ".task-env"
+        )
         result = run_bounded_command(
             ("git", "status", "--short", "--branch"),
             cwd=self._executor.workspace,
             timeout_seconds=10.0,
             max_output_chars=4_000,
-            env=sanitized_subprocess_env(task_home=self._executor.workspace.parent / ".task-env"),
+            env=sanitized_subprocess_env(task_home=task_home),
         )
         if not result.ok:
             reason = result.stderr.strip() or result.stdout.strip() or "git status failed"
@@ -849,11 +949,21 @@ class AgentRunner:
         if self._enable_subagent_dispatch:
             tool_context_parts.append(render_subagent_planner_policy())
         tool_context = "\n\n".join(part for part in tool_context_parts if part)
+        git_status = self._initial_git_status()
+        direct_edit_warning = (
+            "direct_edit_warning: You are editing this repository's real working tree "
+            "directly, not an isolated clone. The git_status_short lines above may "
+            "include changes that already existed before this run — review diffs "
+            "carefully before assuming everything shown is your own edit."
+            if self.allow_direct_repo_edit and git_status
+            else None
+        )
         workspace_context = render_workspace_prompt_context(
             base_sha=base_sha,
             allowed_paths=self.task.allowed_paths,
             verification=self.task.verification,
-            git_status=self._initial_git_status(),
+            git_status=git_status,
+            direct_edit_warning=direct_edit_warning,
         )
         interaction_context = render_interaction_prompt_context()
         runtime_context = render_runtime_prompt_context(
@@ -2150,13 +2260,35 @@ class AgentRunner:
                     f"model {self.model.provider_name}/{self.model.model_id} does not advertise "
                     "tool calling"
                 )
+            if self._continuation:
+                original_task = self.task
+                try:
+                    await self._open_continuation()
+                except (SessionValidationError, SessionBusyError, OSError) as exc:
+                    self._continuation_fallback_reason = str(exc)
+                    self._continuation = False
+                    self._resume_ready = False
+                    self._is_continuation_turn = False
+                    self.task = original_task
+                    self._manifest = None
+                    self._session_store = None
+                    self._session_lease = None
+                    self._messages = []
+                    self._made_changes = False
+                    self._run_dir_initialized = False
+                    self._step = 0
+                    self._turn_start_step = 0
+                    self._repeat_count = 0
+                    self._last_fingerprint = None
+                    self._executor = None
+                    self._rebind_run_location(uuid4().hex)
             if self._resume_ready:
                 if self.task.base_sha is None or self._manifest is None:
                     raise SessionValidationError("resumed session has no pinned base commit")
                 base_sha = self.task.base_sha
-                final_summary = self._manifest.final_summary
+                final_summary = "" if self._is_continuation_turn else self._manifest.final_summary
                 await self._event(
-                    "session.resumed",
+                    "session.continued" if self._is_continuation_turn else "session.resumed",
                     provider=self.model.provider_name,
                     model=self.model.model_id,
                     base_sha=base_sha,
@@ -2194,35 +2326,70 @@ class AgentRunner:
                     prompt_version=CODING_AGENT_PROMPT_VERSION,
                     base_sha=base_sha,
                 )
+                if self._continuation_fallback_reason is not None:
+                    await self._event(
+                        "run.continuation_fallback",
+                        reason=self._continuation_fallback_reason,
+                    )
+                    self._continuation_fallback_reason = None
 
-                workspace = LocalGitWorkspace(
-                    source_repo=self.task.repository,
-                    run_dir=self.run_dir,
-                    base_sha=base_sha,
-                )
-                workspace_path = await self._run_blocking_safely(
-                    workspace.prepare,
-                    timeout_seconds=self._remaining(deadline),
-                )
-                policy = SafePathPolicy(workspace_path, self.task.allowed_paths)
-                self._executor = ToolExecutor(
-                    workspace=workspace,
-                    policy=policy,
-                    verification_commands=self.task.verification,
-                    limits=self.task.limits,
-                    mcp_servers=load_native_mcp_server_configs(self.task.repository),
-                    sandbox_checks=self._sandbox_checks,
-                    sandbox_profile=self._sandbox_profile,
-                    sandbox_backend=self._sandbox_backend,
-                    sandbox_read_roots=self._sandbox_read_roots,
-                )
+                if self.allow_direct_repo_edit:
+                    workspace_path = self.task.repository.resolve(strict=True)
+                    preexisting_dirty_paths = self._preexisting_dirty_paths(deadline)
+                    policy = SafePathPolicy(workspace_path, self.task.allowed_paths)
+                    self._executor = ToolExecutor(
+                        workspace=workspace_path,
+                        policy=policy,
+                        verification_commands=self.task.verification,
+                        limits=self.task.limits,
+                        base_sha=base_sha,
+                        task_home=self.run_dir / ".check-task-env",
+                        preexisting_dirty_paths=preexisting_dirty_paths,
+                        mcp_servers=load_native_mcp_server_configs(self.task.repository),
+                        sandbox_checks=self._sandbox_checks,
+                        sandbox_profile=self._sandbox_profile,
+                        sandbox_backend=self._sandbox_backend,
+                        sandbox_read_roots=self._sandbox_read_roots,
+                    )
+                    await self._event(
+                        "workspace.direct_edit_enabled",
+                        repository=str(workspace_path),
+                        base_sha=base_sha,
+                    )
+                    if preexisting_dirty_paths:
+                        await self._event(
+                            "workspace.dirty_source_detected",
+                            status_lines=sorted(preexisting_dirty_paths),
+                        )
+                else:
+                    workspace = LocalGitWorkspace(
+                        source_repo=self.task.repository,
+                        run_dir=self.run_dir,
+                        base_sha=base_sha,
+                    )
+                    workspace_path = await self._run_blocking_safely(
+                        workspace.prepare,
+                        timeout_seconds=self._remaining(deadline),
+                    )
+                    policy = SafePathPolicy(workspace_path, self.task.allowed_paths)
+                    self._executor = ToolExecutor(
+                        workspace=workspace,
+                        policy=policy,
+                        verification_commands=self.task.verification,
+                        limits=self.task.limits,
+                        mcp_servers=load_native_mcp_server_configs(self.task.repository),
+                        sandbox_checks=self._sandbox_checks,
+                        sandbox_profile=self._sandbox_profile,
+                        sandbox_backend=self._sandbox_backend,
+                        sandbox_read_roots=self._sandbox_read_roots,
+                    )
                 await self._event("workspace.prepared", workspace="workspace", base_sha=base_sha)
 
                 self._messages = self._initial_messages(base_sha)
                 await self._checkpoint(RunStatus.INSPECTING)
                 final_summary = ""
 
-            while self._step < self.task.limits.max_steps:
+            while (self._step - self._turn_start_step) < self.task.limits.max_steps:
                 if self._cancel_requested.is_set():
                     return await self._finish(
                         status=RunStatus.CANCELLED,
