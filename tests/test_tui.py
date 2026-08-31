@@ -1109,7 +1109,9 @@ async def test_native_runtime_switch_retains_conversation_but_new_command_clears
 
         task.load_text("/new")
         app._submit_current_task()
-        await _wait_until(lambda: app._conversation_id is None)
+        await _wait_until(
+            lambda: app._conversation_id is None and not app.query(MessageBlock)
+        )
         assert list(app.query(MessageBlock)) == []
         assert app._ask_history == []
 
