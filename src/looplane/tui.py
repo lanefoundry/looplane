@@ -1617,6 +1617,13 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         self.query_one("#model-fetch-status", Static).update("")
         self.query_one("#model-retry", Button).display = False
 
+    def _model_fetch_view_available(self) -> bool:
+        return (
+            self.is_mounted
+            and self.is_current
+            and bool(self.query("#model-fetch-status"))
+        )
+
     @on(Button.Pressed, "#model-retry")
     def retry_model_fetch(self, _event: Button.Pressed) -> None:
         self._clear_model_fetch_issue()
@@ -1625,7 +1632,12 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
     @work(exclusive=True, group="model-fetch")
     async def _fetch_models_for_active_provider(self) -> None:
         provider = self._active_provider
-        if provider is None or provider == "ollama" or self.defer_model:
+        if (
+            provider is None
+            or provider == "ollama"
+            or self.defer_model
+            or not self._model_fetch_view_available()
+        ):
             return
         self._clear_model_fetch_issue()
         cached = self.verified_providers.get(provider)
@@ -1669,7 +1681,11 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
             return
 
         result = await fetch_models_result(provider, values)
-        if self._active_provider != provider or self._step != "model":
+        if (
+            not self._model_fetch_view_available()
+            or self._active_provider != provider
+            or self._step != "model"
+        ):
             return  # user moved on while the request was in flight
         if result.ok and result.models:
             model_catalog.store_models(provider, result.models)

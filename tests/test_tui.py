@@ -519,6 +519,16 @@ async def test_onboarding_credential_step_skip_verification_saves_and_marks_unve
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from looplane.provider_verification import VerificationResult
+
+    async def fake_fetch(_provider, _fields, **_kwargs):
+        return VerificationResult(
+            ok=True,
+            message="Connected for deterministic model discovery.",
+            models=("claude-test",),
+        )
+
+    monkeypatch.setattr("looplane.provider_verification.verify_native_credential", fake_fetch)
 
     app = looplaneApp(
         repository=tmp_path,
@@ -540,6 +550,7 @@ async def test_onboarding_credential_step_skip_verification_saves_and_marks_unve
         await pilot.click("#credential-skip")
         await _wait_until(lambda: modal._step == "model")
         assert modal.verified_providers["anthropic"].ok is False
+        await _wait_until(lambda: modal._fetched_models == ("claude-test",))
 
     from looplane.native_credentials import resolve_native_field
 
