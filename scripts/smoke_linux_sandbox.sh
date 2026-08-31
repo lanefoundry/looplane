@@ -15,14 +15,20 @@ outside="$root/outside"
 mkdir -p "$workspace" "$task_home" "$outside"
 printf 'readable\n' > "$workspace/input.txt"
 
-policy="$(python - "$workspace" "$task_home" <<'PY'
+policy="$(uv run python - "$workspace" "$task_home" <<'PY'
 import json
 import sys
+
+from looplane.runtime import python_runtime_read_roots
 
 workspace, task_home = sys.argv[1], sys.argv[2]
 print(json.dumps({
     "cwd": workspace,
-    "read_roots": [workspace, task_home],
+    "read_roots": [
+        workspace,
+        task_home,
+        *(str(root) for root in python_runtime_read_roots()),
+    ],
     "writable_roots": [task_home],
 }, separators=(",", ":")))
 PY
