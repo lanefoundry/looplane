@@ -138,3 +138,31 @@ def test_cache_file_roundtrips_value(monkeypatch, tmp_path):
     data = json.loads(path.read_text())
     assert data["version"] == CACHE_SCHEMA_VERSION
     assert data["value"] == [1, 2, 3]
+
+
+def test_cache_file_has_private_permissions(monkeypatch, tmp_path):
+    import stat
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    cached_scan("k", CACHE_SCHEMA_VERSION, lambda: "secret")
+    path = _cache_dir() / _safe_filename(f"{CACHE_SCHEMA_VERSION}:k")
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_cache_dir_has_private_permissions(monkeypatch, tmp_path):
+    import stat
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    cached_scan("k", CACHE_SCHEMA_VERSION, lambda: "v")
+    cache = _cache_dir()
+    assert stat.S_IMODE(cache.stat().st_mode) & 0o077 == 0
+
+
+def test_eviction_removes_oldest_entries(monkeypatch, tmp_path):
+    from looplane.startup_cache import _MAX_CACHE_ENTRIES
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    for i in range(_MAX_CACHE_ENTRIES + 5):
+        cached_scan(f"k{i}", CACHE_SCHEMA_VERSION, lambda: i)
+    entries = list(_cache_dir().glob("*.json"))
+    assert len(entries) <= _MAX_CACHE_ENTRIES

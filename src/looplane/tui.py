@@ -39,7 +39,6 @@ from textual.widgets import (
 from textual.widgets._collapsible import CollapsibleTitle
 from textual.widgets.option_list import Option
 
-import looplane.model_catalog as model_catalog
 import looplane.runtime_registry as runtime_registry
 from looplane.approvals import (
     ApprovalDecision,
@@ -1649,6 +1648,8 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
             return
         # Disk-cached listing from an earlier session/wizard run: show instantly,
         # refresh in the background only once it ages past the TTL.
+        import looplane.model_catalog as model_catalog
+
         snapshot = model_catalog.snapshot(provider)
         if snapshot is not None and snapshot.models:
             self._fetched_models = snapshot.models
@@ -2581,6 +2582,8 @@ class looplaneApp(App[RunResult | None]):
         if exact and separator and metadata.command is SlashCommand.MODEL:
             model_options = list(self.runtime_models.get(self._runtime(), ()))
             provider = self.config.provider if self._runtime() == "looplane-agent" else None
+            import looplane.model_catalog as model_catalog
+
             snapshot = model_catalog.snapshot(provider) if provider is not None else None
             if snapshot is not None:
                 self._merge_catalog_models(model_options, snapshot.models)
@@ -2703,6 +2706,8 @@ class looplaneApp(App[RunResult | None]):
             if self._uses_native_conversation(runtime)
             else self.config.model
         )
+        import looplane.model_catalog as model_catalog
+
         available = list(self.runtime_models.get(runtime, ()))
         provider = self.config.provider if runtime == "looplane-agent" else None
         snapshot = model_catalog.snapshot(provider) if provider is not None else None
@@ -2730,6 +2735,8 @@ class looplaneApp(App[RunResult | None]):
 
     @work(exclusive=True, group="catalog-refresh")
     async def _refresh_model_catalog(self, provider: str) -> None:
+        import looplane.model_catalog as model_catalog
+
         models = await model_catalog.refresh(provider)
         selector = self._active_selector
         if (
@@ -2814,6 +2821,8 @@ class looplaneApp(App[RunResult | None]):
             return
         # The old model id belongs to the old provider; prefer the new provider's
         # cached catalog so the session stays ready without a manual re-pick.
+        import looplane.model_catalog as model_catalog
+
         snapshot = model_catalog.snapshot(provider)
         model = (
             model_catalog.default_model(snapshot.models, provider)
