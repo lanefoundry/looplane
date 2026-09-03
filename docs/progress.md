@@ -226,11 +226,11 @@ patch audit, and verification boundary. One path is never disguised as the other
 - [ ] Establish reproducible cold/warm baselines for `looplane --help`, bare `looplane` to first
       editable composer, and representative headless/config commands using real user configuration
       without recording credentials or repository content.
-- [ ] Add `scripts/bench_startup.sh` with hyperfine JSON output, import-time capture, environment
+- [x] Add `scripts/bench_startup.sh` with hyperfine JSON output, import-time capture, environment
       metadata, warmups, repeated runs, and a paired before/after comparison workflow.
-- [ ] Add opt-in `LOOPLANE_STARTUP_LOG` telemetry from process entry through first editable composer;
+- [x] Add opt-in `LOOPLANE_STARTUP_LOG` telemetry from process entry through first editable composer;
       keep the log bounded, private, non-secret, machine-readable, and disabled by default.
-- [ ] Remove eager imports of Codex OAuth/OpenAI SDK, vendor backends, conversations, gateway,
+- [x] Remove eager imports of Codex OAuth/OpenAI SDK, vendor backends, conversations, gateway,
       uvicorn, and other path-specific dependencies from common CLI startup. `--help` and unrelated
       commands must not import integrations they do not use.
 - [ ] Record the startup dependency graph and parallelize only independent measured work. Defer MCP

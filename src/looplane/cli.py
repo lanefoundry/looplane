@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 from urllib.parse import urlsplit
 
-import httpx
 import typer
 from typer.core import TyperCommand, TyperGroup
 
@@ -45,6 +44,8 @@ if TYPE_CHECKING:
 import looplane.provider_catalog as provider_catalog
 import looplane.runtime_registry as runtime_registry
 from looplane.startup_trace import _STARTUP
+
+_STARTUP.mark("imports_done")
 
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 MAX_OLLAMA_TAGS_BYTES = 256 * 1024
@@ -469,6 +470,8 @@ def _resolve_cli_settings(
 def _fetch_ollama_models() -> tuple[str, ...]:
     """Return bounded model names from the fixed loopback Ollama discovery endpoint."""
 
+    import httpx
+
     try:
         with (
             httpx.Client(
@@ -887,6 +890,8 @@ def chat(
 ) -> None:
     """Start this agent's own loop in the current repository."""
 
+    _STARTUP.mark("cli_routed")
+
     from looplane.approvals import HeadlessApprovalPolicy, TTYApprovalPolicy
     from looplane.console import ConsoleEventSink
     from looplane.conversation import ConversationStore
@@ -1177,12 +1182,16 @@ def chat(
                 # or the first real turn.
                 pass
 
+        runtimes = runtime_registry.runtime_options()
+        runtime_models = runtime_registry.runtime_model_map()
+        _STARTUP.mark("runtime_discovered")
+
         tui_app = looplaneApp(
             repository=repository,
             config=initial_config,
             runner_factory=make_runner,
-            runtimes=runtime_registry.runtime_options(),
-            runtime_models=runtime_registry.runtime_model_map(),
+            runtimes=runtimes,
+            runtime_models=runtime_models,
             providers=ONBOARDING_PROVIDERS,
             ollama_models=(
                 _discover_local_ollama_models()
@@ -1194,6 +1203,7 @@ def chat(
             conversation_store=ConversationStore(),
             runner_warmup=_warmup_native_controller,
         )
+        _STARTUP.mark("tui_constructed")
         result = tui_app.run()
         final_transcript = tui_app.final_transcript_text
         if final_transcript:

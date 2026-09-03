@@ -2178,6 +2178,9 @@ class looplaneApp(App[RunResult | None]):
                     yield Button("Send", id="send", variant="primary")
 
     def on_mount(self) -> None:
+        from looplane.startup_trace import _STARTUP
+
+        _STARTUP.mark("app_mounted")
         self.register_theme(LOOPLANE_THEME)
         self.theme = "looplane"
         self.query_one("#task", MessageComposer).move_cursor(
@@ -2201,6 +2204,7 @@ class looplaneApp(App[RunResult | None]):
                 )
         else:
             self.query_one("#task", MessageComposer).focus()
+            _STARTUP.mark("composer_ready")
         self._refresh_readiness()
         if self.runner_warmup is not None:
             asyncio.create_task(self.runner_warmup())
