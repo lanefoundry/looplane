@@ -1,7 +1,7 @@
 {
   "results": [
     {
-      "command": "uv run rivumi --help",
+      "command": "uv run looplane --help",
       "mean": 0.49200123350601643,
       "median": 0.49200123350601643,
       "min": 0.4048571669263765,
@@ -10,7 +10,7 @@
       "fallback": true
     },
     {
-      "command": "uv run rivumi config",
+      "command": "uv run looplane config",
       "mean": 0.38041797070764005,
       "median": 0.38041797070764005,
       "min": 0.36354570800904185,

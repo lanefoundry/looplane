@@ -24,7 +24,7 @@ def test_discovers_bounded_unique_models_from_loopback_ollama(monkeypatch, tmp_p
             lambda request: httpx.Response(200, json={"models": entries}, request=request)
         )
     )
-    monkeypatch.setattr(cli.httpx, "Client", lambda **_: client)
+    monkeypatch.setattr(httpx, "Client",lambda **_: client)
 
     assert cli._discover_local_ollama_models() == ("qwen3:4b", "qwen3:0.6b")
 
@@ -48,7 +48,7 @@ def test_ollama_discovery_ignores_proxy_env_and_control_characters(monkeypatch, 
         captured.update(kwargs)
         return client
 
-    monkeypatch.setattr(cli.httpx, "Client", fake_client)
+    monkeypatch.setattr(httpx, "Client",fake_client)
 
     assert cli._discover_local_ollama_models() == ("qwen3:4b",)
     assert captured["trust_env"] is False
@@ -77,7 +77,7 @@ def test_ollama_discovery_fails_closed_on_bad_or_oversized_response(
         )
 
     client = original_client(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(cli.httpx, "Client", lambda **_: client)
+    monkeypatch.setattr(httpx, "Client",lambda **_: client)
 
     assert cli._discover_local_ollama_models() == ()
 

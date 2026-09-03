@@ -226,26 +226,31 @@ patch audit, and verification boundary. One path is never disguised as the other
 - [ ] Establish reproducible cold/warm baselines for `looplane --help`, bare `looplane` to first
       editable composer, and representative headless/config commands using real user configuration
       without recording credentials or repository content.
-- [ ] Add `scripts/bench_startup.sh` with hyperfine JSON output, import-time capture, environment
+- [x] Add `scripts/bench_startup.sh` with hyperfine JSON output, import-time capture, environment
       metadata, warmups, repeated runs, and a paired before/after comparison workflow.
-- [ ] Add opt-in `LOOPLANE_STARTUP_LOG` telemetry from process entry through first editable composer;
+- [x] Add opt-in `LOOPLANE_STARTUP_LOG` telemetry from process entry through first editable composer;
       keep the log bounded, private, non-secret, machine-readable, and disabled by default.
-- [ ] Remove eager imports of Codex OAuth/OpenAI SDK, vendor backends, conversations, gateway,
+- [x] Remove eager imports of Codex OAuth/OpenAI SDK, vendor backends, conversations, gateway,
       uvicorn, and other path-specific dependencies from common CLI startup. `--help` and unrelated
       commands must not import integrations they do not use.
-- [ ] Record the startup dependency graph and parallelize only independent measured work. Defer MCP
+- [x] Record the startup dependency graph and parallelize only independent measured work. Defer MCP
       or tool-server initialization until first use rather than adding it to the startup critical
-      path.
-- [ ] Add versioned, atomic, non-secret disk caching and per-process single-flight only for measured
+      path. Deferred `model_catalog` (→ httpx) from TUI module-level to per-method lazy import;
+      MCP init already deferred to first task execution; `shutil.which` runtime discovery is
+      sub-millisecond and not worth caching.
+- [x] Add versioned, atomic, non-secret disk caching and per-process single-flight only for measured
       repeated discovery work. Cache keys must use the smallest relevant configuration/version
       inputs; failures, partial results, credentials, and workspace contents must never be cached.
-- [ ] Add regression tests proving lazy imports preserve every CLI route, authentication boundary,
+      Added private file permissions (0o600/0o700), bounded entry count (64 max with LRU eviction).
+- [x] Add regression tests proving lazy imports preserve every CLI route, authentication boundary,
       TUI startup, cancellation path, and packaged entrypoint.
-- [ ] Add a CI startup benchmark gate after a stable runner baseline exists: compare medians across
+- [x] Add a CI startup benchmark gate after a stable runner baseline exists: compare medians across
       repeated paired runs, publish artifacts, and fail regressions greater than 10% while avoiding
-      a brittle absolute threshold across unlike machines.
+      a brittle absolute threshold across unlike machines. Fixed baseline command-name mismatch
+      (rivumi → looplane) so the regression comparison actually runs.
 - [ ] Close M12 with before/after distributions for time-to-composer and import paths, full Python
       and Cloudflare regression gates, stage documentation, independent review, and complete commits.
+      (Pending: stage documentation, independent review, before/after distributions.)
 
 Detailed execution plan: `docs/plans/m12-startup-performance-plan.md`.
 

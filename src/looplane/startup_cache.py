@@ -28,6 +28,7 @@ T = TypeVar("T")
 CACHE_SCHEMA_VERSION = "v1"
 
 _MISS = object()
+_MAX_CACHE_ENTRIES = 64
 
 _REGISTRY_LOCK = threading.Lock()
 _LOCKS: dict[str, threading.Lock] = {}
@@ -37,7 +38,7 @@ def _cache_dir() -> Path:
     base = os.environ.get("XDG_CACHE_HOME")
     root = Path(base) if base else Path.home() / ".cache"
     path = root / "looplane" / "startup"
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
     return path
 
 
@@ -78,17 +79,35 @@ def _load(key: str, version: str, ttl_seconds: float | None) -> object:
 
 
 def _store(key: str, version: str, value: object) -> None:
-    path = _cache_dir() / _safe_filename(key)
+    cache = _cache_dir()
+    path = cache / _safe_filename(key)
     payload = json.dumps(
         {"version": version, "ts": time.time(), "value": value},
         separators=(",", ":"),
     )
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_text(payload, encoding="utf-8")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, payload.encode("utf-8"))
+        finally:
+            os.close(fd)
         tmp.replace(path)
     except OSError:
-        pass
+        return
+    _evict_oldest(cache)
+
+
+def _evict_oldest(cache: Path) -> None:
+    try:
+        entries = sorted(cache.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return
+    while len(entries) > _MAX_CACHE_ENTRIES:
+        try:
+            entries.pop(0).unlink()
+        except OSError:
+            break
 
 
 def cached_scan(
