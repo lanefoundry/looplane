@@ -34,7 +34,6 @@ from looplane.conversation_runtime import (
     RuntimeApprovalRequest,
     RuntimeSkillsChangedEvent,
     RuntimeToolKind,
-    RuntimeToolStatus,
     RuntimeTurnStatus,
     TextDeltaEvent,
     ToolCompletedEvent,
@@ -43,6 +42,7 @@ from looplane.conversation_runtime import (
     TurnCompletedEvent,
     TurnStartedEvent,
 )
+from looplane.conversation_runtime import RuntimeToolStatus as RuntimeToolStatus
 from looplane.runtime_semantics import (
     ContextTelemetry,
     ContextTelemetryAccuracy,
@@ -50,6 +50,9 @@ from looplane.runtime_semantics import (
     ProposedChangeKind,
     RuntimeCapabilities,
 )
+from looplane.runtimes.codex import approval_mapper as _codex_approvals
+from looplane.runtimes.codex import parsing as _codex_parsing
+from looplane.runtimes.codex import tool_mapper as _codex_tools
 
 _SAFE_ENV_KEYS = {
     "CODEX_HOME",
@@ -553,14 +556,12 @@ class CodexAppServerSession:
                         raise ConversationProtocolError("Codex app-server closed stdout")
                     return
                 self._frame_count += 1
-                if self._frame_count > self.max_frames or len(raw) > self.max_frame_bytes:
-                    raise ConversationProtocolError("app-server output exceeded protocol bounds")
-                try:
-                    frame = json.loads(raw)
-                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    raise ConversationProtocolError("app-server emitted invalid JSON") from exc
-                if not isinstance(frame, dict):
-                    raise ConversationProtocolError("app-server frame must be an object")
+                frame = _codex_parsing.parse_frame(
+                    raw,
+                    frame_count=self._frame_count,
+                    max_frames=self.max_frames,
+                    max_frame_bytes=self.max_frame_bytes,
+                )
                 await self._handle_frame(frame)
         except asyncio.CancelledError:
             raise
@@ -1007,13 +1008,7 @@ class CodexAppServerSession:
             )
         return tuple(proposed)
 
-    @staticmethod
-    def _preview_diff(diff: str | None) -> tuple[str | None, int | None, bool]:
-        if diff is None:
-            return None, None, False
-        encoded = diff.encode("utf-8")
-        shown = encoded[:64000].decode("utf-8", errors="ignore")
-        return shown, len(encoded), len(shown.encode("utf-8")) < len(encoded)
+    _preview_diff = staticmethod(_codex_parsing.preview_diff)
 
     def _file_change_grant_scope(self, action_id: str) -> str | None:
         changes = self._action_previews.get(action_id, ())
@@ -1269,15 +1264,10 @@ class CodexAppServerSession:
             raise ConversationProtocolError(f"{context} notification correlation is invalid")
         return self._local_turn(native_turn, context=context)
 
-    @staticmethod
-    def _safe_id(value: object) -> bool:
-        return isinstance(value, str) and 0 < len(value) <= 256 and "\x00" not in value
+    _safe_id = staticmethod(_codex_parsing.safe_id)
 
     def _bounded(self, value: str) -> str:
-        encoded = value.encode("utf-8")
-        if len(encoded) <= self.max_frame_bytes:
-            return value
-        return encoded[: self.max_frame_bytes].decode("utf-8", errors="ignore")
+        return _codex_parsing.bounded_text(value, max_frame_bytes=self.max_frame_bytes)
 
     def _approval_preview(
         self,
@@ -1351,155 +1341,26 @@ class CodexAppServerSession:
                 lines.append(f"Details: {summary}")
         return self._bounded("\n".join(lines))[:16000]
 
-    @staticmethod
-    def _available_decisions(
-        kind: RuntimeApprovalKind, raw: object
-    ) -> tuple[ApprovalDecision, ...]:
-        if kind == RuntimeApprovalKind.PERMISSIONS:
-            return (
-                ApprovalDecision.ALLOW_ONCE,
-                ApprovalDecision.ALLOW_SESSION,
-                ApprovalDecision.DENY,
-                ApprovalDecision.CANCEL,
-            )
-        mapping = {
-            "accept": ApprovalDecision.ALLOW_ONCE,
-            "acceptForSession": ApprovalDecision.ALLOW_SESSION,
-            "decline": ApprovalDecision.DENY,
-            "cancel": ApprovalDecision.CANCEL,
-        }
-        if raw is None:
-            return tuple(mapping.values())
-        if not isinstance(raw, list):
-            raise ConversationProtocolError("availableDecisions must be a list")
-        result: list[ApprovalDecision] = []
-        for value in raw:
-            if isinstance(value, str) and value in mapping and mapping[value] not in result:
-                result.append(mapping[value])
-        if not result:
-            raise ConversationProtocolError("approval exposes no supported decision")
-        return tuple(result)
+    _available_decisions = staticmethod(_codex_approvals.available_decisions)
 
     @staticmethod
     def _approval_result(pending: _PendingApproval, decision: ApprovalDecision) -> dict[str, Any]:
-        if pending.method == "item/permissions/requestApproval":
-            permissions: dict[str, Any] = {}
-            if decision in {ApprovalDecision.ALLOW_ONCE, ApprovalDecision.ALLOW_SESSION}:
-                for key, value in (pending.requested_permissions or {}).items():
-                    if key in {"network", "fileSystem"} and value is not None:
-                        permissions[key] = value
-            return {
-                "permissions": permissions,
-                "scope": ("session" if decision == ApprovalDecision.ALLOW_SESSION else "turn"),
-                "strictAutoReview": True,
-            }
-        mapping = {
-            ApprovalDecision.ALLOW_ONCE: "accept",
-            ApprovalDecision.ALLOW_SESSION: "acceptForSession",
-            ApprovalDecision.DENY: "decline",
-            ApprovalDecision.CANCEL: "cancel",
-        }
-        return {"decision": mapping[decision]}
+        return _codex_approvals.approval_result(
+            pending.method, pending.requested_permissions, decision
+        )
 
-    @staticmethod
-    def _tool_description(
-        item_type: str, item: dict[str, Any]
-    ) -> tuple[
-        RuntimeToolKind,
-        str,
-        ToolEffect,
-        str,
-        str | None,
-        tuple[str, ...],
-    ]:
-        if item_type == "commandExecution":
-            command = item.get("command")
-            if not isinstance(command, str):
-                raise ConversationProtocolError("command item has no command")
-            cwd = item.get("cwd")
-            return (
-                RuntimeToolKind.COMMAND,
-                "shell",
-                ToolEffect.EXECUTE,
-                command[:16000],
-                cwd[:4096] if isinstance(cwd, str) else None,
-                (),
-            )
-        if item_type == "fileChange":
-            changes = item.get("changes")
-            if not isinstance(changes, list):
-                raise ConversationProtocolError("file change item is malformed")
-            paths = [change.get("path") for change in changes if isinstance(change, dict)]
-            safe_paths = tuple(
-                dict.fromkeys(path[:4096] for path in paths if isinstance(path, str) and path)
-            )
-            path = safe_paths[0][:4096] if safe_paths else None
-            summary = f"{len(changes)} file change(s)"
-            return (
-                RuntimeToolKind.FILE_CHANGE,
-                "file_change",
-                ToolEffect.MODIFY,
-                summary,
-                path,
-                safe_paths,
-            )
-        if item_type == "mcpToolCall":
-            server, tool = item.get("server"), item.get("tool")
-            if not isinstance(server, str) or not isinstance(tool, str):
-                raise ConversationProtocolError("MCP item is malformed")
-            return (
-                RuntimeToolKind.MCP,
-                f"{server}/{tool}"[:256],
-                ToolEffect.EXECUTE,
-                "",
-                None,
-                (),
-            )
-        if item_type == "dynamicToolCall":
-            tool = item.get("tool")
-            if not isinstance(tool, str):
-                raise ConversationProtocolError("dynamic tool item is malformed")
-            return RuntimeToolKind.MCP, tool[:256], ToolEffect.EXECUTE, "", None, ()
-        if item_type == "collabAgentToolCall":
-            return RuntimeToolKind.AGENT, "agent", ToolEffect.EXECUTE, "", None, ()
-        return RuntimeToolKind.WEB, "web_search", ToolEffect.EXECUTE, "", None, ()
+    _tool_description = staticmethod(_codex_tools.tool_description)
 
     def _tool_completion_summary(self, item_type: str, item: dict[str, Any]) -> str:
-        if item_type == "commandExecution":
-            exit_code = item.get("exitCode")
-            return f"exit {exit_code}" if isinstance(exit_code, int) else "command finished"
-        status = item.get("status")
-        return self._bounded(status)[:16000] if isinstance(status, str) else "tool finished"
+        return _codex_tools.tool_completion_summary(item_type, item, bounded=self._bounded)
 
     def _tool_completion_output(self, item_type: str, item: dict[str, Any]) -> str | None:
-        if item_type != "commandExecution":
-            return None
-        output = item.get("aggregatedOutput")
-        return self._bounded(output)[:64000] if isinstance(output, str) else None
+        return _codex_tools.tool_completion_output(item_type, item, bounded=self._bounded)
 
     def _tool_completion_diff(self, item_type: str, item: dict[str, Any]) -> str | None:
-        if item_type != "fileChange":
-            return None
-        changes = item.get("changes")
-        if not isinstance(changes, list):
-            return None
-        diffs = [change.get("diff") for change in changes if isinstance(change, dict)]
-        rendered = "\n".join(diff for diff in diffs if isinstance(diff, str))
-        if not rendered:
-            return None
-        return self._bounded(rendered)[:64000]
+        return _codex_tools.tool_completion_diff(item_type, item, bounded=self._bounded)
 
-    @staticmethod
-    def _tool_status(raw: object) -> RuntimeToolStatus:
-        mapping = {
-            "completed": RuntimeToolStatus.COMPLETED,
-            "failed": RuntimeToolStatus.FAILED,
-            "declined": RuntimeToolStatus.DECLINED,
-            "interrupted": RuntimeToolStatus.INTERRUPTED,
-        }
-        if raw not in mapping:
-            raise ConversationProtocolError("tool completed with an invalid status")
-        return mapping[raw]
+    _tool_status = staticmethod(_codex_tools.tool_status)
 
     @staticmethod
     def _terminate_process(process: asyncio.subprocess.Process) -> None:

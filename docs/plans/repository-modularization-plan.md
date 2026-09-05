@@ -1,7 +1,7 @@
 # Repository modularization plan
 
 Date: 2026-09-05
-Status: proposed
+Status: in progress; Wave 1 Slice 1.1 complete, next Slice 1.2
 Scope: decompose `tui.py`, `cli.py`, `loop.py`, `tools.py`, and
 `codex_app_server.py` without changing the M11 unified-conversation product model or
 the native/external runtime trust boundary.
@@ -284,6 +284,8 @@ sdist is bounded and rooted at `looplane-*`.
 ## Wave 1: stabilize product entry points and M13 seams
 
 ### Slice 1.1 — pure contracts and leaf helpers
+
+Execution and gate evidence: [Slice 1.1 run record](runs/wave1-slice1.1-2026-09-05.md).
 
 - Extract TUI request/event types and status formatting without importing the App.
 - Extract Codex safe-ID, bounded parsing, tool status/summary, and decision mapping.

@@ -1,0 +1,840 @@
+{
+  "before": {
+    "modules": 74,
+    "cycles": [
+      [
+        "looplane.loop",
+        "looplane.subagents"
+      ]
+    ],
+    "edges": {
+      "looplane": [
+        "looplane.contracts",
+        "looplane.events"
+      ],
+      "looplane.__main__": [
+        "looplane.cli"
+      ],
+      "looplane.approvals": [
+        "looplane.contracts"
+      ],
+      "looplane.ask_runner": [
+        "looplane.backends",
+        "looplane.contracts"
+      ],
+      "looplane.backends": [
+        "looplane.external_agents"
+      ],
+      "looplane.cache_strategy": [
+        "looplane.contracts",
+        "looplane.prompts"
+      ],
+      "looplane.claude_agent_session": [
+        "looplane.approvals",
+        "looplane.conversation_runtime",
+        "looplane.runtime_semantics"
+      ],
+      "looplane.claude_backend": [
+        "looplane.backends",
+        "looplane.runtime"
+      ],
+      "looplane.claude_conversation": [
+        "looplane.approvals",
+        "looplane.claude_agent_session",
+        "looplane.conversation_runtime",
+        "looplane.conversation_workspace"
+      ],
+      "looplane.cli": [
+        "looplane.approvals",
+        "looplane.claude_backend",
+        "looplane.cli_config",
+        "looplane.cloudflare_provider_setup",
+        "looplane.codex_backend",
+        "looplane.codex_oauth",
+        "looplane.console",
+        "looplane.contracts",
+        "looplane.conversation",
+        "looplane.conversation_controller",
+        "looplane.conversation_websocket",
+        "looplane.dialect",
+        "looplane.external_runner",
+        "looplane.gateway",
+        "looplane.hooks",
+        "looplane.loop",
+        "looplane.mcp_client",
+        "looplane.models",
+        "looplane.native_credentials",
+        "looplane.oauth_login",
+        "looplane.omp_backend",
+        "looplane.opencode_backend",
+        "looplane.otel_export",
+        "looplane.permissions",
+        "looplane.pi_backend",
+        "looplane.plugins",
+        "looplane.policy_config",
+        "looplane.provider_catalog",
+        "looplane.provider_verification",
+        "looplane.runtime_registry",
+        "looplane.session",
+        "looplane.session_replay",
+        "looplane.startup_cache",
+        "looplane.startup_trace",
+        "looplane.subagents",
+        "looplane.tui"
+      ],
+      "looplane.cli_config": [
+        "looplane.events",
+        "looplane.permissions"
+      ],
+      "looplane.cloudflare_client": [
+        "looplane.runtime"
+      ],
+      "looplane.cloudflare_provider_setup": [
+        "looplane.provider_catalog"
+      ],
+      "looplane.codex_app_server": [
+        "looplane.approvals",
+        "looplane.conversation_runtime",
+        "looplane.runtime_semantics"
+      ],
+      "looplane.codex_backend": [
+        "looplane.backends",
+        "looplane.runtime"
+      ],
+      "looplane.codex_conversation": [
+        "looplane.approvals",
+        "looplane.codex_app_server",
+        "looplane.conversation_runtime",
+        "looplane.conversation_workspace"
+      ],
+      "looplane.codex_oauth": [
+        "looplane.contracts",
+        "looplane.models"
+      ],
+      "looplane.console": [
+        "looplane.events",
+        "looplane.runtime"
+      ],
+      "looplane.context_providers": [
+        "looplane.contracts",
+        "looplane.conversation_runtime",
+        "looplane.runtime"
+      ],
+      "looplane.context_watch": [
+        "looplane.hooks",
+        "looplane.instructions",
+        "looplane.plugins",
+        "looplane.skills"
+      ],
+      "looplane.contracts": [],
+      "looplane.conversation": [
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.runtime_registry"
+      ],
+      "looplane.conversation_controller": [
+        "looplane.approvals",
+        "looplane.context_providers",
+        "looplane.contracts",
+        "looplane.conversation_runtime",
+        "looplane.hooks",
+        "looplane.runtime",
+        "looplane.runtime_semantics",
+        "looplane.startup_trace"
+      ],
+      "looplane.conversation_runtime": [
+        "looplane.approvals",
+        "looplane.contracts",
+        "looplane.runtime_semantics"
+      ],
+      "looplane.conversation_websocket": [
+        "looplane.approvals",
+        "looplane.conversation_controller",
+        "looplane.conversation_runtime",
+        "looplane.hooks",
+        "looplane.ide"
+      ],
+      "looplane.conversation_workspace": [
+        "looplane.policy",
+        "looplane.runtime",
+        "looplane.tools"
+      ],
+      "looplane.dialect": [
+        "looplane.contracts"
+      ],
+      "looplane.events": [],
+      "looplane.external_agents": [
+        "looplane.contracts"
+      ],
+      "looplane.external_cli_base": [
+        "looplane.backends",
+        "looplane.runtime"
+      ],
+      "looplane.external_runner": [
+        "looplane.approvals",
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.external_agents",
+        "looplane.instructions",
+        "looplane.policy",
+        "looplane.runtime",
+        "looplane.secret_scan",
+        "looplane.skills",
+        "looplane.tools"
+      ],
+      "looplane.gateway": [
+        "looplane.contracts",
+        "looplane.models"
+      ],
+      "looplane.hooks": [
+        "looplane.contracts",
+        "looplane.plugins",
+        "looplane.runtime"
+      ],
+      "looplane.ide": [
+        "looplane.contracts"
+      ],
+      "looplane.instructions": [],
+      "looplane.landlock_run": [],
+      "looplane.loop": [
+        "looplane.approvals",
+        "looplane.cache_strategy",
+        "looplane.console",
+        "looplane.context_providers",
+        "looplane.context_watch",
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.hooks",
+        "looplane.ide",
+        "looplane.instructions",
+        "looplane.mcp_client",
+        "looplane.memory",
+        "looplane.models",
+        "looplane.permissions",
+        "looplane.policy",
+        "looplane.prompts",
+        "looplane.provider_catalog",
+        "looplane.runtime",
+        "looplane.runtime_semantics",
+        "looplane.session",
+        "looplane.skills",
+        "looplane.subagents",
+        "looplane.tools"
+      ],
+      "looplane.lsp": [
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.ide",
+        "looplane.runtime"
+      ],
+      "looplane.mcp_client": [
+        "looplane.contracts",
+        "looplane.runtime"
+      ],
+      "looplane.memory": [],
+      "looplane.model_catalog": [
+        "looplane.native_credentials",
+        "looplane.provider_verification",
+        "looplane.startup_cache"
+      ],
+      "looplane.models": [
+        "looplane.cache_strategy",
+        "looplane.contracts",
+        "looplane.dialect"
+      ],
+      "looplane.native_credentials": [],
+      "looplane.oauth_login": [
+        "looplane.codex_oauth"
+      ],
+      "looplane.omp_backend": [
+        "looplane.pi_backend"
+      ],
+      "looplane.opencode_backend": [
+        "looplane.backends",
+        "looplane.external_cli_base"
+      ],
+      "looplane.otel_export": [
+        "looplane.secret_scan"
+      ],
+      "looplane.permissions": [
+        "looplane.approvals"
+      ],
+      "looplane.pi_backend": [
+        "looplane.backends",
+        "looplane.external_cli_base"
+      ],
+      "looplane.plugins": [
+        "looplane.contracts"
+      ],
+      "looplane.policy": [],
+      "looplane.policy_config": [
+        "looplane.cli_config",
+        "looplane.permissions"
+      ],
+      "looplane.prompts": [
+        "looplane.contracts"
+      ],
+      "looplane.provider_catalog": [
+        "looplane.contracts"
+      ],
+      "looplane.provider_verification": [
+        "looplane.models",
+        "looplane.provider_catalog"
+      ],
+      "looplane.runtime": [
+        "looplane.landlock_run"
+      ],
+      "looplane.runtime_registry": [],
+      "looplane.runtime_semantics": [
+        "looplane.approvals",
+        "looplane.contracts"
+      ],
+      "looplane.sandbox_entry": [
+        "looplane.approvals",
+        "looplane.console",
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.loop",
+        "looplane.models",
+        "looplane.runtime"
+      ],
+      "looplane.sdk": [
+        "looplane.cache_strategy",
+        "looplane.context_providers",
+        "looplane.context_watch",
+        "looplane.contracts",
+        "looplane.conversation_controller",
+        "looplane.conversation_runtime",
+        "looplane.conversation_websocket",
+        "looplane.events",
+        "looplane.hooks",
+        "looplane.ide",
+        "looplane.instructions",
+        "looplane.loop",
+        "looplane.lsp",
+        "looplane.models",
+        "looplane.plugins",
+        "looplane.prompts",
+        "looplane.provider_catalog",
+        "looplane.session_replay",
+        "looplane.skills",
+        "looplane.subagents"
+      ],
+      "looplane.secret_scan": [],
+      "looplane.session": [
+        "looplane.approvals",
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.prompts",
+        "looplane.runtime"
+      ],
+      "looplane.session_replay": [
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.runtime",
+        "looplane.session"
+      ],
+      "looplane.skills": [
+        "looplane.contracts",
+        "looplane.plugins",
+        "looplane.runtime"
+      ],
+      "looplane.slash_commands": [],
+      "looplane.startup_cache": [],
+      "looplane.startup_trace": [],
+      "looplane.subagents": [
+        "looplane.approvals",
+        "looplane.console",
+        "looplane.contracts",
+        "looplane.loop",
+        "looplane.models"
+      ],
+      "looplane.tools": [
+        "looplane.contracts",
+        "looplane.mcp_client",
+        "looplane.policy",
+        "looplane.runtime",
+        "looplane.secret_scan"
+      ],
+      "looplane.transcript": [],
+      "looplane.transcript_export": [
+        "looplane.secret_scan"
+      ],
+      "looplane.tui": [
+        "looplane.approvals",
+        "looplane.backends",
+        "looplane.cli_config",
+        "looplane.console",
+        "looplane.contracts",
+        "looplane.conversation",
+        "looplane.conversation_runtime",
+        "looplane.events",
+        "looplane.memory",
+        "looplane.model_catalog",
+        "looplane.native_credentials",
+        "looplane.prompts",
+        "looplane.provider_catalog",
+        "looplane.provider_verification",
+        "looplane.runtime_registry",
+        "looplane.runtime_semantics",
+        "looplane.slash_commands",
+        "looplane.startup_trace",
+        "looplane.transcript",
+        "looplane.transcript_export",
+        "looplane.tui_clipboard",
+        "looplane.tui_links"
+      ],
+      "looplane.tui_clipboard": [],
+      "looplane.tui_links": []
+    }
+  },
+  "after": {
+    "modules": 92,
+    "cycles": [
+      [
+        "looplane.loop",
+        "looplane.subagents"
+      ]
+    ],
+    "edges": {
+      "looplane": [
+        "looplane.contracts",
+        "looplane.events"
+      ],
+      "looplane.__main__": [
+        "looplane.cli"
+      ],
+      "looplane.approvals": [
+        "looplane.contracts"
+      ],
+      "looplane.ask_runner": [
+        "looplane.backends",
+        "looplane.contracts"
+      ],
+      "looplane.backends": [
+        "looplane.external_agents"
+      ],
+      "looplane.cache_strategy": [
+        "looplane.contracts",
+        "looplane.prompts"
+      ],
+      "looplane.claude_agent_session": [
+        "looplane.approvals",
+        "looplane.conversation_runtime",
+        "looplane.runtime_semantics"
+      ],
+      "looplane.claude_backend": [
+        "looplane.backends",
+        "looplane.runtime"
+      ],
+      "looplane.claude_conversation": [
+        "looplane.approvals",
+        "looplane.claude_agent_session",
+        "looplane.conversation_runtime",
+        "looplane.conversation_workspace"
+      ],
+      "looplane.claude_runner": [
+        "looplane.claude_backend"
+      ],
+      "looplane.cli": [
+        "looplane.approvals",
+        "looplane.claude_backend",
+        "looplane.cli_config",
+        "looplane.cloudflare_provider_setup",
+        "looplane.codex_backend",
+        "looplane.codex_oauth",
+        "looplane.console",
+        "looplane.contracts",
+        "looplane.conversation",
+        "looplane.conversation_controller",
+        "looplane.conversation_websocket",
+        "looplane.dialect",
+        "looplane.external_runner",
+        "looplane.gateway",
+        "looplane.hooks",
+        "looplane.loop",
+        "looplane.mcp_client",
+        "looplane.models",
+        "looplane.native_credentials",
+        "looplane.oauth_login",
+        "looplane.omp_backend",
+        "looplane.opencode_backend",
+        "looplane.otel_export",
+        "looplane.permissions",
+        "looplane.pi_backend",
+        "looplane.plugins",
+        "looplane.policy_config",
+        "looplane.provider_catalog",
+        "looplane.provider_verification",
+        "looplane.runtime_registry",
+        "looplane.session",
+        "looplane.session_replay",
+        "looplane.startup_cache",
+        "looplane.startup_trace",
+        "looplane.subagents",
+        "looplane.tui"
+      ],
+      "looplane.cli_config": [
+        "looplane.events",
+        "looplane.permissions"
+      ],
+      "looplane.cloudflare_client": [
+        "looplane.runtime"
+      ],
+      "looplane.cloudflare_provider_setup": [
+        "looplane.provider_catalog"
+      ],
+      "looplane.codex_app_server": [
+        "looplane.approvals",
+        "looplane.conversation_runtime",
+        "looplane.runtime_semantics",
+        "looplane.runtimes.codex",
+        "looplane.runtimes.codex.approval_mapper",
+        "looplane.runtimes.codex.parsing",
+        "looplane.runtimes.codex.tool_mapper"
+      ],
+      "looplane.codex_backend": [
+        "looplane.backends",
+        "looplane.runtime"
+      ],
+      "looplane.codex_conversation": [
+        "looplane.approvals",
+        "looplane.codex_app_server",
+        "looplane.conversation_runtime",
+        "looplane.conversation_workspace"
+      ],
+      "looplane.codex_oauth": [
+        "looplane.contracts",
+        "looplane.models"
+      ],
+      "looplane.codex_runner": [
+        "looplane.codex_backend"
+      ],
+      "looplane.console": [
+        "looplane.events",
+        "looplane.runtime"
+      ],
+      "looplane.context_providers": [
+        "looplane.contracts",
+        "looplane.conversation_runtime",
+        "looplane.runtime"
+      ],
+      "looplane.context_watch": [
+        "looplane.hooks",
+        "looplane.instructions",
+        "looplane.plugins",
+        "looplane.skills"
+      ],
+      "looplane.contracts": [],
+      "looplane.conversation": [
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.runtime_registry"
+      ],
+      "looplane.conversation_controller": [
+        "looplane.approvals",
+        "looplane.context_providers",
+        "looplane.contracts",
+        "looplane.conversation_runtime",
+        "looplane.hooks",
+        "looplane.runtime",
+        "looplane.runtime_semantics",
+        "looplane.startup_trace"
+      ],
+      "looplane.conversation_runtime": [
+        "looplane.approvals",
+        "looplane.contracts",
+        "looplane.runtime_semantics"
+      ],
+      "looplane.conversation_websocket": [
+        "looplane.approvals",
+        "looplane.conversation_controller",
+        "looplane.conversation_runtime",
+        "looplane.hooks",
+        "looplane.ide"
+      ],
+      "looplane.conversation_workspace": [
+        "looplane.policy",
+        "looplane.runtime",
+        "looplane.tools"
+      ],
+      "looplane.dialect": [
+        "looplane.contracts"
+      ],
+      "looplane.events": [],
+      "looplane.external_agents": [
+        "looplane.contracts"
+      ],
+      "looplane.external_cli_base": [
+        "looplane.backends",
+        "looplane.runtime"
+      ],
+      "looplane.external_runner": [
+        "looplane.approvals",
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.external_agents",
+        "looplane.instructions",
+        "looplane.policy",
+        "looplane.runtime",
+        "looplane.secret_scan",
+        "looplane.skills",
+        "looplane.tools"
+      ],
+      "looplane.gateway": [
+        "looplane.contracts",
+        "looplane.models"
+      ],
+      "looplane.hooks": [
+        "looplane.contracts",
+        "looplane.plugins",
+        "looplane.runtime"
+      ],
+      "looplane.ide": [
+        "looplane.contracts"
+      ],
+      "looplane.instructions": [],
+      "looplane.landlock_run": [],
+      "looplane.loop": [
+        "looplane.approvals",
+        "looplane.cache_strategy",
+        "looplane.console",
+        "looplane.context_providers",
+        "looplane.context_watch",
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.hooks",
+        "looplane.ide",
+        "looplane.instructions",
+        "looplane.mcp_client",
+        "looplane.memory",
+        "looplane.models",
+        "looplane.permissions",
+        "looplane.policy",
+        "looplane.prompts",
+        "looplane.provider_catalog",
+        "looplane.runtime",
+        "looplane.runtime_semantics",
+        "looplane.session",
+        "looplane.skills",
+        "looplane.subagents",
+        "looplane.tools"
+      ],
+      "looplane.lsp": [
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.ide",
+        "looplane.runtime"
+      ],
+      "looplane.mcp_client": [
+        "looplane.contracts",
+        "looplane.runtime"
+      ],
+      "looplane.memory": [],
+      "looplane.model_catalog": [
+        "looplane.native_credentials",
+        "looplane.provider_verification",
+        "looplane.startup_cache"
+      ],
+      "looplane.models": [
+        "looplane.cache_strategy",
+        "looplane.contracts",
+        "looplane.dialect"
+      ],
+      "looplane.native_credentials": [],
+      "looplane.oauth_login": [
+        "looplane.codex_oauth"
+      ],
+      "looplane.omp_backend": [
+        "looplane.pi_backend"
+      ],
+      "looplane.omp_runner": [
+        "looplane.omp_backend"
+      ],
+      "looplane.opencode_backend": [
+        "looplane.backends",
+        "looplane.external_cli_base"
+      ],
+      "looplane.opencode_runner": [
+        "looplane.opencode_backend"
+      ],
+      "looplane.otel_export": [
+        "looplane.secret_scan"
+      ],
+      "looplane.permissions": [
+        "looplane.approvals"
+      ],
+      "looplane.pi_backend": [
+        "looplane.backends",
+        "looplane.external_cli_base"
+      ],
+      "looplane.pi_runner": [
+        "looplane.pi_backend"
+      ],
+      "looplane.plugins": [
+        "looplane.contracts"
+      ],
+      "looplane.policy": [],
+      "looplane.policy_config": [
+        "looplane.cli_config",
+        "looplane.permissions"
+      ],
+      "looplane.prompts": [
+        "looplane.contracts"
+      ],
+      "looplane.provider_catalog": [
+        "looplane.contracts"
+      ],
+      "looplane.provider_verification": [
+        "looplane.models",
+        "looplane.provider_catalog"
+      ],
+      "looplane.runtime": [
+        "looplane.landlock_run"
+      ],
+      "looplane.runtime_registry": [],
+      "looplane.runtime_semantics": [
+        "looplane.approvals",
+        "looplane.contracts"
+      ],
+      "looplane.runtimes": [],
+      "looplane.runtimes.codex": [],
+      "looplane.runtimes.codex.approval_mapper": [
+        "looplane.approvals",
+        "looplane.conversation_runtime"
+      ],
+      "looplane.runtimes.codex.parsing": [
+        "looplane.conversation_runtime"
+      ],
+      "looplane.runtimes.codex.tool_mapper": [
+        "looplane.approvals",
+        "looplane.conversation_runtime"
+      ],
+      "looplane.sandbox_entry": [
+        "looplane.approvals",
+        "looplane.console",
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.loop",
+        "looplane.models",
+        "looplane.runtime"
+      ],
+      "looplane.sdk": [
+        "looplane.cache_strategy",
+        "looplane.context_providers",
+        "looplane.context_watch",
+        "looplane.contracts",
+        "looplane.conversation_controller",
+        "looplane.conversation_runtime",
+        "looplane.conversation_websocket",
+        "looplane.events",
+        "looplane.hooks",
+        "looplane.ide",
+        "looplane.instructions",
+        "looplane.loop",
+        "looplane.lsp",
+        "looplane.models",
+        "looplane.plugins",
+        "looplane.prompts",
+        "looplane.provider_catalog",
+        "looplane.session_replay",
+        "looplane.skills",
+        "looplane.subagents"
+      ],
+      "looplane.secret_scan": [],
+      "looplane.session": [
+        "looplane.approvals",
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.prompts",
+        "looplane.runtime"
+      ],
+      "looplane.session_replay": [
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.runtime",
+        "looplane.session"
+      ],
+      "looplane.skills": [
+        "looplane.contracts",
+        "looplane.plugins",
+        "looplane.runtime"
+      ],
+      "looplane.slash_commands": [],
+      "looplane.startup_cache": [],
+      "looplane.startup_trace": [],
+      "looplane.structured_cli_runner": [
+        "looplane.external_cli_base"
+      ],
+      "looplane.subagents": [
+        "looplane.approvals",
+        "looplane.console",
+        "looplane.contracts",
+        "looplane.loop",
+        "looplane.models"
+      ],
+      "looplane.terminal": [],
+      "looplane.terminal.events": [
+        "looplane.conversation_runtime",
+        "looplane.events",
+        "looplane.external_agents"
+      ],
+      "looplane.terminal.status": [
+        "looplane.contracts"
+      ],
+      "looplane.terminal.types": [
+        "looplane.approvals",
+        "looplane.cli_config",
+        "looplane.console",
+        "looplane.contracts"
+      ],
+      "looplane.tooling": [],
+      "looplane.tooling.definitions": [
+        "looplane.contracts"
+      ],
+      "looplane.tooling.types": [],
+      "looplane.tools": [
+        "looplane.contracts",
+        "looplane.mcp_client",
+        "looplane.policy",
+        "looplane.runtime",
+        "looplane.secret_scan",
+        "looplane.tooling.definitions",
+        "looplane.tooling.types"
+      ],
+      "looplane.transcript": [],
+      "looplane.transcript_export": [
+        "looplane.secret_scan"
+      ],
+      "looplane.tui": [
+        "looplane.approvals",
+        "looplane.backends",
+        "looplane.cli_config",
+        "looplane.console",
+        "looplane.contracts",
+        "looplane.conversation",
+        "looplane.conversation_runtime",
+        "looplane.events",
+        "looplane.memory",
+        "looplane.model_catalog",
+        "looplane.native_credentials",
+        "looplane.prompts",
+        "looplane.provider_catalog",
+        "looplane.provider_verification",
+        "looplane.runtime_registry",
+        "looplane.runtime_semantics",
+        "looplane.slash_commands",
+        "looplane.startup_trace",
+        "looplane.terminal.events",
+        "looplane.terminal.status",
+        "looplane.terminal.types",
+        "looplane.transcript",
+        "looplane.transcript_export",
+        "looplane.tui_clipboard",
+        "looplane.tui_links"
+      ],
+      "looplane.tui_clipboard": [],
+      "looplane.tui_links": []
+    }
+  }
+}

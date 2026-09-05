@@ -9,11 +9,9 @@ import shlex
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from rich.syntax import Syntax
@@ -43,14 +41,13 @@ from textual.widgets.option_list import Option
 import looplane.runtime_registry as runtime_registry
 from looplane.approvals import (
     ApprovalDecision,
-    ApprovalPolicy,
     ApprovalReason,
     ApprovalRequest,
     ToolEffect,
 )
 from looplane.backends import ExternalAgentEvent
 from looplane.cli_config import CliConfig, save_cli_config
-from looplane.console import EventSink, LiveEventProjection
+from looplane.console import LiveEventProjection
 from looplane.contracts import RunResult, RunStatus, Usage
 from looplane.conversation import (
     ConversationEventKind,
@@ -101,6 +98,60 @@ from looplane.slash_commands import (
     SlashCommand,
     UnknownSlashCommand,
 )
+from looplane.terminal.events import (
+    ConversationRuntimeEventMessage as ConversationRuntimeEventMessage,
+)
+from looplane.terminal.events import (
+    ExternalRunEventMessage as ExternalRunEventMessage,
+)
+from looplane.terminal.events import (
+    RunEventMessage as RunEventMessage,
+)
+from looplane.terminal.status import (
+    _add_usage as _add_usage,
+)
+from looplane.terminal.status import (
+    _usage_bar as _usage_bar,
+)
+from looplane.terminal.status import (
+    format_token_count as format_token_count,
+)
+from looplane.terminal.types import (
+    CommandMenuChoice as CommandMenuChoice,
+)
+from looplane.terminal.types import (
+    InlineSelectorOption as InlineSelectorOption,
+)
+from looplane.terminal.types import (
+    InteractionState as InteractionState,
+)
+from looplane.terminal.types import (
+    LoadingPhase as LoadingPhase,
+)
+from looplane.terminal.types import (
+    ProviderOption as ProviderOption,
+)
+from looplane.terminal.types import (
+    RunnerFactory as RunnerFactory,
+)
+from looplane.terminal.types import (
+    RuntimeModelOption as RuntimeModelOption,
+)
+from looplane.terminal.types import (
+    RuntimeOption as RuntimeOption,
+)
+from looplane.terminal.types import (
+    TuiConfigurationSelection as TuiConfigurationSelection,
+)
+from looplane.terminal.types import (
+    TuiResource as TuiResource,
+)
+from looplane.terminal.types import (
+    TuiRunner as TuiRunner,
+)
+from looplane.terminal.types import (
+    TuiRunRequest as TuiRunRequest,
+)
 from looplane.transcript import infer_tool_detail_kind
 from looplane.transcript_export import TranscriptReducer
 from looplane.tui_clipboard import copy_with_native_command, selected_text_for_copy
@@ -109,23 +160,9 @@ from looplane.tui_links import TranscriptMarkdown
 if TYPE_CHECKING:
     from looplane.provider_verification import VerificationResult
 
-ProviderOption = tuple[str, str]
-RuntimeOption = tuple[str, str]
-RuntimeModelOption = tuple[str, str | None]
 _AUTOMATIC_MODEL = "__automatic__"
 _IDLE_CONFIRM_WINDOW_S = 0.8
 _INTERRUPT_ESCALATION_S = 5.0
-
-
-class InteractionState(StrEnum):
-    """The UI surface that currently owns keyboard input."""
-
-    APPROVAL = "approval"
-    SELECTOR = "selector"
-    COMMAND_MENU = "command-menu"
-    RUNNING = "running"
-    COMPOSER = "composer"
-    TRANSCRIPT = "transcript"
 
 
 def _rewindable_prompts_from_events(
@@ -152,16 +189,6 @@ def _rewindable_prompts_from_events(
     return tuple(
         (turn_id, prompt_labels[turn_id]) for turn_id in prompt_labels if turn_id in terminal_turns
     )
-
-
-class LoadingPhase(StrEnum):
-    """Small provider-neutral subset of Claude Code's spinner phases."""
-
-    REQUESTING = "requesting"
-    RESPONDING = "responding"
-    THINKING = "thinking"
-    TOOL_USE = "tool-use"
-    VERIFYING = "verifying"
 
 
 class RuntimeLoadingIndicator(Static):
@@ -201,31 +228,6 @@ class RuntimeLoadingIndicator(Static):
             return Text(self._STATIC_FRAME)
         frame = int((monotonic() - self._phase_started_at) / self._CADENCE) % len(self._FRAMES)
         return Text(self._FRAMES[frame])
-
-
-def format_token_count(count: int) -> str:
-    """Compact token count for status displays, e.g. 1234 -> 1.2k."""
-    if count >= 1_000:
-        return f"{count / 1_000:.1f}".rstrip("0").rstrip(".") + "k"
-    return str(count)
-
-
-def _add_usage(left: Usage, right: Usage) -> Usage:
-    return Usage(
-        input_tokens=left.input_tokens + right.input_tokens,
-        output_tokens=left.output_tokens + right.output_tokens,
-        cached_input_tokens=left.cached_input_tokens + right.cached_input_tokens,
-        reasoning_tokens=left.reasoning_tokens + right.reasoning_tokens,
-        provider_total_tokens=(
-            (left.provider_total_tokens or left.total_tokens)
-            + (right.provider_total_tokens or right.total_tokens)
-        ),
-    )
-
-
-def _usage_bar(percent: float, *, width: int = 10) -> str:
-    filled = max(0, min(width, round(percent / 100 * width)))
-    return "▰" * filled + "▱" * (width - filled)
 
 
 def _looplane_version() -> str:
@@ -345,86 +347,6 @@ class RuntimeStatus(Static):
         else:
             text.append(" (esc to interrupt)", style="dim")
         return text
-
-
-class TuiRunner(Protocol):
-    async def run(self) -> RunResult: ...
-
-    def request_cancel(self) -> None: ...
-
-
-class TuiResource(Protocol):
-    async def aclose(self) -> None: ...
-
-
-@dataclass(frozen=True)
-class TuiRunRequest:
-    repository: Path
-    instruction: str
-    runtime: str
-    provider: str | None
-    model: str | None
-    api_url: str | None
-    mode: str = "agent"
-    context_id: str | None = None
-    continuation_run_dir: Path | None = None
-
-
-RunnerFactory = Callable[
-    [TuiRunRequest, ApprovalPolicy, EventSink], tuple[TuiRunner, TuiResource | None]
-]
-
-
-@dataclass(frozen=True)
-class TuiConfigurationSelection:
-    config: CliConfig
-    persist: bool
-
-
-@dataclass(frozen=True)
-class CommandMenuChoice:
-    """One keyboard-selectable composer completion."""
-
-    prompt: str
-    replacement: str
-    execute: bool
-
-
-@dataclass(frozen=True)
-class InlineSelectorOption:
-    """One concise choice in a transcript-native command selector."""
-
-    value: str
-    label: str
-    description: str
-    selected: bool = False
-
-
-class RunEventMessage(Message):
-    """Deliver one immutable harness event to the UI reducer."""
-
-    def __init__(self, event: RunEvent, generation: int) -> None:
-        super().__init__()
-        self.event = event
-        self.generation = generation
-
-
-class ExternalRunEventMessage(Message):
-    """Deliver one bounded external-runtime event without pretending it is a core event."""
-
-    def __init__(self, event: ExternalAgentEvent, generation: int) -> None:
-        super().__init__()
-        self.event = event
-        self.generation = generation
-
-
-class ConversationRuntimeEventMessage(Message):
-    """Deliver one typed live-session event to the transcript reducer."""
-
-    def __init__(self, event: ConversationRuntimeEvent, generation: int) -> None:
-        super().__init__()
-        self.event = event
-        self.generation = generation
 
 
 class MessageComposer(TextArea):
