@@ -71,3 +71,4 @@ OpenCode, Pi, and OMP are useful architecture references for looplane's own harn
 ## Related research
 
 - [Coding agent TUI architecture comparison](2026-09-05-coding-agent-tui-comparison.md) — cross-language comparison of viewport, selection/clipboard, approval, and interaction stacks.
+- [Coding agent server architecture comparison](2026-09-05-coding-agent-server-architecture-comparison.md) — multi-session, persistent-service, API/SDK, and workspace ownership comparison.

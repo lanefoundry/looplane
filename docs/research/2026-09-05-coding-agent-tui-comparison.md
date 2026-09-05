@@ -212,4 +212,5 @@ Public research used Groundlane to read official GitHub repositories, manifests,
 Related internal research:
 
 - [Coding CLI landscape for Looplane](2026-08-22-coding-cli-landscape.md)
+- [Coding agent server architecture comparison](2026-09-05-coding-agent-server-architecture-comparison.md)
 - [M11 Claude Code TUI source reference](m11-claude-code-tui-reference.md)
