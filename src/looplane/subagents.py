@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -13,7 +14,6 @@ from uuid import uuid4
 from looplane.approvals import ApprovalPolicy
 from looplane.console import EventSink
 from looplane.contracts import Limits, RunResult, TaskContract, VerificationCommand
-from looplane.loop import AgentRunner
 from looplane.models import ModelProvider
 
 
@@ -341,6 +341,8 @@ async def run_subagent_task(
         limits=limits,
     )
     safe_id = (subagent_id or task.task_id.rsplit(":", 1)[-1]).replace(":", "_")
+    looplane_loop = importlib.import_module("looplane.loop")
+    AgentRunner = looplane_loop.AgentRunner
     return await AgentRunner(
         task,
         model,

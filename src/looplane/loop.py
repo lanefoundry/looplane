@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import importlib
 import json
 import random
 import shlex
@@ -1978,12 +1979,11 @@ class AgentRunner:
             )
 
     async def _run_dispatch_subagents(self, call: ToolCall, *, deadline: float) -> str:
-        from looplane.subagents import (
-            ScheduledSubagent,
-            normalize_subagent_schedule,
-            run_subagent_task,
-            subagent_role_instruction,
-        )
+        subagents = importlib.import_module("looplane.subagents")
+        ScheduledSubagent = subagents.ScheduledSubagent
+        normalize_subagent_schedule = subagents.normalize_subagent_schedule
+        run_subagent_task = subagents.run_subagent_task
+        subagent_role_instruction = subagents.subagent_role_instruction
 
         scheduled = normalize_subagent_schedule(call.arguments.get("agents"))
         specs = {spec.id: spec for spec in scheduled}
