@@ -143,7 +143,7 @@ def test_missing_textual_reports_editable_install_refresh(tmp_path: Path, monkey
     original_import = builtins.__import__
 
     def import_without_textual(name, *args, **kwargs):
-        if name == "looplane.tui":
+        if name in {"looplane.tui", "looplane.terminal.app"}:
             raise ModuleNotFoundError("No module named 'textual'", name="textual")
         return original_import(name, *args, **kwargs)
 
@@ -1798,7 +1798,7 @@ def test_claude_backend_requires_explicit_coding_boundaries(
                 artifacts={"patch": str(tmp_path / "changes.patch")},
             )
 
-    monkeypatch.setattr("looplane.claude_backend.ClaudeCodeBackend", FakeBackend)
+    monkeypatch.setattr(cli.runtime_registry, "_resolve_class", lambda _: FakeBackend)
     monkeypatch.setattr("looplane.external_runner.ExternalCodingRunner", FakeRunner)
 
     rejected = CliRunner().invoke(

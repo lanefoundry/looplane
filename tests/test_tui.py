@@ -1734,7 +1734,9 @@ async def test_run_check_approval_displays_exact_command_in_action_title(tmp_pat
     )
 
     async with app.run_test(size=(100, 30)):
-        await _wait_until(lambda: bool(app.query(InlineApprovalBlock)))
+        await _wait_until(
+            lambda: any(block.is_mounted for block in app.query(InlineApprovalBlock))
+        )
         action = app.query_one(ToolActionBlock)
         approval = app.query_one(InlineApprovalBlock)
         assert action.title == "Run git diff --check"
