@@ -95,9 +95,9 @@
 
 ### 6.2 開工 Gate
 
-- [ ] `W0-05` `loop.py` ↔ `subagents.py` 循環 import 被納入第一輪 ticket（非旁路）
+- [x] `W0-05` `loop.py` ↔ `subagents.py` 循環 import 被納入第一輪 ticket（非旁路）
   - owner: 核心工程
-  - acceptance: 逐步拆除後確認不依賴反轉
+  - acceptance: 逐步拆除後確認不依賴反轉；實測 `looplane.loop` ↔ `looplane.subagents` 不再形成 SCC
   - rollback trigger: 無法以非行為外掛方式移除
 
 - [x] `W0-06` 載入邊界 smoke 測試就緒
@@ -136,5 +136,5 @@
 - [x] `W0-02` import graph 鎖定
 - [x] `W0-03` compatibility 約束草案
 - [x] `W0-04` M12/M13 邊界草案
-- [x] `W0-05` 循環 import 目標拆解清單
+- [x] `W0-05` 循環 import 修正（`loop.py` ↔ `subagents.py`）
 - [x] `W0-06` 載入邊界 smoke（`tests/test_lazy_imports.py` + `docs/plans/runs/wave0-lazy-load-smoke-2026-09-05.txt`）

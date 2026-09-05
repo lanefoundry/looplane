@@ -1,0 +1,8 @@
+Benchmark 1: uv run looplane --help
+  Time (mean ± σ):     183.3 ms ±  19.5 ms    [User: 143.9 ms, System: 29.4 ms]
+  Range (min … max):   167.9 ms … 249.4 ms    16 runs
+ 
+Benchmark 1: uv run looplane config
+  Time (mean ± σ):     141.1 ms ±   9.0 ms    [User: 114.2 ms, System: 20.9 ms]
+  Range (min … max):   133.4 ms … 163.4 ms    22 runs
+ 

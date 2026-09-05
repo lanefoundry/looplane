@@ -1,12 +1,12 @@
-# Wave 0 import graph baseline
+# Wave 0 import graph baseline (updated after Wave 0.2 lazy-import refactor)
 
-- Parsed modules: 73
+- Parsed modules: 72
 
 ## Strongly connected components (size > 1)
-- `looplane.loop`, `looplane.subagents`
+- None
 
-## Must-fix 2-node cycles
-- `looplane.loop` <-> `looplane.subagents`
+## Observed hard cycles
+- `looplane.loop` ↔ `looplane.subagents` 已解開
 
-## Cycle notes
-- `loop.py` and `subagents.py` are currently in a hard cycle and remain Wave 0 unresolved debt.
+## Notes
+- W0-05 目標可視為結案，`loop.py` / `subagents.py` 不再形成 import SCC（以本輪 AST 掃描結果為準）。

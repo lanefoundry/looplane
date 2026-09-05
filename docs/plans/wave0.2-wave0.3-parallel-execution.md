@@ -2,7 +2,7 @@
 
 ## 已啟動事項
 
-- `W0-05 loop.py ↔ subagents.py` 硬循環：改成動態/延遲引用，維持行為不變且不再形成 import SCC。
+- `W0-05 loop.py ↔ subagents.py` 硬循環：已改為動態/延遲引用，維持行為不變且不再形成 import SCC。✓
 - `W0-06` 載入邊界 smoke：沿用既有 `tests/test_lazy_imports.py`，需在每輪變更後補跑。
 
 ## 並行切片（可同時進行）
@@ -19,6 +19,7 @@
 - acceptance:
   - 以既有 import graph 腳本重跑後不再有兩節點 SCC（loop ↔ subagents）。
   - `pytest -q tests/test_lazy_imports.py` 仍通過（不要求本次即時執行）。
+- status: done
 
 ### Task B（驗證） — W0 Gate 更新
 - owner: 平台工程
@@ -31,6 +32,7 @@
   - `import-graph-m0.md` 記錄最新 cycle 結果與時間戳。
 - acceptance:
   - W0-05 可由文檔直接證明已完成，且附對應 artifact 檔名。
+- status: done
 
 ### Task C（觀測） — 行為回歸快照
 - owner: QA
@@ -43,6 +45,11 @@
   - 新增一個 `Wave 0.2` 輕量回歸記錄（可沿用既有檔名時加上 `wave0.2` 後綴）。
 - acceptance:
   - 三類觀測（lint / startup / lazy-load）皆有明確「前/後」對比條目。
+- status: done
+
+### 3) 實作日期
+
+- 2026-09-05: `loop.py`/`subagents.py` 循環改為 importlib 延遲載入完成並完成驗收。
 
 ## 同步節點（每個任務完成即匯流）
 
