@@ -11,7 +11,6 @@ from looplane.dialect import (
     resolve_dialect,
 )
 
-
 # ── Fixtures ────────────────────────────────────────────────────
 
 
@@ -207,7 +206,10 @@ class TestParseToolCallsCoercion:
         dialect: XmlDialect,
         read_file_tool: ToolDefinition,
     ) -> None:
-        text = '<invoke name="read_file"><parameter name="path">f.py</parameter><parameter name="offset">10</parameter></invoke>'
+        text = (
+            '<invoke name="read_file"><parameter name="path">f.py</parameter>'
+            '<parameter name="offset">10</parameter></invoke>'
+        )
         calls = dialect.parse_tool_calls(text, tools=[read_file_tool])
         assert calls[0].arguments["offset"] == 10
         assert isinstance(calls[0].arguments["offset"], int)
@@ -378,7 +380,21 @@ class TestEncodeInbandHistory:
         result = encode_inband_history([obs], dialect)
         encoded = result[0]
         assert isinstance(encoded, Message)
-        assert "Error:" in encoded.content
+        assert "Error: file not found" in encoded.content
+
+    def test_error_observation_preserves_error_and_content(self, dialect: XmlDialect) -> None:
+        obs = ToolObservation(
+            tool_call_id="tc1",
+            name="run_check",
+            ok=False,
+            content="pytest output",
+            error="verification failed",
+        )
+        result = encode_inband_history([obs], dialect)
+        encoded = result[0]
+        assert isinstance(encoded, Message)
+        assert "Error: verification failed" in encoded.content
+        assert "pytest output" in encoded.content
 
     def test_plain_messages_pass_through(self, dialect: XmlDialect) -> None:
         user_msg = Message(role="user", content="Hello")

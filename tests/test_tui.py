@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import stat
 import sys
 from pathlib import Path
@@ -2826,7 +2827,7 @@ async def test_final_verification_shows_command_once_without_internal_name(
         assert len(actions) == 1
         assert actions[0].title == "Check git diff --check"
         assert actions[0].status == "completed"
-        assert actions[0].detail == "Passed · exit 0"
+        assert actions[0].detail == "Passed · exit 0 · 0.00s"
         assert not any(
             entry.title == "Check · check-1" for entry in app.query(TimelineEntry)
         )
@@ -2875,7 +2876,7 @@ async def test_final_verification_uses_result_fallback_without_live_events(
         assert len(actions) == 1
         assert actions[0].title == "Check git diff --check"
         assert actions[0].status == "completed"
-        assert actions[0].detail == "Passed · exit 0"
+        assert actions[0].detail == "Passed · exit 0 · 0.00s"
 
 
 async def test_final_verification_result_finishes_started_only_action(
@@ -2931,7 +2932,270 @@ async def test_final_verification_result_finishes_started_only_action(
         assert len(actions) == 1
         assert actions[0].title == "Check git diff --check"
         assert actions[0].status == "completed"
-        assert actions[0].detail == "Passed · exit 0"
+        assert actions[0].detail == "Passed · exit 0 · 0.00s"
+
+
+async def test_run_check_result_is_concise_until_tool_details_expand(tmp_path: Path) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._generation = 1
+        payload = {
+            "name": "check-1",
+            "argv": ["uv", "run", "pytest", "-q"],
+            "ok": True,
+            "exit_code": 0,
+            "duration_seconds": 1.234,
+            "output": "123 passed",
+        }
+        app.event_received(
+            RunEventMessage(
+                RunEvent(
+                    event_type="tool.completed",
+                    run_id="run",
+                    task_id="task",
+                    sequence=0,
+                    data={
+                        "tool_call_id": "manual-check",
+                        "name": "run_check",
+                        "ok": True,
+                        "preview": json.dumps(payload)[:40],
+                        "verification": payload,
+                    },
+                ),
+                generation=1,
+            )
+        )
+        await pilot.pause()
+
+        action = app.query_one(ToolActionBlock)
+        assert action.title == "Run uv run pytest -q"
+        assert action._visible_detail() == "Passed · exit 0 · 1.23s"
+        assert "123 passed" in action.detail
+        app.action_toggle_tool_verbose()
+        assert "123 passed" in action._visible_detail()
+
+
+async def test_failed_edit_tool_uses_plain_error_not_diff_syntax(tmp_path: Path) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._generation = 1
+        app.event_received(
+            RunEventMessage(
+                RunEvent(
+                    event_type="tool.completed",
+                    run_id="run",
+                    task_id="task",
+                    sequence=0,
+                    data={
+                        "tool_call_id": "bad-patch",
+                        "name": "apply_patch",
+                        "ok": False,
+                        "error": "malformed patch",
+                    },
+                ),
+                generation=1,
+            )
+        )
+        await pilot.pause()
+
+        action = app.query_one(ToolActionBlock)
+        assert action.detail_kind == "plain"
+        assert action._render_detail(action._visible_detail()) == "malformed patch"
+
+
+def test_create_file_title_keeps_path_and_plain_detail_kind() -> None:
+    assert looplaneApp._tool_title("create_file", {"path": "src/new.py"}) == (
+        "Create src/new.py"
+    )
+    assert looplaneApp._tool_detail_kind("create_file") == "plain"
+
+
+async def test_final_patch_preview_is_bounded_and_expandable(tmp_path: Path) -> None:
+    patch_path = tmp_path / "changes.diff"
+    patch_text = "\n".join(f"+line {index}" for index in range(40))
+    patch_path.write_text(patch_text, encoding="utf-8")
+
+    class PatchRunner(FakeRunner):
+        async def run(self) -> RunResult:
+            return RunResult(
+                run_id="run",
+                task_id="task",
+                status=RunStatus.COMPLETED,
+                summary="Done.",
+                terminal_reason="completed",
+                artifacts={"patch": str(patch_path)},
+            )
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (PatchRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+        initial_prompt="Edit.",
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(lambda: app._result is not None)
+        await pilot.pause()
+        action = app.query_one(ToolActionBlock)
+        assert action.title == "Diff · changes.diff"
+        assert "Ctrl+O to expand" in action._visible_detail()
+        assert "+line 39" not in action._visible_detail()
+        app.action_toggle_tool_verbose()
+        assert "+line 39" in action._visible_detail()
+
+
+async def test_successful_edit_after_git_diff_requires_fresh_final_preview(tmp_path: Path) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._generation = 1
+        for sequence, name in enumerate(("git_diff", "apply_patch")):
+            app.event_received(
+                RunEventMessage(
+                    RunEvent(
+                        event_type="tool.completed",
+                        run_id="run",
+                        task_id="task",
+                        sequence=sequence,
+                        data={
+                            "tool_call_id": name,
+                            "name": name,
+                            "ok": True,
+                            "preview": "done",
+                        },
+                    ),
+                    generation=1,
+                )
+            )
+        await pilot.pause()
+        assert app._turn_rendered_git_diff is False
+
+
+async def test_verification_reuse_aliases_manual_check_without_second_card(
+    tmp_path: Path,
+) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), FakeModel()),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._generation = 1
+        events = (
+            (
+                "verification.reused",
+                {
+                    "name": "check-1",
+                    "argv": ["git", "diff", "--check"],
+                    "tool_call_id": "manual-check",
+                    "ok": True,
+                    "exit_code": 0,
+                },
+            ),
+            (
+                "tool.requested",
+                {
+                    "tool_call_id": "manual-check",
+                    "name": "run_check",
+                    "arguments": {"name": "check-1"},
+                },
+            ),
+        )
+        for sequence, (event_type, data) in enumerate(events):
+            app.event_received(
+                RunEventMessage(
+                    RunEvent(
+                        event_type=event_type,
+                        run_id="run",
+                        task_id="task",
+                        sequence=sequence,
+                        data=data,
+                    ),
+                    generation=1,
+                )
+            )
+        await pilot.pause()
+
+        actions = list(app.query(ToolActionBlock))
+        assert len(actions) == 1
+        assert actions[0].title == "Run git diff --check"
+        assert actions[0].status == "completed"
+        assert app._tool_actions["verification:check-1"] is actions[0]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_action_status"),
+    (
+        (RunStatus.FAILED, "failed"),
+        (RunStatus.CANCELLED, "cancelled"),
+    ),
+)
+async def test_terminal_run_settles_started_verification(
+    tmp_path: Path,
+    status: RunStatus,
+    expected_action_status: str,
+) -> None:
+    class OrphanVerificationRunner(FakeRunner):
+        async def run(self) -> RunResult:
+            assert self.event_sink is not None
+            await self.event_sink.emit(
+                RunEvent(
+                    event_type="verification.started",
+                    run_id="run",
+                    task_id="task",
+                    sequence=0,
+                    data={"name": "check-1", "argv": ["git", "diff", "--check"]},
+                )
+            )
+            return RunResult(
+                run_id="run",
+                task_id="task",
+                status=status,
+                summary="Stopped.",
+                terminal_reason="test_terminal",
+                error="boom" if status == RunStatus.FAILED else None,
+            )
+
+    def factory(_request, approval_policy, event_sink):
+        return OrphanVerificationRunner(
+            approval_policy=approval_policy,
+            event_sink=event_sink,
+        ), FakeModel()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+        initial_prompt="Verify.",
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(lambda: app._result is not None)
+        await pilot.pause()
+        action = app.query_one(ToolActionBlock)
+        assert action.status == expected_action_status
+        assert "verification finished" in action.detail
 
 
 async def test_runtime_stream_projects_one_assistant_and_correlated_tool(

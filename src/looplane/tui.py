@@ -1142,6 +1142,9 @@ class TimelineEntry(Vertical):
 class ToolActionBlock(Vertical):
     """One tool action whose lifecycle is updated in place."""
 
+    _COLLAPSED_DETAIL_LINES = 18
+    _COLLAPSED_DETAIL_CHARS = 4_000
+
     def __init__(
         self,
         action_id: str,
@@ -1149,12 +1152,15 @@ class ToolActionBlock(Vertical):
         *,
         detail: str | None = None,
         detail_kind: str = "plain",
+        collapsed_detail: str | None = None,
     ) -> None:
         super().__init__(classes="tool-action queued")
         self.action_id = action_id
         self.title = title
         self.detail = detail or ""
         self.detail_kind = detail_kind
+        self.collapsed_detail = collapsed_detail
+        self.verbose = False
         self.status = "queued"
         self.group: ToolGroupBlock | None = None
 
@@ -1163,7 +1169,7 @@ class ToolActionBlock(Vertical):
         with Vertical(classes="tool-content"):
             yield Static(self.title, classes="tool-title", markup=False)
             yield Static(
-                self._render_detail(self.detail),
+                self._render_detail(self._visible_detail()),
                 classes="tool-detail",
                 markup=False,
             )
@@ -1174,6 +1180,7 @@ class ToolActionBlock(Vertical):
         *,
         detail: str | None = None,
         detail_kind: str | None = None,
+        collapsed_detail: str | None = None,
     ) -> None:
         self.status = status
         classes = ["tool-action", status]
@@ -1184,12 +1191,15 @@ class ToolActionBlock(Vertical):
             self.detail = detail
         if detail_kind is not None:
             self.detail_kind = detail_kind
+        if collapsed_detail is not None:
+            self.collapsed_detail = collapsed_detail
         if self.query(".tool-glyph"):
             self.query_one(".tool-glyph", Static).update(self._glyph(status))
-        if detail is not None and self.query(".tool-detail"):
+        if (detail is not None or collapsed_detail is not None) and self.query(".tool-detail"):
             detail_widget = self.query_one(".tool-detail", Static)
-            detail_widget.update(self._render_detail(detail))
-            detail_widget.display = bool(detail)
+            visible_detail = self._visible_detail()
+            detail_widget.update(self._render_detail(visible_detail))
+            detail_widget.display = bool(visible_detail)
         if self.group is not None:
             self.group.action_updated()
 
@@ -1197,6 +1207,30 @@ class ToolActionBlock(Vertical):
         self.title = title
         if self.query(".tool-title"):
             self.query_one(".tool-title", Static).update(title)
+
+    def set_verbose(self, verbose: bool) -> None:
+        self.verbose = verbose
+        self.set_class(verbose, "verbose")
+        if self.query(".tool-detail"):
+            visible_detail = self._visible_detail()
+            detail_widget = self.query_one(".tool-detail", Static)
+            detail_widget.update(self._render_detail(visible_detail))
+            detail_widget.display = bool(visible_detail)
+
+    def _visible_detail(self) -> str:
+        if self.verbose:
+            return self.detail
+        if self.collapsed_detail is not None:
+            return self.collapsed_detail
+        if self.detail_kind != "diff":
+            return self.detail
+        lines = self.detail.splitlines()
+        preview = "\n".join(lines[: self._COLLAPSED_DETAIL_LINES])
+        if len(preview) > self._COLLAPSED_DETAIL_CHARS:
+            preview = preview[: self._COLLAPSED_DETAIL_CHARS]
+        if preview != self.detail:
+            preview = preview.rstrip() + "\n… Ctrl+O to expand"
+        return preview
 
     def _render_detail(self, detail: str) -> str | Syntax:
         if self.detail_kind == "diff" and detail:
@@ -2195,6 +2229,8 @@ class looplaneApp(App[RunResult | None]):
         self._external_message_generations: set[int] = set()
         self._tool_actions: dict[str, ToolActionBlock] = {}
         self._turn_completed_verification_actions: set[str] = set()
+        self._pending_verification_reuse: dict[str, Mapping[str, object]] = {}
+        self._turn_rendered_git_diff = False
         self._active_tool_group: ToolGroupBlock | None = None
         self._approval_actions: dict[str, str] = {}
         self._runtime_text_blocks: dict[str, MessageBlock] = {}
@@ -2581,7 +2617,7 @@ class looplaneApp(App[RunResult | None]):
         """Global tool-detail verbosity, like Claude Code's ctrl+o / opencode tool_details."""
         self._tool_verbose = not self._tool_verbose
         for action in self.query(ToolActionBlock):
-            action.set_class(self._tool_verbose, "verbose")
+            action.set_verbose(self._tool_verbose)
         for group in self.query(ToolGroupBlock):
             group.set_verbose(self._tool_verbose)
 
@@ -3894,6 +3930,8 @@ class looplaneApp(App[RunResult | None]):
         self._generation += 1
         generation = self._generation
         self._turn_completed_verification_actions.clear()
+        self._pending_verification_reuse.clear()
+        self._turn_rendered_git_diff = False
         for action_id in tuple(self._tool_actions):
             if action_id.startswith("verification:"):
                 del self._tool_actions[action_id]
@@ -4044,6 +4082,8 @@ class looplaneApp(App[RunResult | None]):
                     "Turn cancelled",
                     "Interrupted by the user before completion.",
                 )
+            if self._result.status in {RunStatus.CANCELLED, RunStatus.FAILED}:
+                self._settle_orphan_verification_actions(self._result.status)
             if self._mode == "ask":
                 await self._finish_conversation_turn(self._result)
             if self._uses_native_conversation() and self._result.status == RunStatus.COMPLETED:
@@ -4087,13 +4127,19 @@ class looplaneApp(App[RunResult | None]):
                         action_id,
                         self._verification_title(outcome.name, outcome.argv),
                     )
-                    action.set_title(self._verification_title(outcome.name, outcome.argv))
-                    summary = (
-                        f"{'Passed' if outcome.ok else 'Failed'} · exit {outcome.exit_code}"
+                    if action.action_id == action_id:
+                        action.set_title(self._verification_title(outcome.name, outcome.argv))
+                    summary = self._verification_summary(
+                        outcome.ok,
+                        outcome.exit_code,
+                        outcome.duration_seconds,
                     )
+                    detail = self._verification_detail(summary, outcome.output)
                     action.set_state(
                         "completed" if outcome.ok else "failed",
-                        detail=summary,
+                        detail=detail,
+                        detail_kind="plain",
+                        collapsed_detail=summary,
                     )
                     if action_id not in self._turn_completed_verification_actions:
                         self._reducer.add_tool(
@@ -4107,10 +4153,16 @@ class looplaneApp(App[RunResult | None]):
                 if patch_path := self._result.artifacts.get("patch"):
                     self.query_one("#activity", RichLog).write(f"Patch: {patch_path}")
                     preview = await self._patch_preview(Path(patch_path))
-                    if preview:
-                        self._write_timeline("Diff", preview)
+                    if preview and not self._turn_rendered_git_diff:
+                        action = self._ensure_tool_action(
+                            f"artifact:patch:{self._result.run_id}",
+                            f"Diff · {Path(patch_path).name}",
+                            detail_kind="diff",
+                        )
+                        action.set_state("completed", detail=preview, detail_kind="diff")
         except Exception as exc:
             await self._fail_conversation_turn("run_failed")
+            self._settle_orphan_verification_actions(RunStatus.FAILED)
             self.last_error = f"Run failed: {exc}"
             if self.query("#status"):
                 self.query_one("#status", Static).update(self.last_error)
@@ -4331,6 +4383,7 @@ class looplaneApp(App[RunResult | None]):
         for child in tuple(messages.children):
             child.remove()
         self._tool_actions.clear()
+        self._pending_verification_reuse.clear()
         self._active_tool_group = None
         self._approval_actions.clear()
         self._runtime_text_blocks.clear()
@@ -4496,7 +4549,7 @@ class looplaneApp(App[RunResult | None]):
         for empty_state in self.query("#empty-state"):
             empty_state.remove()
         action = ToolActionBlock(action_id, title, detail=detail, detail_kind=detail_kind)
-        action.set_class(self._tool_verbose, "verbose")
+        action.set_verbose(self._tool_verbose)
         self._tool_actions[action_id] = action
         self._track_transcript_item(f"tool:{action_id}")
         messages = self.query_one("#messages", Vertical)
@@ -4509,7 +4562,87 @@ class looplaneApp(App[RunResult | None]):
         else:
             self._active_tool_group = None
             messages.mount(action)
+        pending = self._pending_verification_reuse.pop(action_id, None)
+        if pending is not None:
+            self._apply_verification_reuse(action, pending)
         return action
+
+    @staticmethod
+    def _verification_summary(
+        ok: bool,
+        exit_code: object,
+        duration_seconds: object | None = None,
+    ) -> str:
+        summary = f"{'Passed' if ok else 'Failed'} · exit {exit_code}"
+        if isinstance(duration_seconds, (int, float)):
+            summary += f" · {duration_seconds:.2f}s"
+        return summary
+
+    @staticmethod
+    def _verification_detail(summary: str, output: object) -> str:
+        rendered = str(output).strip() if output is not None else ""
+        return f"{summary}\n{rendered}" if rendered else summary
+
+    @staticmethod
+    def _structured_verification(value: object) -> Mapping[str, object] | None:
+        if isinstance(value, Mapping):
+            payload = value
+        elif isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return None
+            if not isinstance(decoded, Mapping):
+                return None
+            payload = decoded
+        else:
+            return None
+        required = {"argv", "ok", "exit_code", "duration_seconds", "output"}
+        return payload if required.issubset(payload) else None
+
+    def _apply_verification_reuse(
+        self,
+        action: ToolActionBlock,
+        data: Mapping[str, object],
+    ) -> None:
+        name = str(data.get("name", "verification"))
+        verification_id = f"verification:{name}"
+        argv = data.get("argv")
+        if isinstance(argv, (list, tuple)) and argv and all(
+            isinstance(part, str) for part in argv
+        ):
+            action.set_title(f"Run {shlex.join(argv)}")
+        if action.status not in {"completed", "failed", "denied", "cancelled"}:
+            ok = bool(data.get("ok"))
+            summary = self._verification_summary(ok, data.get("exit_code"))
+            action.set_state(
+                "completed" if ok else "failed",
+                detail=summary,
+                detail_kind="plain",
+                collapsed_detail=summary,
+            )
+        self._tool_actions[verification_id] = action
+        self._turn_completed_verification_actions.add(verification_id)
+
+    def _settle_orphan_verification_actions(self, status: RunStatus) -> None:
+        terminal = "cancelled" if status == RunStatus.CANCELLED else "failed"
+        detail = (
+            "Cancelled before verification finished"
+            if status == RunStatus.CANCELLED
+            else "Run ended before verification finished"
+        )
+        seen: set[int] = set()
+        for action_id, action in self._tool_actions.items():
+            if not action_id.startswith("verification:") or id(action) in seen:
+                continue
+            seen.add(id(action))
+            if action.status in {"queued", "running", "waiting"}:
+                action.set_state(
+                    terminal,
+                    detail=detail,
+                    detail_kind="plain",
+                    collapsed_detail=detail,
+                )
 
     @staticmethod
     def _tool_title(name: str, arguments: object) -> str:
@@ -4526,6 +4659,8 @@ class looplaneApp(App[RunResult | None]):
             return f'Search "{query}"' if isinstance(query, str) else "Search files"
         if name in {"replace_text", "apply_patch"}:
             return f"Update {path}" if isinstance(path, str) else "Update files"
+        if name == "create_file":
+            return f"Create {path}" if isinstance(path, str) else "Create file"
         if name == "run_check":
             check = values.get("name")
             return f"Run {check}" if isinstance(check, str) else "Run check"
@@ -4614,12 +4749,15 @@ class looplaneApp(App[RunResult | None]):
         action_id = data.get("tool_call_id") or data.get("action_id")
         if event_type == "tool.requested" and isinstance(action_id, str):
             name = str(data.get("name", "tool"))
+            title = self._tool_title(name, data.get("arguments"))
             action = self._ensure_tool_action(
                 action_id,
-                self._tool_title(name, data.get("arguments")),
+                title,
                 detail_kind=self._tool_detail_kind(name),
             )
-            action.set_state("queued")
+            if action.status not in {"completed", "failed", "denied", "cancelled"}:
+                action.set_title(title)
+                action.set_state("queued")
         elif event_type == "tool.started" and isinstance(action_id, str):
             name = str(data.get("name", "tool"))
             action = self._ensure_tool_action(
@@ -4627,7 +4765,8 @@ class looplaneApp(App[RunResult | None]):
                 self._tool_title(name, {}),
                 detail_kind=self._tool_detail_kind(name),
             )
-            action.set_state("running")
+            if action.status not in {"completed", "failed", "denied", "cancelled"}:
+                action.set_state("running")
         elif event_type == "approval.requested" and isinstance(action_id, str):
             action = self._tool_actions.get(action_id)
             if action is not None:
@@ -4648,16 +4787,62 @@ class looplaneApp(App[RunResult | None]):
                 detail_kind=self._tool_detail_kind(name),
             )
             ok = bool(data.get("ok"))
+            if ok and name in {
+                "apply_patch",
+                "create_file",
+                "replace_text",
+                "tool_program",
+                "tool_transaction",
+            }:
+                self._turn_rendered_git_diff = False
+            elif name == "git_diff" and ok:
+                self._turn_rendered_git_diff = True
             detail = data.get("preview") if ok else data.get("error")
+            collapsed_detail = None
+            detail_kind = "plain" if not ok else None
+            if name == "run_check":
+                structured = self._structured_verification(data.get("verification"))
+                if structured is None:
+                    structured = self._structured_verification(data.get("preview"))
+                if structured is not None:
+                    argv = structured.get("argv")
+                    if isinstance(argv, (list, tuple)) and argv and all(
+                        isinstance(part, str) for part in argv
+                    ):
+                        action.set_title(f"Run {shlex.join(argv)}")
+                    ok = bool(structured.get("ok"))
+                    collapsed_detail = self._verification_summary(
+                        ok,
+                        structured.get("exit_code"),
+                        structured.get("duration_seconds"),
+                    )
+                    detail = self._verification_detail(
+                        collapsed_detail,
+                        structured.get("output"),
+                    )
+                    detail_kind = "plain"
             action.set_state(
                 "completed" if ok else "failed",
                 detail=str(detail) if detail else None,
+                detail_kind=detail_kind,
+                collapsed_detail=collapsed_detail,
             )
             self._reducer.add_tool(
                 action.title,
                 "completed" if ok else "failed",
                 str(detail) if detail else "",
             )
+        elif event_type == "verification.reused":
+            name = str(data.get("name", "verification"))
+            verification_id = f"verification:{name}"
+            self._turn_completed_verification_actions.add(verification_id)
+            original_id = data.get("tool_call_id")
+            if isinstance(original_id, str):
+                action = self._tool_actions.get(original_id)
+                if action is None:
+                    self._pending_verification_reuse[original_id] = dict(data)
+                else:
+                    self._apply_verification_reuse(action, data)
         elif event_type == "verification.started":
             name = str(data.get("name", "verification"))
             action_id = f"verification:{name}"
@@ -4683,10 +4868,17 @@ class looplaneApp(App[RunResult | None]):
                 action.set_title(title)
             ok = bool(data.get("ok"))
             exit_code = data.get("exit_code")
-            summary = f"{'Passed' if ok else 'Failed'} · exit {exit_code}"
+            summary = self._verification_summary(
+                ok,
+                exit_code,
+                data.get("duration_seconds"),
+            )
+            detail = self._verification_detail(summary, data.get("output"))
             action.set_state(
                 "completed" if ok else "failed",
-                detail=summary,
+                detail=detail,
+                detail_kind="plain",
+                collapsed_detail=summary,
             )
             self._reducer.add_tool(action.title, "completed" if ok else "failed", summary)
         if event_type == "model.requested":
@@ -4707,7 +4899,7 @@ class looplaneApp(App[RunResult | None]):
                 self._set_loading("Working…", phase=LoadingPhase.TOOL_USE)
         elif event_type == "verification.started":
             self._set_loading("Verifying…", phase=LoadingPhase.VERIFYING)
-        elif event_type == "verification.completed":
+        elif event_type in {"verification.completed", "verification.reused"}:
             self._set_loading("Thinking…", phase=LoadingPhase.THINKING)
 
     @on(ExternalRunEventMessage)
@@ -4884,7 +5076,9 @@ class looplaneApp(App[RunResult | None]):
                 action.set_state(
                     "completed" if succeeded else "failed",
                     detail=detail,
-                    detail_kind="diff" if event.diff else None,
+                    detail_kind=(
+                        "diff" if succeeded and event.diff else "plain" if not succeeded else None
+                    ),
                 )
                 self._reducer.add_tool(
                     action.title,

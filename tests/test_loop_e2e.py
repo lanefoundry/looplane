@@ -1913,7 +1913,9 @@ async def test_verification_command_is_clamped_by_run_wall_time(
     )
     task = make_task(
         tiny_bug_repo,
-        limits=Limits(max_steps=3, wall_time_seconds=0.6),
+        # Leave enough active budget for workspace preparation so the command
+        # itself starts and proves that execution remains wall-time clamped.
+        limits=Limits(max_steps=3, wall_time_seconds=1.5),
         verification=(command,),
     )
     started = time.monotonic()
@@ -1932,7 +1934,7 @@ async def test_verification_command_is_clamped_by_run_wall_time(
         allow_unsafe_local_exec=True,
     ).run()
 
-    assert time.monotonic() - started < 2
+    assert time.monotonic() - started < 3
     assert result.status == RunStatus.FAILED
     assert result.terminal_reason == "wall_time_exceeded"
     assert result.verification[0].exit_code == 124

@@ -79,7 +79,7 @@ def test_read_only_tool_definitions_mark_concurrency_safe(tiny_bug_repo: Path) -
     assert "if_contains" in program_ops
     assert "repeat" in transaction_ops
     assert "if_contains" in transaction_ops
-    for name in ("replace_text", "apply_patch", "run_check"):
+    for name in ("create_file", "replace_text", "apply_patch", "run_check"):
         assert definitions[name].read_only is False
         assert definitions[name].concurrency_safe is False
 
@@ -361,6 +361,41 @@ new file mode 100644
     assert executor.git_diff() == ""
 
 
+def test_tool_transaction_rolls_back_structured_create_when_check_fails(
+    tiny_bug_repo: Path,
+) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "structured.py"
+    command = VerificationCommand(
+        name="fail",
+        argv=(sys.executable, "-c", "raise SystemExit(7)"),
+        timeout_seconds=5,
+    )
+    executor = make_executor(tiny_bug_repo, verification_commands=(command,))
+
+    observation = executor.execute(
+        ToolCall(
+            name="tool_transaction",
+            arguments={
+                "steps": [
+                    {
+                        "op": "create_file",
+                        "args": {
+                            "path": "src/tiny_python_bug/structured.py",
+                            "content": "VALUE = 1\n",
+                        },
+                    },
+                    {"op": "run_check", "args": {"name": "fail"}},
+                ]
+            },
+        )
+    )
+
+    assert observation.ok is False
+    assert "rolled back touched paths" in (observation.error or "")
+    assert not target.exists()
+    assert executor.git_diff() == ""
+
+
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep is not installed")
 def test_search_text_uses_rg_and_respects_gitignore(tiny_bug_repo: Path) -> None:
     ignored_dir = tiny_bug_repo / "src" / "ignored"
@@ -450,6 +485,171 @@ diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.
     assert observation.error is not None
     assert "git apply --check failed" in observation.error
     assert target.read_text().endswith("return left * right\n")
+
+
+@pytest.mark.parametrize(
+    "hunk, body, error_fragment",
+    [
+        ("@@ -0,0 +1 @@", "+first\n+second\n", "trailing"),
+        ("@@ -0,0 +1 @@", "first\n", "prefix"),
+        ("@@ -1,2 +1,2 @@", "+first\n", "expected 2 old/2 new"),
+        (
+            "@@ -0,0 +1,2 @@",
+            "+first\n\\ No newline at end of file\n+second\n",
+            "closed new side",
+        ),
+        (
+            "@@ -0,0 +1 @@",
+            "+first\n\\ No newline at end of file\n@@ -0,0 +2 @@\n+second\n",
+            "closed new side",
+        ),
+    ],
+)
+def test_apply_patch_rejects_malformed_hunk_without_writing(
+    tiny_bug_repo: Path,
+    hunk: str,
+    body: str,
+    error_fragment: str,
+) -> None:
+    executor = make_executor(tiny_bug_repo)
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "malformed.py"
+    patch = (
+        "diff --git a/src/tiny_python_bug/malformed.py "
+        "b/src/tiny_python_bug/malformed.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/src/tiny_python_bug/malformed.py\n"
+        f"{hunk}\n{body}"
+    )
+
+    observation = executor.execute(ToolCall(name="apply_patch", arguments={"patch": patch}))
+
+    assert observation.ok is False
+    assert error_fragment in (observation.error or "").lower()
+    assert not target.exists()
+
+
+def test_apply_patch_allows_old_eof_to_close_before_replacement_additions(
+    tiny_bug_repo: Path,
+) -> None:
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "eof.txt"
+    target.write_bytes(b"old")
+    subprocess.run(["git", "add", str(target)], cwd=tiny_bug_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add EOF fixture"], cwd=tiny_bug_repo, check=True)
+    executor = make_executor(tiny_bug_repo)
+    patch = """\
+diff --git a/src/tiny_python_bug/eof.txt b/src/tiny_python_bug/eof.txt
+--- a/src/tiny_python_bug/eof.txt
++++ b/src/tiny_python_bug/eof.txt
+@@ -1 +1,2 @@
+-old
+\\ No newline at end of file
++new one
++new two
+"""
+
+    observation = executor.execute(ToolCall(name="apply_patch", arguments={"patch": patch}))
+
+    assert observation.ok is True
+    assert target.read_bytes() == b"new one\nnew two\n"
+
+
+@pytest.mark.parametrize(
+    "patch, error_fragment",
+    [
+        (
+            "diff --git a/src/tiny_python_bug/other.py "
+            "b/src/tiny_python_bug/mismatch.py\n"
+            "new file mode 100644\n--- /dev/null\n"
+            "+++ b/src/tiny_python_bug/mismatch.py\n@@ -0,0 +1 @@\n+x\n",
+            "diff --git paths",
+        ),
+        (
+            "diff --git a/src/tiny_python_bug/duplicate.py "
+            "b/src/tiny_python_bug/duplicate.py\n"
+            "new file mode 100644\n--- /dev/null\n"
+            "+++ b/src/tiny_python_bug/duplicate.py\n@@ -0,0 +1 @@\n+one\n"
+            "diff --git a/src/tiny_python_bug/duplicate.py "
+            "b/src/tiny_python_bug/duplicate.py\n"
+            "new file mode 100644\n--- /dev/null\n"
+            "+++ b/src/tiny_python_bug/duplicate.py\n@@ -0,0 +1 @@\n+two\n",
+            "duplicate",
+        ),
+    ],
+)
+def test_apply_patch_rejects_inconsistent_file_sections(
+    tiny_bug_repo: Path,
+    patch: str,
+    error_fragment: str,
+) -> None:
+    executor = make_executor(tiny_bug_repo)
+
+    observation = executor.execute(ToolCall(name="apply_patch", arguments={"patch": patch}))
+
+    assert observation.ok is False
+    assert error_fragment in (observation.error or "")
+    assert executor.git_diff() == ""
+
+
+def test_create_file_generates_reviewable_diff_and_preserves_missing_newline(
+    tiny_bug_repo: Path,
+) -> None:
+    executor = make_executor(tiny_bug_repo)
+    target = tiny_bug_repo / "src" / "tiny_python_bug" / "new note.txt"
+
+    observation = executor.execute(
+        ToolCall(
+            name="create_file",
+            arguments={"path": "src/tiny_python_bug/new note.txt", "content": "one\ntwo"},
+        )
+    )
+
+    assert observation.ok is True
+    assert target.read_bytes() == b"one\ntwo"
+    review = executor.reviewable_patch()
+    assert review.changed_paths == ("src/tiny_python_bug/new note.txt",)
+    assert "\\ No newline at end of file" in review.content
+
+
+def test_create_file_handles_quoted_path_and_terminal_newline(tiny_bug_repo: Path) -> None:
+    executor = make_executor(tiny_bug_repo)
+    relative = 'src/tiny_python_bug/quoted "測試".txt'
+
+    observation = executor.execute(
+        ToolCall(name="create_file", arguments={"path": relative, "content": "one\ntwo\n"})
+    )
+
+    assert observation.ok is True
+    assert (tiny_bug_repo / relative).read_bytes() == b"one\ntwo\n"
+    assert "\\ No newline at end of file" not in executor.reviewable_patch().content
+
+
+def test_create_file_refuses_existing_paths_and_enforces_patch_limits(
+    tiny_bug_repo: Path,
+) -> None:
+    executor = make_executor(tiny_bug_repo, limits=Limits(max_patch_bytes=180))
+    existing = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    original = existing.read_bytes()
+
+    exists = executor.execute(
+        ToolCall(
+            name="create_file",
+            arguments={"path": "src/tiny_python_bug/calculator.py", "content": "x"},
+        )
+    )
+    oversized = executor.execute(
+        ToolCall(
+            name="create_file",
+            arguments={"path": "src/tiny_python_bug/large.py", "content": "x" * 200},
+        )
+    )
+
+    assert exists.ok is False
+    assert "already exists" in (exists.error or "")
+    assert existing.read_bytes() == original
+    assert oversized.ok is False
+    assert "exceeds" in (oversized.error or "")
+    assert not (tiny_bug_repo / "src" / "tiny_python_bug" / "large.py").exists()
 
 
 def test_replace_text_makes_exact_reviewable_edit_and_preserves_mode(

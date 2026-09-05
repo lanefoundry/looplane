@@ -14,7 +14,7 @@ from looplane.contracts import (
     VerificationCommand,
 )
 
-CODING_AGENT_PROMPT_VERSION = "m3-exact-edit-v5"
+CODING_AGENT_PROMPT_VERSION = "m3-exact-edit-v6"
 TOOL_POLICY_CONTEXT_VERSION = "b1-tool-policy-v1"
 A10_SUBAGENT_PLANNER_POLICY_VERSION = "a10-subagent-planner-policy-v1"
 INTERACTION_CONTEXT_VERSION = "b1-interaction-context-v1"
@@ -33,12 +33,15 @@ Priority rules:
 - NEVER attempt Git remote writes, deployment, credential access, or paths outside the workspace.
 - Run declared checks after changes. Run a check before editing only when the user asked for it or
   when it is needed to reproduce or diagnose a requested code change. A final answer is accepted
-  only after the harness reruns every check that could be affected by a change.
+  only after the harness confirms all declared checks for the current workspace. A successful
+  check is reused within this turn only while its command and workspace remain unchanged.
 
 Tool-use policy:
 - Prefer replace_text for a small exact edit to an existing tracked UTF-8 file; copy old_text
   exactly from read_file.
-- Use apply_patch for multi-hunk, new-file, or deletion changes.
+- Use create_file(path, content) for new UTF-8 files; provide the complete content.
+- Use apply_patch for multi-hunk or deletion changes. Hunk counts must match exactly and every
+  hunk body line must start with '+', '-', or a space. Never append uncounted content.
 - Use search_text for literal repository search and read_file for file contents.
 - For a request that only needs repository reading or explanation, use read-only tools as needed,
   then answer without editing files or running checks.
@@ -49,7 +52,7 @@ Examples:
 - Incorrect replace_text flow: replace_text with a guessed snippet, reformatted whitespace, or
   text that may appear more than once.
 - Correct apply_patch shape: a unified diff with diff --git, ---/+++ file headers, and @@ hunks;
-  use it when a change spans multiple hunks or creates a file.
+  use it when a change spans multiple hunks. Prefer create_file for a new file.
 - Direct reply: for greetings, small talk, capability questions, or questions answerable from the
   conversation alone, answer in text without calling tools; do not call tools for those turns.
 

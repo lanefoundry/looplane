@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -58,6 +60,10 @@ class _PathSnapshot:
 
 
 class ToolExecutor:
+    _HUNK_HEADER = re.compile(
+        r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$"
+    )
+
     def __init__(
         self,
         workspace: Path | LocalGitWorkspace,
@@ -362,6 +368,23 @@ class ToolExecutor:
                 },
             ),
             ToolDefinition(
+                name="create_file",
+                description=(
+                    "Create one new UTF-8 text file from structured path and content arguments. "
+                    "The path must not already exist. Prefer this over hand-writing a unified "
+                    "diff for a new file; the harness generates and validates the diff."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": path,
+                        "content": {"type": "string", "minLength": 1},
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolDefinition(
                 name="apply_patch",
                 description=(
                     "Apply one bounded unified text diff after path and git checks. Use this "
@@ -462,10 +485,11 @@ class ToolExecutor:
             ToolDefinition(
                 name="tool_transaction",
                 description=(
-                    "Execute a bounded modify/check transaction. Steps may read files, apply one "
-                    "exact replacement, apply a unified diff, run an allowlisted check, or inspect "
+                    "Execute a bounded modify/check transaction. Steps may read files, create one "
+                    "new file, apply an exact replacement or unified diff, run a check, or inspect "
                     "git_diff. repeat and if_contains provide bounded control flow. If any step "
-                    "fails, files touched by replace_text/apply_patch are restored to their "
+                    "fails, files touched by create_file/replace_text/apply_patch are restored to "
+                    "their "
                     "pre-transaction state. Use this when an edit and its check must succeed or "
                     "fail as one unit; it requires modify+execute approval."
                 ),
@@ -483,6 +507,7 @@ class ToolExecutor:
                                         "type": "string",
                                         "enum": [
                                             "read_file",
+                                            "create_file",
                                             "replace_text",
                                             "apply_patch",
                                             "run_check",
@@ -674,12 +699,24 @@ class ToolExecutor:
             path = path[2:]
         return path
 
+    @staticmethod
+    def _diff_git_paths(line: str) -> tuple[str, str]:
+        try:
+            fields = shlex.split(line[len("diff --git ") :])
+        except ValueError as exc:
+            raise ToolExecutionError(f"invalid diff --git header: {line!r}") from exc
+        if len(fields) != 2 or not fields[0].startswith("a/") or not fields[1].startswith("b/"):
+            raise ToolExecutionError(f"invalid diff --git header: {line!r}")
+        return fields[0][2:], fields[1][2:]
+
     def _validate_unified_diff(self, patch: str) -> tuple[str, ...]:
         if not isinstance(patch, str) or not patch.strip():
             raise ToolExecutionError("patch must be a non-empty unified diff")
         if len(patch.encode("utf-8")) > self.max_patch_bytes:
             raise ToolExecutionError(f"patch exceeds {self.max_patch_bytes} bytes")
-        lines = patch.splitlines()
+        lines = patch.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
         if len(lines) > self.max_patch_lines:
             raise ToolExecutionError(f"patch exceeds {self.max_patch_lines} lines")
         forbidden_markers = (
@@ -697,27 +734,195 @@ class ToolExecutor:
         if any(line.startswith(forbidden_markers) for line in lines):
             raise ToolExecutionError("binary, symlink, rename, and copy patches are forbidden")
 
-        old_headers = [line for line in lines if line.startswith("--- ")]
-        new_headers = [line for line in lines if line.startswith("+++ ")]
-        if (
-            not old_headers
-            or len(old_headers) != len(new_headers)
-            or not any(line.startswith("@@ ") for line in lines)
-        ):
-            raise ToolExecutionError("apply_patch accepts unified text diffs only")
-
         paths: set[str] = set()
-        for line in (*old_headers, *new_headers):
-            marker = "--- " if line.startswith("--- ") else "+++ "
-            path = self._header_path(line, marker)
-            if path is not None:
-                self.policy.resolve(path)
-                paths.add(path)
+        seen_file_paths: set[str] = set()
+        index = 0
+        file_count = 0
+        while index < len(lines):
+            if not lines[index].startswith("diff --git "):
+                raise ToolExecutionError(
+                    f"invalid unified diff at line {index + 1}: expected 'diff --git'"
+                )
+            diff_old_path, diff_new_path = self._diff_git_paths(lines[index])
+            file_count += 1
+            index += 1
+
+            while index < len(lines) and not lines[index].startswith("--- "):
+                metadata = lines[index]
+                if metadata.startswith(("diff --git ", "@@ ")):
+                    break
+                if not metadata.startswith(
+                    ("index ", "new file mode ", "deleted file mode ", "old mode ", "new mode ")
+                ):
+                    raise ToolExecutionError(
+                        f"invalid unified diff metadata at line {index + 1}: {metadata!r}"
+                    )
+                index += 1
+
+            if index >= len(lines) or not lines[index].startswith("--- "):
+                raise ToolExecutionError(
+                    f"invalid unified diff at line {index + 1}: missing old-file header"
+                )
+            old_header = lines[index]
+            index += 1
+            if index >= len(lines) or not lines[index].startswith("+++ "):
+                raise ToolExecutionError(
+                    f"invalid unified diff at line {index + 1}: missing new-file header"
+                )
+            new_header = lines[index]
+            index += 1
+
+            old_path = self._header_path(old_header, "--- ")
+            new_path = self._header_path(new_header, "+++ ")
+            if old_path is None and new_path is None:
+                raise ToolExecutionError("unified diff cannot use /dev/null for both paths")
+            if old_path is not None and new_path is not None and old_path != new_path:
+                raise ToolExecutionError("rename-style unified diffs are forbidden")
+            if old_path is not None and old_path != diff_old_path:
+                raise ToolExecutionError("diff --git and old-file header paths do not match")
+            if new_path is not None and new_path != diff_new_path:
+                raise ToolExecutionError("diff --git and new-file header paths do not match")
+            target_path = new_path if new_path is not None else old_path
+            assert target_path is not None
+            if diff_old_path != target_path or diff_new_path != target_path:
+                raise ToolExecutionError("diff --git paths must name the modified file")
+            if target_path in seen_file_paths:
+                raise ToolExecutionError(f"duplicate unified diff section for path: {target_path}")
+            seen_file_paths.add(target_path)
+            self.policy.resolve(target_path)
+            paths.add(target_path)
+
+            hunk_count = 0
+            old_closed = False
+            new_closed = False
+            while index < len(lines) and not lines[index].startswith("diff --git "):
+                match = self._HUNK_HEADER.fullmatch(lines[index])
+                if match is None:
+                    raise ToolExecutionError(
+                        f"invalid unified diff at line {index + 1}: expected hunk header"
+                    )
+                hunk_count += 1
+                old_expected = int(match.group(2) or "1")
+                new_expected = int(match.group(4) or "1")
+                old_seen = 0
+                new_seen = 0
+                index += 1
+                last_prefix: str | None = None
+
+                while old_seen < old_expected or new_seen < new_expected:
+                    if index >= len(lines):
+                        raise ToolExecutionError(
+                            f"invalid unified diff hunk at line {index + 1}: "
+                            f"expected {old_expected} old/{new_expected} new lines, "
+                            f"observed {old_seen} old/{new_seen} new"
+                        )
+                    body = lines[index]
+                    if body == r"\ No newline at end of file":
+                        if last_prefix is None:
+                            raise ToolExecutionError(
+                                f"invalid unified diff marker at line {index + 1}"
+                            )
+                        if last_prefix in " -":
+                            old_closed = True
+                        if last_prefix in " +":
+                            new_closed = True
+                        last_prefix = None
+                        index += 1
+                        continue
+                    if not body or body[0] not in " +-":
+                        raise ToolExecutionError(
+                            f"invalid unified diff body prefix at line {index + 1}"
+                        )
+                    if body[0] in " -" and old_closed:
+                        raise ToolExecutionError(
+                            f"unified diff contributes to closed old side at line {index + 1}"
+                        )
+                    if body[0] in " +" and new_closed:
+                        raise ToolExecutionError(
+                            f"unified diff contributes to closed new side at line {index + 1}"
+                        )
+                    if body[0] in " -":
+                        old_seen += 1
+                    if body[0] in " +":
+                        new_seen += 1
+                    if old_seen > old_expected or new_seen > new_expected:
+                        raise ToolExecutionError(
+                            f"unified diff hunk exceeds declared line count at line {index + 1}"
+                        )
+                    last_prefix = body[0]
+                    index += 1
+
+                if index < len(lines) and lines[index] == r"\ No newline at end of file":
+                    if last_prefix is None:
+                        raise ToolExecutionError(
+                            f"invalid unified diff marker at line {index + 1}"
+                        )
+                    if last_prefix in " -":
+                        old_closed = True
+                    if last_prefix in " +":
+                        new_closed = True
+                    index += 1
+                if index < len(lines) and not (
+                    lines[index].startswith("@@ ") or lines[index].startswith("diff --git ")
+                ):
+                    raise ToolExecutionError(
+                        f"unexpected trailing unified diff content at line {index + 1}"
+                    )
+
+            if hunk_count == 0:
+                raise ToolExecutionError("apply_patch requires at least one hunk per file")
+
+        if file_count == 0:
+            raise ToolExecutionError("apply_patch accepts unified text diffs only")
         if not paths:
             raise ToolExecutionError("patch does not name a workspace file")
         if len(paths) > self.max_changed_files:
             raise ToolExecutionError(f"patch exceeds {self.max_changed_files} changed files")
         return tuple(sorted(paths))
+
+    @staticmethod
+    def _quoted_diff_path(prefix: str, path: str) -> str:
+        return json.dumps(f"{prefix}/{path}", ensure_ascii=False)
+
+    def create_file(
+        self,
+        path: str,
+        content: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        """Create a UTF-8 text file through the validated patch transaction."""
+
+        if not isinstance(content, str) or not content:
+            raise ToolExecutionError("content must be a non-empty string")
+        if "\x00" in content:
+            raise ToolExecutionError("create_file accepts UTF-8 text without NUL")
+        target = self.policy.resolve(path)
+        if target.exists():
+            raise ToolExecutionError(f"path already exists: {path}")
+        relative = target.relative_to(self.workspace).as_posix()
+        if any(character in relative for character in ("\n", "\r", "\x00")):
+            raise ToolExecutionError("create_file path contains unsupported control characters")
+
+        content_lines = content.split("\n")
+        ends_with_newline = content.endswith("\n")
+        if ends_with_newline:
+            content_lines.pop()
+        quoted_old = self._quoted_diff_path("a", relative)
+        quoted_new = self._quoted_diff_path("b", relative)
+        patch_lines = [
+            f"diff --git {quoted_old} {quoted_new}",
+            "new file mode 100644",
+            "--- /dev/null",
+            f"+++ {quoted_new}",
+            f"@@ -0,0 +1,{len(content_lines)} @@",
+            *(f"+{line}" for line in content_lines),
+        ]
+        if not ends_with_newline:
+            patch_lines.append(r"\ No newline at end of file")
+        patch = "\n".join(patch_lines) + "\n"
+        result = self.apply_patch(patch, timeout_seconds=timeout_seconds)
+        return f"created UTF-8 text file {relative}\n{result}"
 
     @staticmethod
     def _effective_timeout(default: float, override: float | None) -> float:
@@ -1349,7 +1554,13 @@ class ToolExecutor:
                 remaining -= 1
                 step_index += 1
                 handler = handlers[op]
-                if op in {"replace_text", "apply_patch", "run_check", "git_diff"}:
+                if op in {
+                    "create_file",
+                    "replace_text",
+                    "apply_patch",
+                    "run_check",
+                    "git_diff",
+                }:
                     output = handler(**dict(args), timeout_seconds=timeout_seconds)
                 else:
                     output = handler(**dict(args))
@@ -1377,7 +1588,13 @@ class ToolExecutor:
             args = step.get("args", {})
             if not isinstance(args, Mapping):
                 raise ToolExecutionError("tool transaction step args must be an object")
-            if op == "replace_text":
+            if op == "create_file":
+                path = args.get("path")
+                if not isinstance(path, str) or not path:
+                    raise ToolExecutionError("create_file transaction step requires path")
+                target = self.policy.resolve(path)
+                paths.add(target.relative_to(self.workspace).as_posix())
+            elif op == "replace_text":
                 path = args.get("path")
                 if not isinstance(path, str) or not path:
                     raise ToolExecutionError("replace_text transaction step requires path")
@@ -1451,6 +1668,7 @@ class ToolExecutor:
             )
         handlers = {
             "read_file": self.read_file,
+            "create_file": self.create_file,
             "replace_text": self.replace_text,
             "apply_patch": self.apply_patch,
             "run_check": self.run_check,
@@ -1490,6 +1708,7 @@ class ToolExecutor:
             "list_files": self.list_files,
             "read_file": self.read_file,
             "search_text": self.search_text,
+            "create_file": self.create_file,
             "replace_text": self.replace_text,
             "apply_patch": self.apply_patch,
             "run_check": self.run_check,
@@ -1612,6 +1831,7 @@ class ToolExecutor:
             if "timeout_seconds" in call_arguments:
                 raise ToolExecutionError("timeout_seconds is controlled by the harness")
             if name in {
+                "create_file",
                 "replace_text",
                 "apply_patch",
                 "run_check",

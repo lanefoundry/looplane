@@ -146,7 +146,9 @@ THEN halt.
 <invoke name="read_file"><parameter name="path">src/main.py</parameter></invoke>
 
 ### Editing with replace_text:
-<invoke name="replace_text"><parameter name="path">src/main.py</parameter><parameter name="old_text">old exact text</parameter><parameter name="new_text">new text</parameter></invoke>
+<invoke name="replace_text"><parameter name="path">src/main.py</parameter>\
+<parameter name="old_text">old exact text</parameter>\
+<parameter name="new_text">new text</parameter></invoke>
 
 ## Efficiency rules
 - For LARGE changes (translating, reformatting, or rewriting most of a file): use replace_text \
@@ -431,7 +433,15 @@ def encode_inband_history(
                 )
             )
         elif isinstance(item, ToolObservation):
-            obs_content = item.content if item.ok else f"Error: {item.content}"
+            if item.ok:
+                obs_content = item.content
+            else:
+                error_parts = []
+                if item.error:
+                    error_parts.append(f"Error: {item.error}")
+                if item.content:
+                    error_parts.append(item.content)
+                obs_content = "\n".join(error_parts) or "Error: tool failed"
             result.append(
                 Message(
                     role="user",

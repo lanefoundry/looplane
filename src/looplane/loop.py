@@ -228,10 +228,12 @@ class AgentRunner:
         self._test_log: list[str] = []
         self._executor: ToolExecutor | None = None
         self._last_verification: tuple[VerificationOutcome, ...] = ()
+        self._checked_workspaces: dict[str, tuple[str, VerificationOutcome, str]] = {}
         self._verified_workspace_fingerprint: str | None = None
         self._active_wall_time_base = 0.0
         self._run_started_monotonic: float | None = None
         self._active_started_at: datetime | None = None
+        self._wall_time_phase = "task execution"
         self._session_store: SessionStore | None = None
         self._session_lease: SessionWriterLease | None = None
         self._manifest: SessionManifest | None = None
@@ -593,19 +595,35 @@ class AgentRunner:
                     "pending_action": request,
                 }
             )
+        if reason is ApprovalReason.FINAL_VERIFICATION:
+            self._wall_time_phase = "final verification"
+        if pre_decision is None:
+            try:
+                await self._pause_active_wall_time()
+                await self._event(
+                    "approval.requested",
+                    request_id=request.request_id,
+                    action_id=action_id,
+                    effect=effect.value,
+                    reason=reason.value,
+                    policy_reason=request.policy_reason,
+                    preview=request.preview,
+                )
+                decision = await self.approvals.decide(request)
+            finally:
+                await self._resume_active_wall_time()
+        else:
             await self._save_manifest()
-        await self._event(
-            "approval.requested",
-            request_id=request.request_id,
-            action_id=action_id,
-            effect=effect.value,
-            reason=reason.value,
-            policy_reason=request.policy_reason,
-            preview=request.preview,
-        )
-        decision = (
-            pre_decision if pre_decision is not None else await self.approvals.decide(request)
-        )
+            await self._event(
+                "approval.requested",
+                request_id=request.request_id,
+                action_id=action_id,
+                effect=effect.value,
+                reason=reason.value,
+                policy_reason=request.policy_reason,
+                preview=request.preview,
+            )
+            decision = pre_decision
         if self._manifest is not None:
             granted_effects = self._manifest.granted_effects
             if decision == ApprovalDecision.ALLOW_SESSION:
@@ -852,12 +870,59 @@ class AgentRunner:
         provider, model = next(iter(providers))
         return estimate_cost(provider, model, self._usage)
 
-    @staticmethod
-    def _remaining(deadline: float) -> float:
-        remaining = deadline - time.monotonic()
+    def _current_active_wall_time(self) -> float:
+        elapsed = 0.0
+        if self._run_started_monotonic is not None:
+            elapsed = max(0.0, time.monotonic() - self._run_started_monotonic)
+        return self._active_wall_time_base + elapsed
+
+    async def _pause_active_wall_time(self) -> None:
+        """Stop charging the task budget while a human approval is pending."""
+
+        if self._run_started_monotonic is None:
+            return
+        self._active_wall_time_base = self._current_active_wall_time()
+        self._run_started_monotonic = None
+        self._active_started_at = None
+        if self._manifest is not None:
+            self._manifest = self._manifest.model_copy(
+                update={
+                    "active_wall_time_seconds": self._active_wall_time_base,
+                    "active_started_at": None,
+                }
+            )
+            await self._save_manifest()
+
+    async def _resume_active_wall_time(self) -> None:
+        """Resume charging after an approval decision or interrupted wait."""
+
+        if self._run_started_monotonic is not None:
+            return
+        self._run_started_monotonic = time.monotonic()
+        self._active_started_at = datetime.now(UTC)
+        if self._manifest is not None:
+            self._manifest = self._manifest.model_copy(
+                update={
+                    "active_wall_time_seconds": self._active_wall_time_base,
+                    "active_started_at": self._active_started_at,
+                }
+            )
+            await self._save_manifest()
+
+    def _remaining(self, deadline: float) -> float:
+        remaining = deadline - self._current_active_wall_time()
         if remaining <= 0:
             raise TimeoutError("task wall-time budget exhausted")
         return remaining
+
+    def _wall_time_failure_summary(self, final_summary: str) -> str:
+        if self._wall_time_phase == "model request":
+            detail = "Model request exceeded the remaining wall-time budget."
+        elif self._wall_time_phase == "final verification":
+            detail = "Final verification exceeded the remaining wall-time budget."
+        else:
+            detail = "Task execution exceeded the remaining wall-time budget."
+        return f"{final_summary}\n\n{detail}".strip()
 
     def _event_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Keep event logs bounded without losing the action's audit identity."""
@@ -1535,11 +1600,32 @@ class AgentRunner:
 
     async def _verify_all(self, deadline: float) -> tuple[VerificationOutcome, ...]:
         assert self._executor is not None
+        self._wall_time_phase = "final verification"
+        self._remaining(deadline)
         verification_start_fingerprint = await self._current_verification_state_fingerprint()
         outcomes: list[VerificationOutcome] = []
         for command in self.task.verification:
             if self._cancel_requested.is_set():
                 raise asyncio.CancelledError("run cancellation requested")
+            cached = self._checked_workspaces.get(command.name)
+            if cached is not None:
+                fingerprint, prior_outcome, tool_call_id = cached
+                current = await self._current_verification_state_fingerprint()
+                if (
+                    fingerprint == current == verification_start_fingerprint
+                    and prior_outcome.ok
+                    and prior_outcome.argv == command.argv
+                ):
+                    outcomes.append(prior_outcome)
+                    await self._event(
+                        "verification.reused",
+                        name=command.name,
+                        argv=command.argv,
+                        tool_call_id=tool_call_id,
+                        ok=True,
+                        exit_code=prior_outcome.exit_code,
+                    )
+                    continue
             decision, _request_id = await self._approval(
                 action_id=f"verification:{command.name}",
                 effect=ToolEffect.EXECUTE,
@@ -1569,6 +1655,7 @@ class AgentRunner:
                     error="approval denied",
                 )
                 continue
+            self._remaining(deadline)
             await self._event(
                 "verification.started",
                 name=command.name,
@@ -1893,6 +1980,11 @@ class AgentRunner:
             effect=effect.value,
             arguments=self._event_arguments(call.arguments),
         )
+        if call.name == "apply_patch" and self._executor is not None:
+            try:
+                self._executor._validate_unified_diff(call.arguments.get("patch", ""))
+            except (ToolExecutionError, ValueError) as exc:
+                raise ToolExecutionError(f"invalid_patch:{exc}") from exc
         hook_decision = await self._run_hook(
             HookEventName.PRE_TOOL_USE,
             {
@@ -1920,6 +2012,12 @@ class AgentRunner:
         deadline: float,
     ) -> ToolObservation:
         assert self._executor is not None
+        check_start: str | None = None
+        if call.name == "run_check":
+            self._checked_workspaces.pop(str(call.arguments.get("name", "")), None)
+            self._executor.verification_outcomes.pop(str(call.arguments.get("name", "")), None)
+            with contextlib.suppress(OSError, ToolExecutionError, TimeoutError):
+                check_start = await self._current_verification_state_fingerprint()
         await self._event(
             "tool.started",
             tool_call_id=call.tool_call_id,
@@ -1938,6 +2036,14 @@ class AgentRunner:
                 call,
                 timeout_seconds=self._remaining(deadline),
             )
+        verification_data: dict[str, Any] = {}
+        if call.name == "run_check":
+            outcome = self._executor.verification_outcomes.get(
+                str(call.arguments.get("name", ""))
+            )
+            if outcome is not None:
+                verification_data["verification"] = outcome.model_dump(mode="json")
+                verification_data["verification"]["output"] = bounded_text(outcome.output, 2_000)
         await self._event(
             "tool.completed",
             tool_call_id=call.tool_call_id,
@@ -1945,6 +2051,7 @@ class AgentRunner:
             ok=observation.ok,
             error=observation.error,
             preview=bounded_text(observation.content, 2_000),
+            **verification_data,
         )
         await self._run_hook(
             HookEventName.POST_TOOL_USE,
@@ -1954,6 +2061,20 @@ class AgentRunner:
                 "effect": effect.value,
             },
         )
+        if call.name == "run_check" and observation.ok and check_start is not None:
+            name = str(call.arguments.get("name", ""))
+            outcome = self._executor.verification_outcomes.get(name)
+            try:
+                check_end = await self._current_verification_state_fingerprint()
+            except (OSError, ToolExecutionError, TimeoutError):
+                check_end = None
+            if outcome is not None and outcome.ok and check_start == check_end:
+                self._checked_workspaces[name] = (check_start, outcome, call.tool_call_id)
+                self._test_log.append(
+                    f"$ {shlex.join(outcome.argv)}\n"
+                    f"exit={outcome.exit_code} duration={outcome.duration_seconds:.3f}s\n"
+                    f"{outcome.output}\n"
+                )
         return observation
 
     async def _execute_dispatch_subagents(
@@ -2327,6 +2448,7 @@ class AgentRunner:
             )
         self._run_started_monotonic = time.monotonic()
         self._active_started_at = now
+        self._wall_time_phase = "task execution"
         if self._manifest is not None:
             self._manifest = self._manifest.model_copy(
                 update={
@@ -2335,11 +2457,8 @@ class AgentRunner:
                 }
             )
             await self._save_manifest()
-        remaining_wall_time = max(
-            0.0,
-            self.task.limits.wall_time_seconds - self._active_wall_time_base,
-        )
-        deadline = self._run_started_monotonic + remaining_wall_time
+        deadline = self.task.limits.wall_time_seconds
+        final_summary = ""
         try:
             if not self.allow_unsafe_local_exec and not self._interactive_approvals:
                 raise UnsafeLocalExecutionError(
@@ -2526,7 +2645,9 @@ class AgentRunner:
                     )
                 self._step += 1
                 await self._event("model.requested", step=self._step)
+                self._wall_time_phase = "model request"
                 turn = await self._complete_model_with_retry(deadline)
+                self._wall_time_phase = "task execution"
                 if turn is None:
                     return await self._finish(
                         status=RunStatus.CANCELLED,
@@ -2575,6 +2696,23 @@ class AgentRunner:
                                     terminal_reason="repeated_action",
                                     summary=turn.content or final_summary,
                                 )
+                            if exc_str.startswith("invalid_patch:"):
+                                observation = ToolObservation(
+                                    tool_call_id=call.tool_call_id,
+                                    name=call.name,
+                                    ok=False,
+                                    error=exc_str.removeprefix("invalid_patch:"),
+                                )
+                                self._messages.append(observation)
+                                await self._event(
+                                    "tool.completed",
+                                    tool_call_id=call.tool_call_id,
+                                    name=call.name,
+                                    ok=False,
+                                    error=observation.error,
+                                )
+                                call_index += 1
+                                continue
                             if exc_str.startswith("unknown_tool:"):
                                 unknown_name = exc_str.removeprefix("unknown_tool:")
                                 available = ", ".join(
@@ -2759,7 +2897,7 @@ class AgentRunner:
                                 "consecutive steps only reading files without making any changes. "
                                 f"You are running low on steps ({steps_left} remaining). "
                                 "Stop exploring and start implementing the solution now. "
-                                "Use replace_text or apply_patch to make the necessary code "
+                                "Use create_file, replace_text, or apply_patch for the necessary "
                                 "changes."
                             )
                             self._messages.append(Message(role="user", content=nudge))
@@ -2814,6 +2952,7 @@ class AgentRunner:
                         terminal_reason="verification_cancelled",
                         summary=final_summary or "Final verification cancelled by user.",
                     )
+                self._wall_time_phase = "task execution"
                 if all(outcome.ok for outcome in outcomes):
                     patch, changed_files = await self._collect_patch(self._remaining(deadline))
                     review = await self._run_review_lane(
@@ -2917,7 +3056,7 @@ class AgentRunner:
             return await self._finish(
                 status=RunStatus.FAILED,
                 terminal_reason="wall_time_exceeded",
-                summary="Model request exceeded the remaining wall-time budget.",
+                summary=self._wall_time_failure_summary(final_summary),
                 patch_timeout_seconds=1.0,
             )
         except ProviderError as exc:
@@ -2964,8 +3103,8 @@ class AgentRunner:
                 and self._session_lease.active
                 and self._run_started_monotonic is not None
             ):
-                elapsed = time.monotonic() - self._run_started_monotonic
-                self._active_wall_time_base += max(0.0, elapsed)
+                self._active_wall_time_base = self._current_active_wall_time()
+                self._run_started_monotonic = None
                 self._active_started_at = None
                 self._manifest = self._manifest.model_copy(
                     update={
