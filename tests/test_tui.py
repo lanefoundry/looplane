@@ -31,6 +31,7 @@ from looplane.contracts import (
     ToolCall,
     Usage,
     VerificationCommand,
+    VerificationOutcome,
 )
 from looplane.conversation import (
     ConversationEvent,
@@ -2738,6 +2739,199 @@ async def test_tool_lifecycle_updates_one_inline_action_in_place(tmp_path: Path)
         assert actions[0].title == "Read src/app.py"
         assert actions[0].status == "completed"
         assert actions[0].detail == "84 lines"
+
+
+async def test_final_verification_shows_command_once_without_internal_name(
+    tmp_path: Path,
+) -> None:
+    check = VerificationOutcome(
+        name="check-1",
+        argv=("git", "diff", "--check"),
+        ok=True,
+        exit_code=0,
+        output="",
+    )
+
+    class VerificationRunner(FakeRunner):
+        async def run(self) -> RunResult:
+            assert self.event_sink is not None
+            await self.event_sink.emit(
+                RunEvent(
+                    event_type="run.created",
+                    run_id="tui-run",
+                    task_id="tui-task",
+                    sequence=0,
+                    data={},
+                )
+            )
+            await self.event_sink.emit(
+                RunEvent(
+                    event_type="verification.started",
+                    run_id="tui-run",
+                    task_id="tui-task",
+                    sequence=1,
+                    data={"name": check.name},
+                )
+            )
+            await self.event_sink.emit(
+                RunEvent(
+                    event_type="verification.completed",
+                    run_id="tui-run",
+                    task_id="tui-task",
+                    sequence=2,
+                    data={
+                        "name": check.name,
+                        "argv": check.argv,
+                        "ok": True,
+                        "exit_code": 0,
+                    },
+                )
+            )
+            await self.event_sink.emit(
+                RunEvent(
+                    event_type="verification.started",
+                    run_id="tui-run",
+                    task_id="tui-task",
+                    sequence=3,
+                    data={"name": check.name},
+                )
+            )
+            return RunResult(
+                run_id="tui-run",
+                task_id="tui-task",
+                status=RunStatus.COMPLETED,
+                summary="Verified.",
+                verification=(check,),
+                terminal_reason="verified",
+            )
+
+    def factory(_request, approval_policy, event_sink):
+        return VerificationRunner(
+            approval_policy=approval_policy,
+            event_sink=event_sink,
+        ), FakeModel()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+        initial_prompt="Verify the change.",
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(lambda: app._result is not None)
+        await pilot.pause()
+        actions = list(app.query(ToolActionBlock))
+        assert len(actions) == 1
+        assert actions[0].title == "Check git diff --check"
+        assert actions[0].status == "completed"
+        assert actions[0].detail == "Passed · exit 0"
+        assert not any(
+            entry.title == "Check · check-1" for entry in app.query(TimelineEntry)
+        )
+
+
+async def test_final_verification_uses_result_fallback_without_live_events(
+    tmp_path: Path,
+) -> None:
+    check = VerificationOutcome(
+        name="check-1",
+        argv=("git", "diff", "--check"),
+        ok=True,
+        exit_code=0,
+        output="",
+    )
+
+    class ResultOnlyRunner(FakeRunner):
+        async def run(self) -> RunResult:
+            return RunResult(
+                run_id="tui-run",
+                task_id="tui-task",
+                status=RunStatus.COMPLETED,
+                summary="Verified.",
+                verification=(check,),
+                terminal_reason="verified",
+            )
+
+    def factory(_request, approval_policy, event_sink):
+        return ResultOnlyRunner(
+            approval_policy=approval_policy,
+            event_sink=event_sink,
+        ), FakeModel()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+        initial_prompt="Verify the change.",
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(lambda: app._result is not None)
+        await pilot.pause()
+        actions = list(app.query(ToolActionBlock))
+        assert len(actions) == 1
+        assert actions[0].title == "Check git diff --check"
+        assert actions[0].status == "completed"
+        assert actions[0].detail == "Passed · exit 0"
+
+
+async def test_final_verification_result_finishes_started_only_action(
+    tmp_path: Path,
+) -> None:
+    check = VerificationOutcome(
+        name="check-1",
+        argv=("git", "diff", "--check"),
+        ok=True,
+        exit_code=0,
+        output="",
+    )
+
+    class StartedOnlyRunner(FakeRunner):
+        async def run(self) -> RunResult:
+            assert self.event_sink is not None
+            await self.event_sink.emit(
+                RunEvent(
+                    event_type="verification.started",
+                    run_id="tui-run",
+                    task_id="tui-task",
+                    sequence=0,
+                    data={"name": check.name},
+                )
+            )
+            return RunResult(
+                run_id="tui-run",
+                task_id="tui-task",
+                status=RunStatus.COMPLETED,
+                summary="Verified.",
+                verification=(check,),
+                terminal_reason="verified",
+            )
+
+    def factory(_request, approval_policy, event_sink):
+        return StartedOnlyRunner(
+            approval_policy=approval_policy,
+            event_sink=event_sink,
+        ), FakeModel()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+        initial_prompt="Verify the change.",
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(lambda: app._result is not None)
+        await pilot.pause()
+        actions = list(app.query(ToolActionBlock))
+        assert len(actions) == 1
+        assert actions[0].title == "Check git diff --check"
+        assert actions[0].status == "completed"
+        assert actions[0].detail == "Passed · exit 0"
 
 
 async def test_runtime_stream_projects_one_assistant_and_correlated_tool(

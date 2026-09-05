@@ -93,6 +93,7 @@ class SessionManifest(ContractModel):
     repeat_count: int = Field(default=0, ge=0)
     last_event_sequence: int = Field(default=-1, ge=-1)
     verification: tuple[VerificationOutcome, ...] = ()
+    verified_workspace_fingerprint: str | None = None
     pending_action: ApprovalRequest | None = None
     approval_history: tuple[ApprovalAuditRecord, ...] = ()
     granted_effects: frozenset[ToolEffect] = frozenset()

@@ -227,6 +227,7 @@ class AgentRunner:
         self._test_log: list[str] = []
         self._executor: ToolExecutor | None = None
         self._last_verification: tuple[VerificationOutcome, ...] = ()
+        self._verified_workspace_fingerprint: str | None = None
         self._active_wall_time_base = 0.0
         self._run_started_monotonic: float | None = None
         self._active_started_at: datetime | None = None
@@ -335,6 +336,7 @@ class AgentRunner:
         self._step = manifest.step
         self._last_fingerprint = manifest.last_action_fingerprint
         self._last_verification = manifest.verification
+        self._verified_workspace_fingerprint = manifest.verified_workspace_fingerprint
         self._context_pressure_reminder_sent = any(
             isinstance(item, InjectedContext)
             and item.source == "context_pressure"
@@ -397,9 +399,22 @@ class AgentRunner:
             new_instruction = self.task.instruction
             self.task = persisted_task
             self._restore_state_from_manifest(manifest)
-            self._made_changes = True
             self._run_dir_initialized = True
             self._rebuild_executor_for(resolved / "workspace")
+            try:
+                workspace_fingerprint = await self._run_blocking_safely(
+                    self._executor.workspace_fingerprint,
+                    timeout_seconds=10.0,
+                )
+            except (OSError, ToolExecutionError, TimeoutError):
+                # Legacy sessions and unreadable/mutated workspaces keep the
+                # conservative final-verification gate armed.
+                self._made_changes = True
+            else:
+                self._made_changes = (
+                    self._verification_state_fingerprint(workspace_fingerprint)
+                    != self._verified_workspace_fingerprint
+                )
             self._messages.append(Message(role="user", content=new_instruction))
             self._turn_start_step = self._step
             self._repeat_count = 0
@@ -766,6 +781,7 @@ class AgentRunner:
                     "last_action_fingerprint": self._last_fingerprint,
                     "repeat_count": self._repeat_count,
                     "verification": self._last_verification,
+                    "verified_workspace_fingerprint": self._verified_workspace_fingerprint,
                 }
             )
             await self._save_manifest()
@@ -1013,6 +1029,25 @@ class AgentRunner:
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
+        return hashlib.sha256(payload).hexdigest()
+
+    def _verification_state_fingerprint(self, workspace_fingerprint: str) -> str:
+        payload = json.dumps(
+            {
+                "workspace": workspace_fingerprint,
+                "verification": [
+                    {
+                        "name": command.name,
+                        "argv": list(command.argv),
+                        "timeout_seconds": command.timeout_seconds,
+                    }
+                    for command in self.task.verification
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
     def _record_fingerprint(self, call: ToolCall) -> bool:
@@ -1499,6 +1534,7 @@ class AgentRunner:
 
     async def _verify_all(self, deadline: float) -> tuple[VerificationOutcome, ...]:
         assert self._executor is not None
+        verification_start_fingerprint = await self._current_verification_state_fingerprint()
         outcomes: list[VerificationOutcome] = []
         for command in self.task.verification:
             if self._cancel_requested.is_set():
@@ -1525,6 +1561,7 @@ class AgentRunner:
                 await self._event(
                     "verification.completed",
                     name=outcome.name,
+                    argv=outcome.argv,
                     ok=False,
                     exit_code=None,
                     duration_seconds=0.0,
@@ -1552,14 +1589,21 @@ class AgentRunner:
             await self._event(
                 "verification.completed",
                 name=outcome.name,
+                argv=outcome.argv,
                 ok=outcome.ok,
                 exit_code=outcome.exit_code,
                 duration_seconds=outcome.duration_seconds,
             )
             if self._cancel_requested.is_set():
-                await self._persist_verification(outcomes)
+                await self._persist_verification(
+                    outcomes,
+                    expected_workspace_fingerprint=verification_start_fingerprint,
+                )
                 raise asyncio.CancelledError("run cancellation requested")
-        await self._persist_verification(outcomes)
+        await self._persist_verification(
+            outcomes,
+            expected_workspace_fingerprint=verification_start_fingerprint,
+        )
         return self._last_verification
 
     async def _run_review_lane(
@@ -1637,13 +1681,52 @@ class AgentRunner:
             )
             return None
 
-    async def _persist_verification(self, outcomes: list[VerificationOutcome]) -> None:
+    async def _persist_verification(
+        self,
+        outcomes: list[VerificationOutcome],
+        *,
+        expected_workspace_fingerprint: str | None = None,
+    ) -> None:
         self._last_verification = tuple(outcomes)
+        workspace_changed_during_verification = False
+        if (
+            len(outcomes) == len(self.task.verification)
+            and all(outcome.ok for outcome in outcomes)
+            and self._executor is not None
+        ):
+            current_fingerprint = await self._current_verification_state_fingerprint()
+            workspace_changed_during_verification = (
+                expected_workspace_fingerprint is None
+                or current_fingerprint != expected_workspace_fingerprint
+            )
+            self._verified_workspace_fingerprint = (
+                None if workspace_changed_during_verification else current_fingerprint
+            )
+        else:
+            self._verified_workspace_fingerprint = None
         await atomic_write_json(
             self.run_dir / "verification.json",
             [outcome.model_dump(mode="json") for outcome in outcomes],
         )
         (self.run_dir / "test.log").write_text("\n".join(self._test_log), encoding="utf-8")
+        if workspace_changed_during_verification:
+            raise ToolExecutionError(
+                "workspace changed while final verification was running; "
+                "the passing result cannot verify the resulting files"
+            )
+
+    async def _current_verification_state_fingerprint(self) -> str:
+        assert self._executor is not None
+        workspace_fingerprint = await self._run_blocking_safely(
+            self._executor.workspace_fingerprint,
+            timeout_seconds=10.0,
+        )
+        return self._verification_state_fingerprint(workspace_fingerprint)
+
+    async def _capture_verified_workspace_fingerprint(self) -> None:
+        self._verified_workspace_fingerprint = (
+            await self._current_verification_state_fingerprint()
+        )
 
     async def _complete_model_or_cancel(self, remaining: float) -> ModelTurn | None:
         """Cancel a pure model wait immediately without interrupting side-effecting tools."""
@@ -2170,12 +2253,18 @@ class AgentRunner:
         terminal_reason: str,
         summary: str,
         error: str | None = None,
-        verification: tuple[VerificationOutcome, ...] = (),
+        verification: tuple[VerificationOutcome, ...] | None = None,
         patch_timeout_seconds: float | None = None,
+        collected_patch: tuple[str, tuple[str, ...]] | None = None,
     ) -> RunResult:
-        verification = verification or self._last_verification
+        if verification is None:
+            verification = self._last_verification
         try:
-            patch, changed_files = await self._collect_patch(patch_timeout_seconds)
+            if collected_patch is None:
+                _patch, changed_files = await self._collect_patch(patch_timeout_seconds)
+            else:
+                patch, changed_files = collected_patch
+                (self.run_dir / "changes.patch").write_text(patch, encoding="utf-8")
         except (ToolExecutionError, TimeoutError) as exc:
             status = RunStatus.FAILED
             terminal_reason = "patch_artifact_failed"
@@ -2386,6 +2475,14 @@ class AgentRunner:
                         sandbox_read_roots=self._sandbox_read_roots,
                     )
                 await self._event("workspace.prepared", workspace="workspace", base_sha=base_sha)
+
+                try:
+                    # A fresh run starts from a trusted caller-supplied baseline.
+                    # Any later drift, including a failed tool's partial side
+                    # effect, must pass final verification before completion.
+                    await self._capture_verified_workspace_fingerprint()
+                except (OSError, ToolExecutionError, TimeoutError):
+                    self._verified_workspace_fingerprint = None
 
                 self._messages = self._initial_messages(base_sha)
                 await self._checkpoint(RunStatus.INSPECTING)
@@ -2694,11 +2791,20 @@ class AgentRunner:
                         update={"final_summary": final_summary}
                     )
                     await self._save_manifest()
+                try:
+                    current_fingerprint = await self._current_verification_state_fingerprint()
+                except (OSError, ToolExecutionError, TimeoutError):
+                    current_fingerprint = None
+                self._made_changes = self._made_changes or (
+                    current_fingerprint is None
+                    or current_fingerprint != self._verified_workspace_fingerprint
+                )
                 if not self._made_changes:
                     return await self._finish(
                         status=RunStatus.COMPLETED,
                         terminal_reason="no_changes",
                         summary=final_summary,
+                        verification=(),
                     )
                 try:
                     outcomes = await self._verify_all(deadline)
@@ -2727,12 +2833,38 @@ class AgentRunner:
                             verification=outcomes,
                             patch_timeout_seconds=1.0,
                         )
+                    try:
+                        final_fingerprint = (
+                            await self._current_verification_state_fingerprint()
+                        )
+                    except (OSError, ToolExecutionError, TimeoutError) as exc:
+                        return await self._finish(
+                            status=RunStatus.FAILED,
+                            terminal_reason="verification_state_unreadable",
+                            summary=final_summary,
+                            error=f"Could not confirm verified workspace state: {exc}",
+                            verification=outcomes,
+                            patch_timeout_seconds=1.0,
+                        )
+                    if final_fingerprint != self._verified_workspace_fingerprint:
+                        self._verified_workspace_fingerprint = None
+                        return await self._finish(
+                            status=RunStatus.FAILED,
+                            terminal_reason="workspace_changed_after_verification",
+                            summary=final_summary,
+                            error=(
+                                "Workspace changed after final verification; "
+                                "rerun checks before treating it as verified."
+                            ),
+                            verification=outcomes,
+                            patch_timeout_seconds=1.0,
+                        )
                     return await self._finish(
                         status=RunStatus.COMPLETED,
                         terminal_reason="verified",
                         summary=final_summary,
                         verification=outcomes,
-                        patch_timeout_seconds=self._remaining(deadline),
+                        collected_patch=(patch, changed_files),
                     )
                 feedback = "\n\n".join(
                     f"Verification {outcome.name!r} failed (exit {outcome.exit_code}):\n"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import shlex
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
@@ -2193,6 +2194,7 @@ class looplaneApp(App[RunResult | None]):
         self._ask_history: list[tuple[str, str]] = []
         self._external_message_generations: set[int] = set()
         self._tool_actions: dict[str, ToolActionBlock] = {}
+        self._turn_completed_verification_actions: set[str] = set()
         self._active_tool_group: ToolGroupBlock | None = None
         self._approval_actions: dict[str, str] = {}
         self._runtime_text_blocks: dict[str, MessageBlock] = {}
@@ -3891,6 +3893,10 @@ class looplaneApp(App[RunResult | None]):
         self._projection_errors = 0
         self._generation += 1
         generation = self._generation
+        self._turn_completed_verification_actions.clear()
+        for action_id in tuple(self._tool_actions):
+            if action_id.startswith("verification:"):
+                del self._tool_actions[action_id]
         self._result = None
         self.last_error = None
         self.query_one("#activity", RichLog).clear()
@@ -4076,14 +4082,26 @@ class looplaneApp(App[RunResult | None]):
                         severity="failure",
                     )
                 for outcome in self._result.verification:
-                    marker = "passed" if outcome.ok else "failed"
-                    self.query_one("#activity", RichLog).write(
-                        f"Check {outcome.name}: {marker} (exit {outcome.exit_code})"
+                    action_id = f"verification:{outcome.name}"
+                    action = self._ensure_tool_action(
+                        action_id,
+                        self._verification_title(outcome.name, outcome.argv),
                     )
-                    self._write_timeline(
-                        f"Check · {outcome.name}",
-                        f"{marker} · exit {outcome.exit_code}",
+                    action.set_title(self._verification_title(outcome.name, outcome.argv))
+                    summary = (
+                        f"{'Passed' if outcome.ok else 'Failed'} · exit {outcome.exit_code}"
                     )
+                    action.set_state(
+                        "completed" if outcome.ok else "failed",
+                        detail=summary,
+                    )
+                    if action_id not in self._turn_completed_verification_actions:
+                        self._reducer.add_tool(
+                            action.title,
+                            "completed" if outcome.ok else "failed",
+                            summary,
+                        )
+                    self._turn_completed_verification_actions.add(action_id)
                 if self._mode == "agent":
                     self.query_one("#activity", RichLog).write(f"Session: {self._result.run_id}")
                 if patch_path := self._result.artifacts.get("patch"):
@@ -4516,6 +4534,14 @@ class looplaneApp(App[RunResult | None]):
         return name.replace("_", " ").capitalize()
 
     @staticmethod
+    def _verification_title(name: str, argv: object) -> str:
+        if isinstance(argv, (list, tuple)) and argv and all(
+            isinstance(part, str) for part in argv
+        ):
+            return f"Check {shlex.join(argv)}"
+        return f"Check {name}"
+
+    @staticmethod
     def _tool_detail_kind(name: str) -> str:
         return infer_tool_detail_kind(name)
 
@@ -4634,11 +4660,27 @@ class looplaneApp(App[RunResult | None]):
             )
         elif event_type == "verification.started":
             name = str(data.get("name", "verification"))
-            action = self._ensure_tool_action(f"verification:{name}", f"Check {name}")
-            action.set_state("running")
+            action_id = f"verification:{name}"
+            title = self._verification_title(name, data.get("argv"))
+            action = self._ensure_tool_action(
+                action_id,
+                title,
+            )
+            if title != f"Check {name}" or action.title == f"Check {name}":
+                action.set_title(title)
+            if action.status not in {"completed", "failed", "denied", "cancelled"}:
+                action.set_state("running")
         elif event_type == "verification.completed":
             name = str(data.get("name", "verification"))
-            action = self._ensure_tool_action(f"verification:{name}", f"Check {name}")
+            action_id = f"verification:{name}"
+            self._turn_completed_verification_actions.add(action_id)
+            title = self._verification_title(name, data.get("argv"))
+            action = self._ensure_tool_action(
+                action_id,
+                title,
+            )
+            if title != f"Check {name}" or action.title == f"Check {name}":
+                action.set_title(title)
             ok = bool(data.get("ok"))
             exit_code = data.get("exit_code")
             summary = f"{'Passed' if ok else 'Failed'} · exit {exit_code}"
@@ -4646,7 +4688,7 @@ class looplaneApp(App[RunResult | None]):
                 "completed" if ok else "failed",
                 detail=summary,
             )
-            self._reducer.add_tool(f"Check {name}", "completed" if ok else "failed", summary)
+            self._reducer.add_tool(action.title, "completed" if ok else "failed", summary)
         if event_type == "model.requested":
             self._set_loading("Thinking…", phase=LoadingPhase.REQUESTING)
         elif event_type in {"tool.requested", "tool.started"}:

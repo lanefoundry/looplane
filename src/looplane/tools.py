@@ -1078,6 +1078,68 @@ class ToolExecutor:
             self.policy.resolve(path)
         return ReviewablePatch(content=result.stdout, changed_paths=changed_paths)
 
+    def workspace_fingerprint(self, *, timeout_seconds: float | None = None) -> str:
+        """Return a Git tree id for tracked and non-ignored untracked workspace state.
+
+        A temporary index captures content and executable-bit changes without
+        mutating the repository's real index. Ignored build/cache artifacts are
+        excluded so routine checks do not invalidate themselves.
+        """
+
+        budget = self._effective_timeout(30.0, timeout_seconds)
+        deadline = time.monotonic() + budget
+
+        def remaining() -> float:
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise ToolExecutionError("workspace fingerprint exceeded the harness timeout")
+            return value
+
+        git_dir_result = self._git(("rev-parse", "--git-dir"), timeout_seconds=remaining())
+        if not git_dir_result.ok:
+            raise ToolExecutionError(
+                f"could not resolve git dir: {git_dir_result.stderr.strip()}"
+            )
+        git_dir = Path(git_dir_result.stdout.strip())
+        if not git_dir.is_absolute():
+            git_dir = (self.workspace / git_dir).resolve(strict=True)
+        fingerprint_index = git_dir / f"looplane-fingerprint-index-{uuid4().hex}"
+        extra_env = {"GIT_INDEX_FILE": str(fingerprint_index)}
+        try:
+            read_tree = self._git(
+                ("read-tree", "HEAD"),
+                timeout_seconds=remaining(),
+                extra_env=extra_env,
+            )
+            if not read_tree.ok:
+                raise ToolExecutionError(
+                    "could not initialize the workspace fingerprint index: "
+                    + read_tree.stderr.strip()
+                )
+            added = self._git(
+                ("add", "-A", "--", "."),
+                timeout_seconds=remaining(),
+                extra_env=extra_env,
+                max_output_bytes=20_000,
+            )
+            if not added.ok:
+                raise ToolExecutionError(
+                    f"could not fingerprint workspace changes: {added.stderr.strip()}"
+                )
+            tree = self._git(
+                ("write-tree",),
+                timeout_seconds=remaining(),
+                extra_env=extra_env,
+            )
+            fingerprint = tree.stdout.strip()
+            if not tree.ok or not fingerprint:
+                raise ToolExecutionError(
+                    f"could not write workspace fingerprint: {tree.stderr.strip()}"
+                )
+            return fingerprint
+        finally:
+            fingerprint_index.unlink(missing_ok=True)
+
     def _reviewable_patch_pinned(self, *, timeout_seconds: float | None = None) -> ReviewablePatch:
         """Diff against an isolated index pinned to base_sha, never touching the real index.
 

@@ -43,6 +43,7 @@ from looplane.prompts import (
     build_workspace_context_reminder,
 )
 from looplane.session import SessionManifest, SessionPhase, SessionStore
+from looplane.tools import ToolExecutor
 
 BROKEN_PATCH = """\
 diff --git a/src/tiny_python_bug/calculator.py b/src/tiny_python_bug/calculator.py
@@ -792,6 +793,9 @@ async def test_agent_runner_continues_conversation_with_prior_messages_and_works
 
     assert result1.status == RunStatus.COMPLETED, result1.model_dump()
     assert result1.changed_files == ("src/tiny_python_bug/calculator.py",)
+    verification_events_before_follow_up = sum(
+        event["event_type"] == "verification.started" for event in read_events(result1)
+    )
     assert runner1._manifest is not None
     assert ToolEffect.MODIFY in runner1._manifest.granted_effects
 
@@ -826,8 +830,14 @@ async def test_agent_runner_continues_conversation_with_prior_messages_and_works
     result2 = await runner2.run()
 
     assert result2.status == RunStatus.COMPLETED, result2.model_dump()
+    assert result2.terminal_reason == "no_changes"
+    assert result2.verification == ()
     assert result2.run_id == runner1.run_id
     assert len(model_turn2.calls) == 1
+    assert (
+        sum(event["event_type"] == "verification.started" for event in read_events(result2))
+        == verification_events_before_follow_up
+    )
 
     call_messages, _tools = model_turn2.calls[0]
     text_contents = [
@@ -842,6 +852,28 @@ async def test_agent_runner_continues_conversation_with_prior_messages_and_works
     assert workspace_file.read_bytes() == edited_contents
     assert runner2._manifest is not None
     assert ToolEffect.MODIFY in runner2._manifest.granted_effects
+
+    # A non-ignored out-of-band change invalidates the verified workspace stamp,
+    # even when the next model turn itself does not call a modifying tool.
+    (workspace_file.parent / "external.py").write_text("VALUE = 1\n", encoding="utf-8")
+    model_turn3 = ScriptedModel(turns=[ModelTurn(content="No additional edits requested.")])
+    runner3 = AgentRunner(
+        task=follow_up_task.model_copy(update={"instruction": "Inspect the current state."}),
+        model=model_turn3,
+        run_root=run_root,
+        run_id=runner1.run_id,
+        continuation=True,
+        allow_unsafe_local_exec=True,
+    )
+
+    result3 = await runner3.run()
+
+    assert result3.status == RunStatus.COMPLETED, result3.model_dump()
+    assert result3.terminal_reason == "verified"
+    assert (
+        sum(event["event_type"] == "verification.started" for event in read_events(result3))
+        == verification_events_before_follow_up + 1
+    )
 
 
 @pytest.mark.asyncio
@@ -969,6 +1001,109 @@ async def test_scripted_model_edits_real_repo_directly_when_direct_edit_enabled(
     assert not [
         event for event in events if event["event_type"] == "workspace.dirty_source_detected"
     ]
+
+
+@pytest.mark.asyncio
+async def test_failed_modifying_tool_side_effect_still_requires_verification(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_execute = ToolExecutor.execute
+
+    def execute_with_partial_side_effect(
+        executor: ToolExecutor,
+        call: ToolCall,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> ToolObservation:
+        if call.name == "replace_text":
+            path = executor.workspace / "src" / "tiny_python_bug" / "calculator.py"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("left - right", "left + right"),
+                encoding="utf-8",
+            )
+            return ToolObservation(
+                tool_call_id=call.tool_call_id,
+                name=call.name,
+                ok=False,
+                error="simulated tool failure after a partial write",
+            )
+        return original_execute(executor, call, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(ToolExecutor, "execute", execute_with_partial_side_effect)
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(max_steps=3, wall_time_seconds=30),
+        verification=(
+            VerificationCommand(name="tests", argv=IMPORT_CHECK_ARGV, timeout_seconds=30),
+        ),
+    )
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="replace_text",
+                        arguments={
+                            "path": "src/tiny_python_bug/calculator.py",
+                            "old_text": "left - right",
+                            "new_text": "left + right",
+                        },
+                    ),
+                )
+            ),
+            ModelTurn(content="The attempted edit reported a failure."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    assert result.terminal_reason == "verified"
+    assert any(
+        event["event_type"] == "verification.started" for event in read_events(result)
+    )
+
+
+@pytest.mark.asyncio
+async def test_passing_verification_that_mutates_workspace_is_not_trusted(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    mutating_check = (
+        sys.executable,
+        "-c",
+        "from pathlib import Path; "
+        "p = Path('src/tiny_python_bug/calculator.py'); "
+        "p.write_text(p.read_text() + '# changed by verification\\n')",
+    )
+    task = make_task(
+        tiny_bug_repo,
+        limits=Limits(max_steps=2, wall_time_seconds=30),
+        verification=(
+            VerificationCommand(name="mutating", argv=mutating_check, timeout_seconds=30),
+        ),
+    )
+    model = ScriptedModel(
+        [
+            ModelTurn(tool_calls=(ToolCall(name="apply_patch", arguments={"patch": FIX_PATCH}),)),
+            ModelTurn(content="Fixed the calculator."),
+        ]
+    )
+
+    result = await AgentRunner(
+        task,
+        model,
+        tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    ).run()
+
+    assert result.status == RunStatus.FAILED
+    assert result.terminal_reason == "error_ToolExecutionError"
+    assert "workspace changed while final verification was running" in result.summary
 
 
 @pytest.mark.asyncio
@@ -1133,6 +1268,40 @@ async def test_conversational_run_skips_verification_and_completes_without_chang
     assert not any(event["event_type"].startswith("verification.") for event in events)
     assert events[-1]["event_type"] == "run.completed"
     assert events[-1]["data"]["terminal_reason"] == "no_changes"
+
+
+@pytest.mark.asyncio
+async def test_read_only_continuation_reuses_settled_workspace_without_verification(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    run_root = tmp_path / "runs"
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=4, wall_time_seconds=30))
+    first_runner = AgentRunner(
+        task,
+        ScriptedModel([ModelTurn(content="The repository is ready.")]),
+        run_root,
+        allow_unsafe_local_exec=True,
+    )
+    first_result = await first_runner.run()
+    first_events = read_events(first_result)
+
+    second_runner = AgentRunner(
+        task.model_copy(update={"instruction": "Explain the current state."}),
+        ScriptedModel([ModelTurn(content="No files need to change.")]),
+        run_root,
+        run_id=first_result.run_id,
+        continuation=True,
+        allow_unsafe_local_exec=True,
+    )
+    second_result = await second_runner.run()
+    continuation_events = read_events(second_result)[len(first_events) :]
+
+    assert first_result.terminal_reason == "no_changes"
+    assert second_result.terminal_reason == "no_changes"
+    assert second_result.verification == ()
+    assert not any(
+        event["event_type"].startswith("verification.") for event in continuation_events
+    )
 
 
 @pytest.mark.asyncio
