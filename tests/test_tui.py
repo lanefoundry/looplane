@@ -1466,19 +1466,21 @@ async def test_run_check_approval_displays_exact_command_in_action_title(tmp_pat
         assert decision["value"] == ApprovalDecision.DENY
 
 
-async def test_approval_arrow_keys_work_without_option_list_focus(tmp_path: Path) -> None:
-    """↑/↓ must move the approval highlight even when focus was stolen."""
+async def test_final_verification_keyboard_works_without_option_list_focus(
+    tmp_path: Path,
+) -> None:
+    """Arrow keys and Enter must work even when verification focus was stolen."""
     decision: dict[str, ApprovalDecision] = {}
 
     class ApprovalRunner(FakeRunner):
         async def run(self) -> RunResult:
             request = ApprovalRequest(
                 run_id="approval-run",
-                action_id="edit-1",
-                effect=ToolEffect.MODIFY,
-                reason=ApprovalReason.MODEL_TOOL,
-                preview="replace src/example.py",
-                tool_call=ToolCall(name="replace_text"),
+                action_id="verify-final",
+                effect=ToolEffect.EXECUTE,
+                reason=ApprovalReason.FINAL_VERIFICATION,
+                preview="$ git diff --check",
+                command=VerificationCommand(name="check-1", argv=("git", "diff", "--check")),
             )
             decision["value"] = await self.approval_policy.decide(request)
             return await super().run()
@@ -1514,7 +1516,13 @@ async def test_approval_arrow_keys_work_without_option_list_focus(tmp_path: Path
         await pilot.pause()
         assert choices.highlighted == 3  # wraps to the last choice
 
-        app.action_approval_choice(1)
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+        assert choices.highlighted == 1
+
+        await pilot.press("enter")
         await pilot.pause()
         await _wait_until(lambda: app._result is not None)
         assert decision["value"] == ApprovalDecision.ALLOW_SESSION

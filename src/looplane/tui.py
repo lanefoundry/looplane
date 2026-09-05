@@ -1898,6 +1898,7 @@ class looplaneApp(App[RunResult | None]):
         Binding("4", "approval_choice(3)", "Approval choice 4", priority=True, show=False),
         Binding("up", "approval_move(-1)", "Approval previous", priority=True, show=False),
         Binding("down", "approval_move(1)", "Approval next", priority=True, show=False),
+        Binding("enter", "approval_confirm", "Confirm approval choice", priority=True, show=False),
         Binding("escape", "handle_escape", "Close / interrupt", priority=True, show=False),
         Binding("ctrl+l", "configure_runtime", "Runtime / model"),
         Binding("q", "quit_when_idle", "Quit"),
@@ -1905,7 +1906,7 @@ class looplaneApp(App[RunResult | None]):
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action in {"approval_choice", "approval_move"}:
+        if action in {"approval_choice", "approval_move", "approval_confirm"}:
             return bool(self.query(InlineApprovalBlock))
         return True
 
@@ -1919,6 +1920,13 @@ class looplaneApp(App[RunResult | None]):
     def action_approval_choice(self, index: int) -> None:
         for approval in self.query(InlineApprovalBlock):
             approval.action_choose_index(index)
+            break
+
+    def action_approval_confirm(self) -> None:
+        for approval in self.query(InlineApprovalBlock):
+            choices = approval.query_one(".approval-choices", OptionList)
+            if choices.highlighted is not None:
+                approval.action_choose_index(choices.highlighted)
             break
 
     def action_handle_escape(self) -> None:
