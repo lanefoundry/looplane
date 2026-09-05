@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +28,13 @@ class RunEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     event_id: str = Field(default_factory=lambda: uuid4().hex)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+@runtime_checkable
+class EventSink(Protocol):
+    """Consumer of canonical native-run events, shared by console and SDK."""
+
+    async def emit(self, event: RunEvent) -> None: ...
 
 
 JsonValue = BaseModel | Mapping[str, Any] | list[Any] | tuple[Any, ...]

@@ -6,7 +6,10 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "src" / "looplane"
-FEATURES = ("looplane.terminal", "looplane.runtimes", "looplane.tooling")
+FEATURES = (
+    "looplane.terminal", "looplane.runtimes", "looplane.tooling", "looplane.commands",
+    "looplane.agent", "looplane.execution", "looplane.sandbox", "looplane.workspace",
+)
 FACADES = {
     "looplane.tui",
     "looplane.cli",
@@ -70,7 +73,9 @@ def test_feature_packages_do_not_import_facades_or_higher_layers() -> None:
     for module, dependencies in _graph().items():
         if not _within(module, FEATURES):
             continue
-        forbidden = set(FACADES) | {"looplane.commands"}
+        forbidden = set(FACADES)
+        if not _within(module, ("looplane.commands",)):
+            forbidden.add("looplane.commands")
         if module.startswith("looplane.runtimes."):
             forbidden.update({"looplane.terminal", "looplane.conversation_controller"})
         if module.startswith("looplane.tooling."):
@@ -81,6 +86,70 @@ def test_feature_packages_do_not_import_facades_or_higher_layers() -> None:
             if _within(dependency, forbidden)
         )
     assert not violations, "\n".join(sorted(violations))
+
+
+def test_domain_and_policy_do_not_depend_on_product_or_vendor_layers() -> None:
+    graph = _graph()
+    owners = (
+        "looplane.contracts", "looplane.events", "looplane.approvals", "looplane.policy",
+        "looplane.runtime_semantics", "looplane.conversation_runtime", "looplane.external_agents",
+    )
+    forbidden = ("looplane.commands", "looplane.terminal", "looplane.runtimes")
+    violations = [
+        f"{owner} -> {dependency}"
+        for owner in owners
+        for dependency in graph.get(owner, ())
+        if _within(dependency, forbidden)
+    ]
+    assert not violations, "\n".join(sorted(violations))
+
+
+def test_canonical_events_have_one_definition_owner() -> None:
+    from looplane import conversation_runtime
+
+    names = {
+        name for name, value in vars(conversation_runtime).items()
+        if isinstance(value, type) and value.__module__ == conversation_runtime.__name__
+        and name.endswith("Event")
+    }
+    expected = {name: "conversation_runtime.py" for name in names}
+    expected.update(
+        {"ConversationRuntimeEvent": "conversation_runtime.py", "RunEvent": "events.py"}
+    )
+    found: dict[str, list[str]] = {name: [] for name in expected}
+    for path in ROOT.rglob("*.py"):
+        for node in ast.parse(path.read_text()).body:
+            declared = []
+            if isinstance(node, ast.ClassDef):
+                declared = [node.name]
+            elif isinstance(node, ast.Assign):
+                declared = [target.id for target in node.targets if isinstance(target, ast.Name)]
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                declared = [node.target.id]
+            for name in declared:
+                if name in found:
+                    found[name].append(path.relative_to(ROOT).as_posix())
+    assert found == {name: [owner] for name, owner in expected.items()}
+
+
+def test_production_import_graph_adds_no_cycles_to_baseline() -> None:
+    graph = _graph()
+    reachable = {}
+    for start in graph:
+        pending = list(graph[start])
+        seen = set()
+        while pending:
+            current = pending.pop()
+            if current not in seen:
+                seen.add(current)
+                pending.extend(graph.get(current, ()))
+        reachable[start] = seen
+    cycles = {
+        frozenset(other for other in reachable[start] if start in reachable.get(other, ()))
+        for start in graph if start in reachable[start]
+    }
+    # Existing literal importlib cycle; Slice 2.5 must remove this allowance.
+    assert cycles <= {frozenset({"looplane.loop", "looplane.subagents"})}, cycles
 
 
 def test_extracted_packages_do_not_participate_in_import_cycles() -> None:

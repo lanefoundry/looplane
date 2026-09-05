@@ -48,8 +48,8 @@ class ConversationEventSink(Protocol):
 RuntimeApprovalCallback = Callable[[ApprovalRequestedEvent], Awaitable[ApprovalDecision]]
 
 
-class BackendTurnLimiter:
-    """Bound concurrent active backend turns across conversation controllers."""
+class TurnLimiter:
+    """Bound concurrent active runtime turns across conversation controllers."""
 
     def __init__(self, max_active_turns: int = 2) -> None:
         if max_active_turns <= 0:
@@ -57,12 +57,16 @@ class BackendTurnLimiter:
         self.max_active_turns = max_active_turns
         self._semaphore = asyncio.Semaphore(max_active_turns)
 
-    async def __aenter__(self) -> BackendTurnLimiter:
+    async def __aenter__(self) -> TurnLimiter:
         await self._semaphore.acquire()
         return self
 
     async def __aexit__(self, *_exc_info: object) -> None:
         self._semaphore.release()
+
+
+# Compatibility name for existing controller construction and SDK integrations.
+BackendTurnLimiter = TurnLimiter
 
 
 async def decide_runtime_approval(
@@ -106,7 +110,7 @@ class ConversationController:
         *,
         interrupt_grace_seconds: float = 5.0,
         compaction_timeout_seconds: float = 120.0,
-        backend_limiter: BackendTurnLimiter | None = None,
+        backend_limiter: TurnLimiter | None = None,
         hook_runner: HookRunner | None = None,
         context_provider_runner: ContextProviderRunner | None = None,
     ) -> None:

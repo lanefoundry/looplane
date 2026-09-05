@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Protocol, TextIO, runtime_checkable
+from typing import TextIO
 
-from looplane.events import EventWriter, RunEvent
+from looplane.events import EventSink, EventWriter, RunEvent
 from looplane.runtime import bounded_text
-
-
-@runtime_checkable
-class EventSink(Protocol):
-    async def emit(self, event: RunEvent) -> None: ...
 
 
 class JsonlEventSink:

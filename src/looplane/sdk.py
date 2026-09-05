@@ -7,7 +7,6 @@ orchestration helpers without importing the CLI/TUI or provider SDK adapters.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 from looplane.cache_strategy import (
     CacheAwarePromptOrdering,
@@ -44,7 +43,7 @@ from looplane.contracts import (
     Usage,
     VerificationCommand,
 )
-from looplane.conversation_controller import BackendTurnLimiter
+from looplane.conversation_controller import BackendTurnLimiter, TurnLimiter
 from looplane.conversation_runtime import (
     ConversationRuntimeEvent,
     ConversationRuntimeSession,
@@ -53,7 +52,8 @@ from looplane.conversation_runtime import (
     RuntimeSkillsChangedEvent,
 )
 from looplane.conversation_websocket import ConversationWebSocketApp
-from looplane.events import RunEvent
+from looplane.events import EventSink
+from looplane.events import RunEvent as RunEvent
 from looplane.hooks import HookCommandConfig, HookConfig, HookDecision, HookEventName, HookRunner
 from looplane.ide import (
     EditorDeepLinkStyle,
@@ -126,13 +126,6 @@ from looplane.subagents import (
 SDK_STABILITY = "0.x: contracts are typed and versioned, but may change before 1.0."
 
 
-@runtime_checkable
-class EventSink(Protocol):
-    """Minimal async sink accepted by SDK runner helpers."""
-
-    async def emit(self, event: RunEvent) -> None: ...
-
-
 async def run_task(
     task: TaskContract,
     model: ModelProvider,
@@ -181,6 +174,7 @@ __all__ = [
     "ConversationWebSocketApp",
     "A10_SUBAGENT_PLANNER_POLICY_VERSION",
     "BackendTurnLimiter",
+    "TurnLimiter",
     "CacheAwarePromptOrdering",
     "CacheAwarePromptOrderingMode",
     "ContextProviderCommand",

@@ -17,6 +17,10 @@ import importlib
 import shutil
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from looplane.runtime_semantics import RuntimeCapabilities
 
 
 class RuntimeKind(StrEnum):
@@ -76,7 +80,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
         label="Claude Code · uses installed local login",
         kind=RuntimeKind.EXTERNAL,
         executable="claude",
-        backend="looplane.claude_backend.ClaudeCodeBackend",
+        backend="looplane.claude_runner.ClaudeCodeRunner",
         native_session="looplane.claude_conversation.IsolatedClaudeConversation",
         model_options=(
             ("Automatic · account default (recommended)", None),
@@ -92,7 +96,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
         label="Codex CLI · uses installed local login",
         kind=RuntimeKind.EXTERNAL,
         executable="codex",
-        backend="looplane.codex_backend.CodexCliBackend",
+        backend="looplane.codex_runner.CodexCliRunner",
         native_session="looplane.codex_conversation.IsolatedCodexConversation",
         model_options=(
             ("Automatic · Codex default (recommended)", None),
@@ -107,7 +111,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
         label="OpenCode · local CLI, 75+ providers",
         kind=RuntimeKind.EXTERNAL,
         executable="opencode",
-        backend="looplane.opencode_backend.OpenCodeBackend",
+        backend="looplane.opencode_runner.OpenCodeRunner",
         model_options=(
             ("Automatic · configured provider (recommended)", None),
             ("Anthropic · Claude Sonnet", "anthropic/claude-sonnet-4-5"),
@@ -133,7 +137,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
         label="Pi · local coding agent (JSON event stream)",
         kind=RuntimeKind.EXTERNAL,
         executable="pi",
-        backend="looplane.pi_backend.PiBackend",
+        backend="looplane.pi_runner.PiRunner",
         model_options=(
             ("Automatic · configured provider (recommended)", None),
             ("Anthropic · Claude Opus", "anthropic/claude-opus-4-7"),
@@ -158,7 +162,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
         label="Oh My Pi · IDE-wired coding agent",
         kind=RuntimeKind.EXTERNAL,
         executable="omp",
-        backend="looplane.omp_backend.OmpBackend",
+        backend="looplane.omp_runner.OmpRunner",
         model_options=(
             ("Automatic · configured provider (recommended)", None),
             ("Anthropic · Claude Opus", "anthropic/claude-opus-4-7"),
@@ -186,6 +190,26 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
         capabilities=_NATIVE_CAPS,
     ),
 }
+
+
+def validate_runtime_capabilities(
+    adapter: RuntimeAdapter, capabilities: RuntimeCapabilities
+) -> None:
+    """Check overlapping discovery/live semantics without a third capability model.
+
+    Usage describes the same feature in both contracts. Structured approvals and
+    proposed previews are narrower than discovery's approval/diff categories, so
+    their presence implies discovery support, but absence does not contradict it.
+    Other fields have no counterpart and are deliberately not inferred.
+    """
+    if capabilities.token_usage != (RuntimeCapability.USAGE in adapter.capabilities):
+        raise ValueError(f"{adapter.slug}: token usage disagrees with discovery")
+    for enabled, required in (
+        (capabilities.structured_approvals, RuntimeCapability.APPROVAL),
+        (capabilities.proposed_file_preview, RuntimeCapability.DIFF_REPORTING),
+    ):
+        if enabled and required not in adapter.capabilities:
+            raise ValueError(f"{adapter.slug}: live session requires discovery {required.value}")
 
 
 def runtime_options() -> tuple[tuple[str, str], ...]:
