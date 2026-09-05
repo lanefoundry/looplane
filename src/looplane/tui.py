@@ -434,6 +434,11 @@ class MessageComposer(TextArea):
             super().__init__()
             self.delta = delta
 
+    class TranscriptNavigation(Message):
+        def __init__(self, delta: int) -> None:
+            super().__init__()
+            self.delta = delta
+
     def set_text(self, text: str) -> None:
         """Replace the draft and leave the cursor at its natural editing edge."""
 
@@ -468,6 +473,11 @@ class MessageComposer(TextArea):
             event.prevent_default()
             self.post_message(self.HistoryNavigation(-1 if event.key == "ctrl+p" else 1))
             return
+        if event.key in {"pageup", "pagedown"}:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.TranscriptNavigation(-1 if event.key == "pageup" else 1))
+            return
         await super()._on_key(event)
 
 
@@ -477,7 +487,8 @@ class TranscriptScroll(VerticalScroll):
     class PositionChanged(Message):
         pass
 
-    def watch_scroll_y(self, _old: float, _new: float) -> None:
+    def watch_scroll_y(self, old: float, new: float) -> None:
+        super().watch_scroll_y(old, new)
         if self.is_mounted:
             self.post_message(self.PositionChanged())
 
@@ -2960,6 +2971,14 @@ class looplaneApp(App[RunResult | None]):
             if next_index == len(self._prompt_history)
             else self._prompt_history[next_index]
         )
+
+    @on(MessageComposer.TranscriptNavigation)
+    def navigate_transcript(self, event: MessageComposer.TranscriptNavigation) -> None:
+        transcript = self.query_one("#transcript", TranscriptScroll)
+        if event.delta < 0:
+            transcript.scroll_page_up(animate=False)
+        else:
+            transcript.scroll_page_down(animate=False)
 
     def _command_menu_visible(self) -> bool:
         return (

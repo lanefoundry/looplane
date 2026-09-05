@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from rich.cells import cell_len
+from textual.events import MouseScrollUp
 from textual.widgets import Button, Input, OptionList, Select, Static
 
 from looplane.approvals import (
@@ -979,6 +980,83 @@ async def test_sparse_conversation_is_anchored_above_composer(tmp_path: Path) ->
         await pilot.pause()
         assert transcript_widget.max_scroll_y > previous_maximum
         assert transcript_widget.scroll_y == reading_position
+
+
+async def test_transcript_mouse_scroll_repaints_while_thinking(tmp_path: Path) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+    )
+
+    async with app.run_test(size=(80, 20)) as pilot:
+        for index in range(30):
+            app._write_turn("Assistant", f"History row {index}\nMore detail")
+        app.animation_level = "none"
+        status = app.query_one("#status", RuntimeStatus)
+        status.set_loading("Thinking…", LoadingPhase.THINKING)
+        await pilot.pause()
+
+        transcript = app.query_one("#transcript")
+        assert transcript.max_scroll_y > 0
+        before_y = transcript.scroll_y
+        before_render = app.export_screenshot(simplify=True)
+        x = transcript.region.x + 5
+        y = transcript.region.y + 3
+
+        app.post_message(
+            MouseScrollUp(
+                None,
+                x,
+                y,
+                0,
+                -1,
+                0,
+                False,
+                False,
+                False,
+                screen_x=x,
+                screen_y=y,
+            )
+        )
+        await pilot.pause()
+
+        assert transcript.scroll_y < before_y
+        assert transcript.vertical_scrollbar.position == transcript.scroll_y
+        assert app.export_screenshot(simplify=True) != before_render
+        assert transcript._anchor_released is True
+        assert status.loading_label == "Thinking…"
+
+
+async def test_page_keys_scroll_transcript_while_composer_keeps_focus(tmp_path: Path) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+    )
+
+    async with app.run_test(size=(80, 20)) as pilot:
+        for index in range(30):
+            app._write_turn("Assistant", f"History row {index}\nMore detail")
+        composer = app.query_one("#task", MessageComposer)
+        composer.focus()
+        await pilot.pause()
+
+        transcript = app.query_one("#transcript")
+        assert transcript.scroll_y == transcript.max_scroll_y
+        await pilot.press("pageup")
+        await pilot.pause()
+
+        assert transcript.scroll_y < transcript.max_scroll_y
+        assert app.focused is composer
+
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert transcript.scroll_y == transcript.max_scroll_y
 
 
 def test_external_ask_prompt_retains_read_only_prefix_when_history_is_bounded(
