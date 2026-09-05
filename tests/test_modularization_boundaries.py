@@ -17,6 +17,7 @@ FACADES = {
     "looplane.tools",
     "looplane.codex_app_server",
     "looplane.backends",
+    "looplane.runtime",
 }
 
 
@@ -132,7 +133,7 @@ def test_canonical_events_have_one_definition_owner() -> None:
     assert found == {name: [owner] for name, owner in expected.items()}
 
 
-def test_production_import_graph_adds_no_cycles_to_baseline() -> None:
+def test_production_import_graph_has_no_cycles() -> None:
     graph = _graph()
     reachable = {}
     for start in graph:
@@ -148,8 +149,7 @@ def test_production_import_graph_adds_no_cycles_to_baseline() -> None:
         frozenset(other for other in reachable[start] if start in reachable.get(other, ()))
         for start in graph if start in reachable[start]
     }
-    # Existing literal importlib cycle; Slice 2.5 must remove this allowance.
-    assert cycles <= {frozenset({"looplane.loop", "looplane.subagents"})}, cycles
+    assert not cycles, cycles
 
 
 def test_extracted_packages_do_not_participate_in_import_cycles() -> None:

@@ -24,15 +24,26 @@ async def test_claude_backend_emits_message_before_exit_and_deduplicates_result(
     tmp_path: Path,
 ) -> None:
     finished = tmp_path / "finished"
+    ready = tmp_path / "ready"
+    stream = tmp_path / "stream"
+    release = tmp_path / "release"
     executable = _fake_claude(
         tmp_path,
         f"""
 import json, pathlib, time
+def wait_for_marker(path):
+    deadline = time.monotonic() + 10
+    while not path.exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("fixture synchronization timed out")
+        time.sleep(0.01)
+pathlib.Path({str(ready)!r}).touch()
+wait_for_marker(pathlib.Path({str(stream)!r}))
 print(json.dumps({{"type": "system", "subtype": "init", "session_id": "private"}}), flush=True)
 print(json.dumps({{"type": "assistant", "message": {{"content": [
     {{"type": "text", "text": "hello"}}
 ]}}}}), flush=True)
-time.sleep(0.4)
+wait_for_marker(pathlib.Path({str(release)!r}))
 pathlib.Path({str(finished)!r}).write_text("done")
 print(json.dumps({{"type": "result", "subtype": "success", "is_error": False,
                   "result": "hello"}}), flush=True)
@@ -54,10 +65,26 @@ print(json.dumps({{"type": "result", "subtype": "success", "is_error": False,
         )
     )
 
-    await asyncio.wait_for(message_received.wait(), timeout=1)
-    assert not run_task.done()
-    assert not finished.exists()
-    result = await run_task
+    async def wait_until_ready() -> None:
+        while not ready.exists():
+            if run_task.done():
+                raise AssertionError("fixture exited before becoming ready")
+            await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(wait_until_ready(), timeout=5)
+        stream.touch()
+        await asyncio.wait_for(message_received.wait(), timeout=1)
+        assert not run_task.done()
+        assert not finished.exists()
+        release.touch()
+        result = await asyncio.wait_for(run_task, timeout=5)
+    finally:
+        stream.touch()
+        release.touch()
+        if not run_task.done():
+            run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
 
     assert result.status is ExternalRunStatus.COMPLETED
     assert result.summary == "hello"

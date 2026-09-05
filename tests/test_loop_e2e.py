@@ -796,8 +796,8 @@ async def test_agent_runner_continues_conversation_with_prior_messages_and_works
     verification_events_before_follow_up = sum(
         event["event_type"] == "verification.started" for event in read_events(result1)
     )
-    assert runner1._manifest is not None
-    assert ToolEffect.MODIFY in runner1._manifest.granted_effects
+    assert runner1._persistence.manifest is not None
+    assert ToolEffect.MODIFY in runner1._persistence.manifest.granted_effects
 
     workspace_file = runner1.run_dir / "workspace" / "src" / "tiny_python_bug" / "calculator.py"
     edited_contents = workspace_file.read_bytes()
@@ -850,8 +850,8 @@ async def test_agent_runner_continues_conversation_with_prior_messages_and_works
 
     # The disposable clone was reused, not re-cloned from HEAD: turn 1's edit is still there.
     assert workspace_file.read_bytes() == edited_contents
-    assert runner2._manifest is not None
-    assert ToolEffect.MODIFY in runner2._manifest.granted_effects
+    assert runner2._persistence.manifest is not None
+    assert ToolEffect.MODIFY in runner2._persistence.manifest.granted_effects
 
     # A non-ignored out-of-band change invalidates the verified workspace stamp,
     # even when the next model turn itself does not call a modifying tool.

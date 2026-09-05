@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import looplane.loop as loop_module
+from looplane.agent import run_lifecycle as lifecycle_module
 from looplane.approvals import ApprovalDecision, ApprovalReason
 from looplane.contracts import (
     Limits,
@@ -101,7 +101,7 @@ async def test_approval_wait_does_not_consume_active_wall_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = [100.0]
-    monkeypatch.setattr(loop_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(lifecycle_module.time, "monotonic", lambda: clock[0])
     approvals = AdvancingApprovalPolicy(clock, wait_seconds=10.0)
     events = RecordingEventSink(clock)
 
@@ -128,7 +128,7 @@ async def test_active_expiry_after_final_approval_is_phase_accurate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = [100.0]
-    monkeypatch.setattr(loop_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(lifecycle_module.time, "monotonic", lambda: clock[0])
     approvals = AdvancingApprovalPolicy(clock, wait_seconds=10.0)
     events = RecordingEventSink(clock, final_approval_active_seconds=1.0)
 
@@ -157,7 +157,7 @@ async def test_cancelled_approval_persists_only_active_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = [100.0]
-    monkeypatch.setattr(loop_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(lifecycle_module.time, "monotonic", lambda: clock[0])
     approvals = BlockingApprovalPolicy()
     runner = AgentRunner(
         task_for(tiny_bug_repo),
