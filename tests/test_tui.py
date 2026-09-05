@@ -87,6 +87,7 @@ from looplane.tui import (
     format_token_count,
     looplaneApp,
 )
+from looplane.tui_links import TranscriptMarkdown
 
 
 class FakeModel:
@@ -2080,6 +2081,85 @@ async def test_ctrl_c_resolves_open_approval_as_cancel(tmp_path: Path) -> None:
         await _wait_until(lambda: app._result is not None)
         await pilot.pause()
         assert decision["value"] == ApprovalDecision.CANCEL
+
+
+@pytest.mark.parametrize("shortcut", ["ctrl+c", "super+c"])
+async def test_copy_shortcut_copies_selected_composer_text_before_clearing_draft(
+    tmp_path: Path,
+    monkeypatch,
+    shortcut: str,
+) -> None:
+    monkeypatch.setattr("looplane.tui.copy_with_native_command", lambda _text: True)
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), None),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.focus()
+        composer.set_text("precious draft")
+        composer.select_all()
+
+        await pilot.press(shortcut)
+
+        assert app.clipboard == "precious draft"
+        assert composer.text == "precious draft"
+        assert app._draft_clear_armed_at is None
+        assert "Copied selection" in str(app.query_one("#status", Static).render())
+
+
+async def test_ctrl_c_copies_selected_transcript_text_before_exit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("looplane.tui.copy_with_native_command", lambda _text: True)
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), None),
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        message = MessageBlock("Assistant", "copy this answer")
+        await app.query_one("#messages").mount(message)
+        body = message.query_one(TranscriptMarkdown)
+        body.text_select_all()
+
+        await pilot.press("ctrl+c")
+
+        assert app.clipboard == "copy this answer"
+        assert app._exit_confirm_at is None
+        assert "Copied selection" in str(app.query_one("#status", Static).render())
+
+
+async def test_transcript_links_open_safe_web_and_repository_targets(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "example.py"
+    source.parent.mkdir()
+    source.write_text("print('ok')\n")
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=lambda *_: (FakeRunner(), None),
+        providers=(("ollama", "Ollama local"),),
+    )
+    opened: list[str] = []
+
+    async with app.run_test(size=(100, 30)):
+        message = MessageBlock("Assistant", "[docs](https://example.com)")
+        await app.query_one("#messages").mount(message)
+        body = message.query_one(TranscriptMarkdown)
+        app.open_url = lambda url, **_kwargs: opened.append(url)  # type: ignore[method-assign]
+
+        body.on_markdown_link_clicked(body.LinkClicked(body, "https://example.com/docs"))
+        body.on_markdown_link_clicked(body.LinkClicked(body, "src/example.py:12"))
+        body.on_markdown_link_clicked(body.LinkClicked(body, "file:///etc/passwd"))
+
+        assert opened == ["https://example.com/docs", source.as_uri()]
+        assert "Link blocked" in str(app.query_one("#status", Static).render())
 
 
 async def test_later_factory_failure_clears_previous_success(tmp_path: Path) -> None:

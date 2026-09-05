@@ -30,7 +30,6 @@ from textual.widgets import (
     Collapsible,
     Input,
     Label,
-    Markdown,
     OptionList,
     RichLog,
     Select,
@@ -103,6 +102,8 @@ from looplane.slash_commands import (
 )
 from looplane.transcript import infer_tool_detail_kind
 from looplane.transcript_export import TranscriptReducer
+from looplane.tui_clipboard import copy_with_native_command, selected_text_for_copy
+from looplane.tui_links import TranscriptMarkdown
 
 if TYPE_CHECKING:
     from looplane.provider_verification import VerificationResult
@@ -965,7 +966,7 @@ class MessageBlock(Vertical):
             return
         with Horizontal(classes="assistant-row"):
             yield Static("●", classes="assistant-glyph", markup=False)
-            yield Markdown(self.content, classes="message-body", open_links=False)
+            yield TranscriptMarkdown(self.content, classes="message-body", open_links=False)
 
     def append_content(self, text: str) -> None:
         self.content += text
@@ -1940,6 +1941,7 @@ class looplaneApp(App[RunResult | None]):
     SUB_TITLE = "Otter-powered coding companion"
     BINDINGS = [
         Binding("ctrl+c", "stop_or_quit('ctrl+c')", "Stop / quit", priority=True),
+        Binding("super+c", "copy_selection", "Copy selection", priority=True, show=False),
         Binding("ctrl+d", "stop_or_quit('ctrl+d')", "Stop / quit", priority=True, show=False),
         Binding("ctrl+q", "stop_or_quit('ctrl+q')", "Stop / quit", priority=True, show=False),
         Binding("1", "approval_choice(0)", "Approval choice 1", priority=True, show=False),
@@ -2280,7 +2282,7 @@ class looplaneApp(App[RunResult | None]):
                     )
                     yield Static(
                         "Enter send · Shift+Enter newline · / commands · "
-                        "Ctrl+C stop · Ctrl+L model",
+                        "Cmd+C copy · Ctrl+C copy/stop · Ctrl+L model",
                         id="composer-hint",
                         markup=False,
                     )
@@ -3286,7 +3288,8 @@ class looplaneApp(App[RunResult | None]):
                 + "\n\nShortcuts\n"
                 + "Enter send · Shift+Enter newline · Ctrl+P/N prompt history\n"
                 + "PageUp/PageDown transcript (or approval preview) · Ctrl+O tool detail\n"
-                + "Esc close/interrupt · Ctrl+C stop; repeat to force stop\n"
+                + "Esc close/interrupt · Cmd+C copies · "
+                + "Ctrl+C copies a selection; otherwise stops\n"
                 + "Messages sent during a turn are queued FIFO; Ctrl+C restores them to the draft.",
             )
         elif command is SlashCommand.COMPACT:
@@ -5013,6 +5016,9 @@ class looplaneApp(App[RunResult | None]):
         )
 
     def action_stop_or_quit(self, key: str = "ctrl+c") -> None:
+        if key == "ctrl+c" and self._copy_selected_text():
+            self._reset_idle_detectors()
+            return
         if self._active_selector is not None:
             self._active_selector.action_cancel()
             self._reset_idle_detectors()
@@ -5063,6 +5069,24 @@ class looplaneApp(App[RunResult | None]):
         self._exit_confirm_key = key
         self._exit_confirm_at = monotonic()
         self.query_one("#status", Static).update(f"Press {label} again to exit")
+
+    def action_copy_selection(self) -> None:
+        self._copy_selected_text()
+
+    def _copy_selected_text(self) -> bool:
+        """Copy an explicit composer or transcript selection before Ctrl+C acts."""
+
+        selected_text = selected_text_for_copy(self.focused, self.screen)
+        if not selected_text:
+            return False
+        native_copied = copy_with_native_command(selected_text)
+        self.copy_to_clipboard(selected_text)
+        unit = "character" if len(selected_text) == 1 else "characters"
+        outcome = "Copied selection" if native_copied else "Copy requested via terminal"
+        self.query_one("#status", Static).update(
+            f"{outcome} · {len(selected_text)} {unit}"
+        )
+        return True
 
     def action_quit_when_idle(self) -> None:
         composer_has_input = bool(

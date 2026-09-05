@@ -67,3 +67,7 @@ OpenCode, Pi, and OMP are useful architecture references for looplane's own harn
 - A CLI accepting a subscription login does not make that subscription a reusable model API. looplane must preserve the official CLI harness boundary whenever plan usage depends on it.
 - ACP support may mean either “this CLI can be controlled as an agent” or “this CLI delegates to another agent.” These are architecturally different and need distinct adapter metadata.
 - Repository stars are only a maintenance/adoption signal; the ranking above primarily weights stable machine interfaces, auth-policy safety, and harness quality.
+
+## Related research
+
+- [Coding agent TUI architecture comparison](2026-09-05-coding-agent-tui-comparison.md) — cross-language comparison of viewport, selection/clipboard, approval, and interaction stacks.
