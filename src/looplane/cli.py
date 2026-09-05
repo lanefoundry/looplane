@@ -84,13 +84,6 @@ class DefaultChatCommand(TyperCommand):
         command_path = ctx.command_path.removesuffix(" chat")
         return f"Usage: {command_path} [OPTIONS] [PROMPT]\n"
 
-    import logging
-
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
 
 app = typer.Typer(
     cls=DefaultCommandGroup,
@@ -149,8 +142,51 @@ async def _start_controller(controller):
     await controller._ensure_started()
 
 
+_LOG_LEVEL_NAMES = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+_logging_configured = False
+
+
+def _configure_logging() -> None:
+    """Keep third-party logging off the terminal; the full-screen TUI shares it.
+
+    Silent by default. Set ``LOOPLANE_LOG_LEVEL`` to opt into a file-only log
+    at ``$XDG_STATE_HOME/looplane/logs/looplane.log`` — never stdout/stderr,
+    which would corrupt the alt-screen buffer (see native_credential_path for
+    the same XDG layout convention).
+    """
+    global _logging_configured
+    if _logging_configured:
+        return
+    _logging_configured = True
+
+    import logging
+
+    for noisy in ("httpx", "httpcore", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    level_name = os.environ.get("LOOPLANE_LOG_LEVEL", "").strip().upper()
+    if level_name not in _LOG_LEVEL_NAMES:
+        # No handler anywhere means stray warning()/error() calls (e.g. the
+        # codex runtime's _LOG) fall through to logging.lastResort, a bare
+        # stderr StreamHandler that would corrupt the alt-screen just like
+        # the bug this function replaces. A NullHandler forecloses that.
+        logging.getLogger().addHandler(logging.NullHandler())
+        return
+
+    state_root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    log_dir = state_root / "looplane" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(log_dir / "looplane.log")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(getattr(logging, level_name))
+
+
 def _command_services() -> CommandServices:
     from looplane.commands.ports import CommandServices, RuntimePorts
+
+    _configure_logging()
 
     return CommandServices(
         startup=_STARTUP,
