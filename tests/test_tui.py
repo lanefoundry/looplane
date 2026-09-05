@@ -1428,6 +1428,44 @@ async def test_tui_approval_is_attached_inline_and_maps_once_decision(tmp_path: 
         assert decision["value"] == ApprovalDecision.ALLOW_ONCE
 
 
+async def test_run_check_approval_displays_exact_command_in_action_title(tmp_path: Path) -> None:
+    decision: dict[str, ApprovalDecision] = {}
+
+    class ApprovalRunner(FakeRunner):
+        async def run(self) -> RunResult:
+            request = ApprovalRequest(
+                run_id="approval-run",
+                action_id="check-call",
+                effect=ToolEffect.EXECUTE,
+                reason=ApprovalReason.MODEL_TOOL,
+                preview="$ git diff --check",
+                tool_call=ToolCall(name="run_check", arguments={"name": "check-1"}),
+            )
+            decision["value"] = await self.approval_policy.decide(request)
+            return await super().run()
+
+    def factory(_request, approval_policy, event_sink):
+        return ApprovalRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+        initial_prompt="Inspect the repository.",
+    )
+
+    async with app.run_test(size=(100, 30)):
+        await _wait_until(lambda: bool(app.query(InlineApprovalBlock)))
+        action = app.query_one(ToolActionBlock)
+        approval = app.query_one(InlineApprovalBlock)
+        assert action.title == "Run git diff --check"
+        assert str(approval.query_one(".preview", Static).content) == "$ git diff --check"
+        app.action_approval_choice(2)
+        await _wait_until(lambda: app._result is not None)
+        assert decision["value"] == ApprovalDecision.DENY
+
+
 async def test_approval_arrow_keys_work_without_option_list_focus(tmp_path: Path) -> None:
     """↑/↓ must move the approval highlight even when focus was stolen."""
     decision: dict[str, ApprovalDecision] = {}

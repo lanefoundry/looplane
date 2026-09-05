@@ -381,7 +381,10 @@ class ToolExecutor:
                 description=(
                     "Run one exact argv verification command selected by its allowlisted name. "
                     "The allowed names come from the task contract, and the harness controls "
-                    "timeouts. Do not invent commands or pass shell syntax."
+                    "timeouts. Use it when the user asks to run a check, when a baseline is needed "
+                    "to reproduce or diagnose a requested code change, or after modifying files. "
+                    "Do not run it for a request that only needs reading or explanation. Do not "
+                    "invent commands or pass shell syntax."
                 ),
                 input_schema={
                     "type": "object",

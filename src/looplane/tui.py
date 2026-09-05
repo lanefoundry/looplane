@@ -1144,6 +1144,11 @@ class ToolActionBlock(Vertical):
             detail_widget.update(self._render_detail(detail))
             detail_widget.display = bool(detail)
 
+    def set_title(self, title: str) -> None:
+        self.title = title
+        if self.query(".tool-title"):
+            self.query_one(".tool-title", Static).update(title)
+
     def _render_detail(self, detail: str) -> str | Syntax:
         if self.detail_kind == "diff" and detail:
             return Syntax(
@@ -4621,6 +4626,13 @@ class looplaneApp(App[RunResult | None]):
                 detail_kind=self._tool_detail_kind(request.tool_call.name),
             )
             action.set_state("waiting", detail="Waiting for permission")
+        if (
+            action is not None
+            and request.tool_call is not None
+            and request.tool_call.name == "run_check"
+            and request.preview.startswith("$ ")
+        ):
+            action.set_title(f"Run {request.preview[2:]}")
         reference: ToolActionBlock | None = action
         self._track_transcript_item(f"approval:{request.request_id}")
         if reference is not None and reference.parent is messages:

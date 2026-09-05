@@ -7,6 +7,7 @@ from looplane.prompts import (
     CONTEXT_SUMMARY_FALLBACK_VERSION,
     INTERACTION_CONTEXT_VERSION,
     WORKSPACE_CONTEXT_REMINDER_VERSION,
+    WORKSPACE_STATE_CONTEXT_VERSION,
     PromptSection,
     build_coding_agent_system_prompt,
     build_context_pressure_reminder,
@@ -16,13 +17,14 @@ from looplane.prompts import (
     render_prompt_sections,
     render_runtime_prompt_context,
     render_subagent_planner_policy,
+    render_task_request,
     render_tool_prompt_context,
     render_workspace_prompt_context,
 )
 
 
 def test_m3_prompt_versions_the_observed_exact_edit_guidance() -> None:
-    assert CODING_AGENT_PROMPT_VERSION == "m3-exact-edit-v4"
+    assert CODING_AGENT_PROMPT_VERSION == "m3-exact-edit-v5"
     assert "read a file before editing" in CODING_AGENT_SYSTEM_PROMPT
     assert "Prefer replace_text" in CODING_AGENT_SYSTEM_PROMPT
     assert "Use apply_patch for multi-hunk" in CODING_AGENT_SYSTEM_PROMPT
@@ -36,7 +38,26 @@ def test_prompt_directs_conversational_input_to_a_plain_reply() -> None:
     assert "capability questions" in CODING_AGENT_SYSTEM_PROMPT
     assert "answer in text without calling tools" in CODING_AGENT_SYSTEM_PROMPT
     assert "do not call tools" in CODING_AGENT_SYSTEM_PROMPT
-    assert "Do not explore the repository" in CODING_AGENT_SYSTEM_PROMPT
+    assert "use read-only tools as needed" in CODING_AGENT_SYSTEM_PROMPT
+    assert "without editing files or running checks" in CODING_AGENT_SYSTEM_PROMPT
+    assert "Do not modify files" in CODING_AGENT_SYSTEM_PROMPT
+    assert "answerable from the conversation alone" in CODING_AGENT_SYSTEM_PROMPT
+
+
+def test_task_request_does_not_require_a_patch_or_check_for_read_only_work() -> None:
+    prompt = render_task_request(
+        instruction="Can you read README.md?",
+        base_sha="a" * 40,
+        allowed_paths=("**",),
+        verification=(VerificationCommand(name="check-1", argv=("git", "diff", "--check")),),
+    )
+
+    assert "Task: Can you read README.md?" in prompt
+    assert "Verification required after file changes:" in prompt
+    assert "Modify files only when the request requires a change." in prompt
+    assert "For a read-only request" in prompt
+    assert "without running verification" in prompt
+    assert "make the smallest correct patch, and verify it" not in prompt
 
 
 def test_prompt_builder_appends_known_context() -> None:
@@ -102,8 +123,9 @@ def test_prompt_builder_renders_broader_context_sections() -> None:
     assert f"[{INTERACTION_CONTEXT_VERSION}]" in prompt
     assert "ask_mode: ask_only_when_required_or_high_risk" in prompt
     assert "- read_file (read_only, concurrency_safe): Read one file." in prompt
-    assert "[b1-workspace-state-v1]" in prompt
+    assert f"[{WORKSPACE_STATE_CONTEXT_VERSION}]" in prompt
     assert "base_sha: " + "a" * 40 in prompt
+    assert "verification_required_after_file_changes:" in prompt
     assert "git_status_short:" in prompt
     assert "- M src/app.py" in prompt
     assert "[b1-runtime-context-v1]" in prompt

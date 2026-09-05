@@ -39,6 +39,7 @@ from looplane.permissions import PermissionGuard
 from looplane.prompts import (
     INTERACTION_CONTEXT_VERSION,
     WORKSPACE_CONTEXT_REMINDER_VERSION,
+    WORKSPACE_STATE_CONTEXT_VERSION,
     build_workspace_context_reminder,
 )
 from looplane.session import SessionManifest, SessionPhase, SessionStore
@@ -290,9 +291,9 @@ async def test_initial_prompt_injects_tool_workspace_and_runtime_sections(
     assert "<section name='runtime_context' cache='dynamic'>" in content
     assert "sandbox_checks: True" in content
     assert "<section name='workspace_state' cache='dynamic'>" in content
-    assert "[b1-workspace-state-v1]" in content
+    assert f"[{WORKSPACE_STATE_CONTEXT_VERSION}]" in content
     assert "allowed_paths:" in content
-    assert "required_verification:" in content
+    assert "verification_required_after_file_changes:" in content
     assert "git_status_short:" in content
     assert "- ##" in content
 
@@ -741,6 +742,14 @@ async def test_scripted_model_fixes_bug_verifies_and_writes_auditable_bundle(
     assert events
     assert [event["sequence"] for event in events] == list(range(len(events)))
     assert any(event["event_type"] == "tool.completed" for event in events)
+    model_check_approval = next(
+        event
+        for event in events
+        if event["event_type"] == "approval.requested"
+        and event["data"].get("reason") == ApprovalReason.MODEL_TOOL
+        and event["data"].get("effect") == ToolEffect.EXECUTE
+    )
+    assert model_check_approval["data"]["preview"] == "$ pytest -q"
     assert checkpoint["status"] == RunStatus.COMPLETED
     assert persisted_result["status"] == RunStatus.COMPLETED
     assert "-    return left - right" in patch
@@ -1105,7 +1114,21 @@ async def test_conversational_run_skips_verification_and_completes_without_chang
     assert result.terminal_reason == "no_changes"
     assert result.changed_files == ()
     assert result.verification == ()
+    first_messages, _tools = model.calls[0]
+    task_request = next(
+        item.content
+        for item in first_messages
+        if isinstance(item, Message) and item.role == "user" and item.content.startswith("Task:")
+    )
+    assert "Verification required after file changes:" in task_request
+    assert "For a read-only request" in task_request
+    assert "make the smallest correct patch, and verify it" not in task_request
     events = read_events(result)
+    assert not any(
+        event["event_type"] == "tool.requested"
+        and event["data"].get("name") == "run_check"
+        for event in events
+    )
     assert not any(event["event_type"] == "verification.started" for event in events)
     assert not any(event["event_type"].startswith("verification.") for event in events)
     assert events[-1]["event_type"] == "run.completed"

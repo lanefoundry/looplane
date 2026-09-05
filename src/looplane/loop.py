@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import random
+import shlex
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -83,6 +84,7 @@ from looplane.prompts import (
     render_interaction_prompt_context,
     render_runtime_prompt_context,
     render_subagent_planner_policy,
+    render_task_request,
     render_tool_prompt_context,
     render_workspace_prompt_context,
 )
@@ -678,8 +680,7 @@ class AgentRunner:
             reason="process_interrupted_before_decision",
         )
 
-    @staticmethod
-    def _tool_preview(call: ToolCall) -> str:
+    def _tool_preview(self, call: ToolCall) -> str:
         if call.name == "apply_patch":
             return str(call.arguments.get("patch", ""))
         if call.name == "replace_text":
@@ -692,6 +693,12 @@ class AgentRunner:
                 ensure_ascii=False,
                 indent=2,
             )
+        if call.name == "run_check" and self._executor is not None:
+            name = call.arguments.get("name")
+            if isinstance(name, str):
+                command = self._executor.verification_commands.get(name)
+                if command is not None:
+                    return "$ " + shlex.join(command.argv)
         return json.dumps(call.arguments, ensure_ascii=False, sort_keys=True, indent=2)
 
     def _guard_subjects(
@@ -918,10 +925,6 @@ class AgentRunner:
         return lines
 
     def _initial_messages(self, base_sha: str) -> list[ConversationItem]:
-        checks = "\n".join(
-            f"- {command.name}: {list(command.argv)!r}" for command in self.task.verification
-        )
-        paths = "\n".join(f"- {pattern}" for pattern in self.task.allowed_paths)
         known_context = render_known_context(relevant_memory_entries(project=self.task.repository))
         instruction_resolution = resolve_instruction_documents(
             project_root=self.task.repository,
@@ -980,12 +983,11 @@ class AgentRunner:
             self.task.repository,
             start_dir=Path.cwd(),
         )
-        request = (
-            f"Task: {self.task.instruction}\n"
-            f"Base commit: {base_sha}\n"
-            f"Allowed paths:\n{paths}\n"
-            f"Required verification:\n{checks}\n"
-            "Inspect the repository, make the smallest correct patch, and verify it."
+        request = render_task_request(
+            instruction=self.task.instruction,
+            base_sha=base_sha,
+            allowed_paths=self.task.allowed_paths,
+            verification=self.task.verification,
         )
         return [
             Message(
@@ -1799,7 +1801,7 @@ class AgentRunner:
         try:
             effect = effect_for_tool_definition(call.name, self._tool_definition_by_name(call.name))
         except ValueError:
-            raise ToolExecutionError(f"unknown_tool:{call.name}")
+            raise ToolExecutionError(f"unknown_tool:{call.name}") from None
         await self._event(
             "tool.requested",
             tool_call_id=call.tool_call_id,
@@ -2660,7 +2662,8 @@ class AgentRunner:
                                 "consecutive steps only reading files without making any changes. "
                                 f"You are running low on steps ({steps_left} remaining). "
                                 "Stop exploring and start implementing the solution now. "
-                                "Use replace_text or apply_patch to make the necessary code changes."
+                                "Use replace_text or apply_patch to make the necessary code "
+                                "changes."
                             )
                             self._messages.append(Message(role="user", content=nudge))
                             await self._event(

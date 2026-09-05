@@ -3,6 +3,11 @@
 日期：2026-08-25 · 範圍：`src/looplane/`（TUI 對話、looplane-agent runtime）
 驗證方式：程式碼追蹤 + 執行 `TextualApprovalPolicy._grant_scope` / `decide_permission` 實測腳本（結果見各節「實測」）。
 
+> 2026-09-05 更新：本文件保留當時根因紀錄，但「每個 run 都會驗證」已不符合現況。
+> 現行 runner 在沒有檔案變更時會以 `no_changes` 結束，不進 final verification。另已移除
+> task prompt 中無條件要求 patch/verification 的句子，將 verification 明確標成檔案變更後才需要；
+> `run_check` 的核准畫面也會顯示實際 argv，而非只有 `check-1` 內部名稱。
+
 ---
 
 ## TL;DR
