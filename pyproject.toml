@@ -35,6 +35,19 @@ looplane = "looplane.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["src/looplane"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src/looplane",
+  "/tests",
+  "/scripts",
+  "/evals/fixtures",
+  "/README.md",
+  "/LICENSE",
+  "/pyproject.toml",
+  "/uv.lock",
+]
+exclude = ["**/__pycache__", "**/*.pyc", "**/.git", "**/.venv", "**/node_modules"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]

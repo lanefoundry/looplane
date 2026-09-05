@@ -25,6 +25,8 @@ from looplane.approvals import (
     ApprovalRequest,
     ToolEffect,
 )
+from looplane.contracts import RunResult, RunStatus, TaskContract, ToolCall, Usage
+from looplane.events import atomic_write_json
 from looplane.external_agents import (
     ExternalAgentEvent,
     ExternalAgentResult,
@@ -32,8 +34,6 @@ from looplane.external_agents import (
     ExternalAgentTask,
     ExternalEventSink,
 )
-from looplane.contracts import RunResult, RunStatus, TaskContract, ToolCall, Usage
-from looplane.events import atomic_write_json
 from looplane.instructions import (
     render_instruction_context,
     render_instruction_diagnostics,

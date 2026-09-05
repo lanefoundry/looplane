@@ -11,7 +11,6 @@ from urllib.parse import urlsplit
 
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
-from looplane.dialect import Dialect, encode_inband_history
 
 from looplane.cache_strategy import (
     ProviderCacheTrace,
@@ -30,6 +29,7 @@ from looplane.contracts import (
     ToolObservation,
     Usage,
 )
+from looplane.dialect import Dialect, encode_inband_history
 
 
 class ProviderErrorKind(StrEnum):

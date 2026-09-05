@@ -163,6 +163,6 @@ def test_eviction_removes_oldest_entries(monkeypatch, tmp_path):
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     for i in range(_MAX_CACHE_ENTRIES + 5):
-        cached_scan(f"k{i}", CACHE_SCHEMA_VERSION, lambda: i)
+        cached_scan(f"k{i}", CACHE_SCHEMA_VERSION, lambda i=i: i)
     entries = list(_cache_dir().glob("*.json"))
     assert len(entries) <= _MAX_CACHE_ENTRIES

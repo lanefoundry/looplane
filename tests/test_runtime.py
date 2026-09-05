@@ -364,7 +364,11 @@ def test_sandboxed_command_argv_reports_unavailable_when_kernel_lacks_landlock(
 
     monkeypatch.setattr(runtime.sys, "platform", "linux")
     monkeypatch.setattr(runtime.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(landlock_run, "_landlock_abi", lambda: (_ for _ in ()).throw(OSError(38, "Function not implemented")))
+    monkeypatch.setattr(
+        landlock_run,
+        "_landlock_abi",
+        lambda: (_ for _ in ()).throw(OSError(38, "Function not implemented")),
+    )
 
     result = sandboxed_command_argv(
         (sys.executable, "-c", "pass"),
@@ -386,7 +390,11 @@ def test_landlock_backend_reports_unavailable_when_kernel_lacks_landlock(
     sandbox = CommandSandbox(mode="workspace-write", backend="landlock")
 
     monkeypatch.setattr(runtime.sys, "platform", "linux")
-    monkeypatch.setattr(landlock_run, "_landlock_abi", lambda: (_ for _ in ()).throw(OSError(38, "Function not implemented")))
+    monkeypatch.setattr(
+        landlock_run,
+        "_landlock_abi",
+        lambda: (_ for _ in ()).throw(OSError(38, "Function not implemented")),
+    )
 
     result = sandboxed_command_argv(
         (sys.executable, "-c", "pass"),
@@ -418,4 +426,6 @@ def test_bubblewrap_backend_unaffected_by_landlock_probe(
         sandbox=sandbox,
     )
 
+    assert isinstance(result, str)
+    assert "unavailable" in result
 
