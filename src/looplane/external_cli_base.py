@@ -5,7 +5,7 @@ its model loop, login, permissions, and session; looplane only delegates a bound
 disposable clone and audits the result. The child retains the host environment (including its
 own provider credentials) and is never used as a subscription or model-provider proxy.
 
-Backends subclass :class:`StreamJsonCliBackend`, supplying the exact headless command line and
+Runners subclass :class:`StructuredCliRunner`, supplying the exact headless command line and
 a tolerant normalizer that maps the tool's JSON event stream into looplane's provider-neutral
 ``ExternalAgentEvent`` shape. Event schemas differ per tool and are finalized against live
 captures in the M13 stage report; the normalizers below are deliberately permissive so a
@@ -38,7 +38,7 @@ from looplane.runtime import run_bounded_command
 _SECRET_ENV_MARKERS = ("API", "AUTH", "CREDENTIAL", "PASSWORD", "SECRET", "TOKEN")
 
 
-class StreamJsonCliBackend:
+class StructuredCliRunner:
     """Delegate one task to an installed coding CLI that emits a JSON event stream.
 
     Subclasses set ``backend_name`` and implement :meth:`_argv`, :meth:`_normalize_event`,
@@ -305,3 +305,7 @@ class StreamJsonCliBackend:
             terminal_reason=reason,
             exit_code=result.returncode,
         )
+
+
+# Temporary compatibility name; implementation stays here until the runtime migration.
+StreamJsonCliBackend = StructuredCliRunner

@@ -11,7 +11,7 @@ from __future__ import annotations
 from looplane.pi_backend import PiBackend
 
 
-class OmpBackend(PiBackend):
+class OmpRunner(PiBackend):
     backend_name = "omp"
     local_only = True
     experimental = True
@@ -22,3 +22,7 @@ class OmpBackend(PiBackend):
             argv += ["--model", self.model]
         argv.append(instruction)
         return tuple(argv)
+
+
+# Temporary compatibility name; implementation stays here until the runtime migration.
+OmpBackend = OmpRunner

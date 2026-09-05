@@ -15,7 +15,7 @@ from looplane.backends import ExternalAgentEvent
 from looplane.external_cli_base import StreamJsonCliBackend
 
 
-class OpenCodeBackend(StreamJsonCliBackend):
+class OpenCodeRunner(StreamJsonCliBackend):
     backend_name = "opencode"
     local_only = True
     experimental = True
@@ -108,3 +108,7 @@ class OpenCodeBackend(StreamJsonCliBackend):
                 sequence=sequence, event_type="message", text=text, data={"source": "opencode"}
             )
         return None
+
+
+# Temporary compatibility name; implementation stays here until the runtime migration.
+OpenCodeBackend = OpenCodeRunner

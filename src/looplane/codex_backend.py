@@ -61,7 +61,7 @@ _ITEM_TYPES = frozenset(
 _SAFE_TYPE_NAME = re.compile(r"^[a-z0-9_.-]{1,64}$")
 
 
-class CodexCliBackend:
+class CodexCliRunner:
     """Run one task through official ``codex exec`` in a disposable workspace."""
 
     backend_name = "codex-cli"
@@ -507,3 +507,7 @@ class CodexCliBackend:
             terminal_reason=reason,
             exit_code=result.returncode,
         )
+
+
+# Temporary compatibility name; implementation stays here until the runtime migration.
+CodexCliBackend = CodexCliRunner

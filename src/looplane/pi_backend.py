@@ -14,7 +14,7 @@ from looplane.backends import ExternalAgentEvent
 from looplane.external_cli_base import StreamJsonCliBackend
 
 
-class PiBackend(StreamJsonCliBackend):
+class PiRunner(StreamJsonCliBackend):
     backend_name = "pi"
     local_only = True
     experimental = True
@@ -102,3 +102,7 @@ class PiBackend(StreamJsonCliBackend):
         if any(event.data.get("is_error") for event in events if event.event_type == "result"):
             return ExternalRunStatus.FAILED, "external_agent_error"
         return ExternalRunStatus.COMPLETED, "completed"
+
+
+# Temporary compatibility name; implementation stays here until the runtime migration.
+PiBackend = PiRunner

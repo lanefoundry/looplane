@@ -46,7 +46,7 @@ _SAFE_ENV_KEYS = {
 _SECRET_ENV_MARKERS = ("API", "AUTH", "CREDENTIAL", "PASSWORD", "SECRET", "TOKEN")
 
 
-class ClaudeCodeBackend:
+class ClaudeCodeRunner:
     """Delegate a task to local Claude Code through its documented stream-JSON CLI.
 
     The executable owns its authentication, loop, permissions, and session.  The
@@ -427,3 +427,7 @@ class ClaudeCodeBackend:
             terminal_reason=reason,
             exit_code=result.returncode,
         )
+
+
+# Temporary compatibility name; implementation stays here until the runtime migration.
+ClaudeCodeBackend = ClaudeCodeRunner
