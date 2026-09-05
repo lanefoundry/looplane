@@ -1,0 +1,205 @@
+......F..........FF................................F.................... [ 63%]
+.........................................                                [100%]
+=================================== FAILURES ===================================
+______________ test_config_command_and_cli_env_config_precedence _______________
+
+tmp_path = PosixPath('/private/var/folders/tj/7wzf4jxn13lf9lv36y_54slh0000gn/T/pytest-of-xiaoxu/pytest-799/test_config_command_and_cli_en0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10ba9bd90>
+
+    def test_config_command_and_cli_env_config_precedence(tmp_path: Path, monkeypatch) -> None:
+        path = tmp_path / "config.json"
+        monkeypatch.setenv("LOOPLANE_CONFIG", str(path))
+        saved = CliRunner().invoke(
+            cli.app,
+            [
+                "config",
+                "--provider",
+                "ollama",
+                "--model",
+                "qwen3:4b",
+                "--api-url",
+                "http://127.0.0.1:11434/v1",
+            ],
+        )
+        shown = CliRunner().invoke(cli.app, ["config"])
+    
+        assert saved.exit_code == 0, saved.output
+        assert shown.exit_code == 0
+        assert "provider: ollama" in shown.output
+        assert "model: qwen3:4b" in shown.output
+        assert "api_key" not in path.read_text()
+        assert cli._resolve_cli_settings(provider=None, model=None, api_url=None) == (
+            "ollama",
+            "qwen3:4b",
+            "http://127.0.0.1:11434/v1",
+        )
+        assert cli._resolve_cli_settings(
+            provider="anthropic",
+            model="claude-test",
+            api_url="https://proxy.example/v1",
+        ) == ("anthropic", "claude-test", "https://proxy.example/v1")
+        assert cli._resolve_cli_settings(
+            provider=None,
+            model="gemini/gemini-test",
+            api_url=None,
+        ) == ("gemini", "gemini-test", None)
+        assert cli._resolve_cli_settings(provider=None, model="@cheap", api_url=None) == (
+            "ollama",
+            "@cheap",
+            "http://127.0.0.1:11434/v1",
+        )
+        assert cli._resolve_cli_settings(
+            provider=None,
+            model="@cheap",
+            api_url=None,
+            allow_model_role_alias=True,
+        ) == ("openai-compatible", "gpt-5-mini", None)
+    
+        switched = CliRunner().invoke(
+            cli.app,
+            ["config", "--provider", "openai-compatible"],
+        )
+        assert switched.exit_code == 0, switched.output
+>       switched_config = cli.load_cli_config(path)
+                          ^^^^^^^^^^^^^^^^^^^
+
+tests/test_cli.py:265: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'load_cli_config'
+
+    def __getattr__(name: str):
+        """Read-only lazy exports; mutable test seams above have explicit callbacks."""
+        module_name = _COMPAT_EXPORTS.get(name)
+        if module_name is None:
+>           raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+E           AttributeError: module 'looplane.cli' has no attribute 'load_cli_config'
+
+src/looplane/cli.py:1372: AttributeError
+________________ test_sandbox_checks_flag_reaches_native_runner ________________
+
+tiny_bug_repo = PosixPath('/private/var/folders/tj/7wzf4jxn13lf9lv36y_54slh0000gn/T/pytest-of-xiaoxu/pytest-799/test_sandbox_checks_flag_reach0/tiny-python-bug')
+tmp_path = PosixPath('/private/var/folders/tj/7wzf4jxn13lf9lv36y_54slh0000gn/T/pytest-of-xiaoxu/pytest-799/test_sandbox_checks_flag_reach0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10bdf7a10>
+
+    def test_sandbox_checks_flag_reaches_native_runner(
+        tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        from looplane import loop
+    
+>       monkeypatch.setattr(cli.sys, "platform", "linux")
+                            ^^^^^^^
+
+tests/test_cli.py:620: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'sys'
+
+    def __getattr__(name: str):
+        """Read-only lazy exports; mutable test seams above have explicit callbacks."""
+        module_name = _COMPAT_EXPORTS.get(name)
+        if module_name is None:
+>           raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+E           AttributeError: module 'looplane.cli' has no attribute 'sys'
+
+src/looplane/cli.py:1372: AttributeError
+__________________ test_sandbox_config_reaches_native_runner ___________________
+
+tiny_bug_repo = PosixPath('/private/var/folders/tj/7wzf4jxn13lf9lv36y_54slh0000gn/T/pytest-of-xiaoxu/pytest-799/test_sandbox_config_reaches_na0/tiny-python-bug')
+tmp_path = PosixPath('/private/var/folders/tj/7wzf4jxn13lf9lv36y_54slh0000gn/T/pytest-of-xiaoxu/pytest-799/test_sandbox_config_reaches_na0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10b8e1c50>
+
+    def test_sandbox_config_reaches_native_runner(
+        tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        from looplane import loop
+    
+>       monkeypatch.setattr(cli.sys, "platform", "linux")
+                            ^^^^^^^
+
+tests/test_cli.py:673: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'sys'
+
+    def __getattr__(name: str):
+        """Read-only lazy exports; mutable test seams above have explicit callbacks."""
+        module_name = _COMPAT_EXPORTS.get(name)
+        if module_name is None:
+>           raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+E           AttributeError: module 'looplane.cli' has no attribute 'sys'
+
+src/looplane/cli.py:1372: AttributeError
+___________ test_claude_backend_requires_explicit_coding_boundaries ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10bec6bd0>
+tiny_bug_repo = PosixPath('/private/var/folders/tj/7wzf4jxn13lf9lv36y_54slh0000gn/T/pytest-of-xiaoxu/pytest-799/test_claude_backend_requires_e0/tiny-python-bug')
+tmp_path = PosixPath('/private/var/folders/tj/7wzf4jxn13lf9lv36y_54slh0000gn/T/pytest-of-xiaoxu/pytest-799/test_claude_backend_requires_e0')
+
+    def test_claude_backend_requires_explicit_coding_boundaries(
+        monkeypatch, tiny_bug_repo: Path, tmp_path: Path
+    ) -> None:
+        captured: dict[str, object] = {}
+    
+        class FakeBackend:
+            def __init__(self, *, timeout_seconds: float) -> None:
+                captured["timeout"] = timeout_seconds
+    
+        class FakeRunner:
+            def __init__(self, task, backend, run_root, **kwargs) -> None:
+                captured["task"] = task
+                captured["backend"] = backend
+                captured["run_root"] = run_root
+                captured.update(kwargs)
+    
+            async def run(self):
+                return RunResult(
+                    run_id="delegated-run",
+                    task_id="delegated-1",
+                    status=RunStatus.COMPLETED,
+                    summary="delegated",
+                    terminal_reason="verified",
+                    artifacts={"patch": str(tmp_path / "changes.patch")},
+                )
+    
+        monkeypatch.setattr("looplane.claude_backend.ClaudeCodeBackend", FakeBackend)
+        monkeypatch.setattr("looplane.external_runner.ExternalCodingRunner", FakeRunner)
+    
+        rejected = CliRunner().invoke(
+            cli.app,
+            ["backend", "claude-code", "--task", "inspect this"],
+        )
+        accepted = CliRunner().invoke(
+            cli.app,
+            [
+                "backend",
+                "claude-code",
+                "--task",
+                "inspect this",
+                "--repo",
+                str(tiny_bug_repo),
+                "--task-id",
+                "delegated-1",
+                "--timeout",
+                "45",
+                "--experimental-subscription",
+                "--check",
+                "pytest -q",
+                "--allow-external-modify",
+                "--unsafe-local-exec",
+            ],
+        )
+    
+        assert rejected.exit_code == 2
+        assert accepted.exit_code == 0, accepted.output
+        assert "completed: delegated" in accepted.output
+>       assert captured["timeout"] == 45
+               ^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'timeout'
+
+tests/test_cli.py:1832: KeyError
+=========================== short test summary info ============================
+FAILED tests/test_cli.py::test_config_command_and_cli_env_config_precedence
+FAILED tests/test_cli.py::test_sandbox_checks_flag_reaches_native_runner - At...
+FAILED tests/test_cli.py::test_sandbox_config_reaches_native_runner - Attribu...
+FAILED tests/test_cli.py::test_claude_backend_requires_explicit_coding_boundaries

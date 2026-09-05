@@ -1,0 +1,6 @@
+Building source distribution...
+Building wheel...
+Successfully built /tmp/looplane-cli-snapshot-build/looplane-0.1.0.tar.gz
+Successfully built /tmp/looplane-cli-snapshot-build/looplane-0.1.0-py3-none-any.whl
+looplane-0.1.0.tar.gz: 595538 bytes; 234 members; all 122 production modules present
+looplane-0.1.0-py3-none-any.whl: 395701 bytes; 126 members; all 122 production modules present

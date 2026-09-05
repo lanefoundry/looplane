@@ -1,0 +1,11 @@
+Benchmarking [help]: uv run looplane --help
+Benchmark 1: uv run looplane --help
+  Time (mean ± σ):     241.6 ms ±  34.7 ms    [User: 184.3 ms, System: 36.9 ms]
+  Range (min … max):   217.1 ms … 342.3 ms    12 runs
+ 
+Benchmarking [config]: uv run looplane config
+Benchmark 1: uv run looplane config
+  Time (mean ± σ):     206.6 ms ±  30.1 ms    [User: 155.8 ms, System: 30.9 ms]
+  Range (min … max):   175.4 ms … 264.4 ms    13 runs
+ 
+Raw results in: /Users/xiaoxu/Projects/looplane/.research/slice13/after

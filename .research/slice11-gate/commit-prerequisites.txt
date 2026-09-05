@@ -1,0 +1,13 @@
+fix(gates): 修復模組化前置 lint 與套件封裝
+
+## Why is this necessary?
+
+- Slice 1.1 整合時仍有既有 lint 問題，無法通過全庫 Gate
+- 原始 sdist 包含本機研究與快取，大小接近 98 MB
+- 需要可重跑的 archive 檢查才能確認發布產物完整且有界
+
+## How does it address?
+
+- 整理 import、修正測試閉包綁定並補齊 bubblewrap unavailable 斷言
+- 以 sdist allowlist 限定原始碼、測試與必要建置檔案
+- 新增 archive 大小、路徑、成員數與 production module 完整性檢查

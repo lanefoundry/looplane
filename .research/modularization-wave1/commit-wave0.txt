@@ -1,0 +1,14 @@
+refactor(contracts): 補齊事件與能力的模組化約束
+
+## Why is this necessary?
+
+- Console 與 SDK 重複宣告同一個原生事件 sink
+- Runtime discovery 與 live capabilities 缺少可重跑的一致性檢查
+- 模組化需約束依賴方向、事件唯一 owner 與新增循環
+
+## How does it address?
+
+- 將 EventSink 統一至 events 並保留 console 與 SDK 相容出口
+- 加入實際 session 的能力對照測試並讓 registry 使用 canonical runner 入口
+- 正名 TurnLimiter 並保留 BackendTurnLimiter alias
+- 擴充 domain、feature、事件 ownership 與 literal dynamic import 的架構測試

@@ -1,0 +1,7 @@
+
+1 scenario(s) regressed beyond 10%
+'uv run looplane config'
+  baseline median : 0.1368s
+  candidate median: 0.1981s
+  change          : +44.8% (SLOWER)
+  REGRESSION > 10% threshold

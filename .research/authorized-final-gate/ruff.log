@@ -1,0 +1,1356 @@
+E501 Line too long (105 > 100)
+  --> .research/slice22-frozen/filesystem.py:69:101
+   |
+67 |             files.append(file_path.relative_to(self.workspace).as_posix())
+68 |             if len(files) >= self.read_limits.max_list_files:
+69 |                 files.append(f"... file list truncated at {self.read_limits.max_list_files} entries ...")
+   |                                                                                                     ^^^^^
+70 |                 break
+71 |         return self.bound("\n".join(files), self.output_limits.max_output_chars)
+   |
+
+F401 [*] `pathlib.Path` imported but unused
+  --> .research/slice22-frozen/patching.py:9:21
+   |
+ 7 | import time
+ 8 | from collections.abc import Callable, Mapping, Sequence
+ 9 | from pathlib import Path
+   |                     ^^^^
+10 | from typing import Protocol
+   |
+help: Remove unused import: `pathlib.Path`
+  |
+8 | from collections.abc import Callable, Mapping, Sequence
+  - from pathlib import Path
+9 | from typing import Protocol
+  |
+
+E501 Line too long (111 > 100)
+   --> .research/slice22-frozen/patching.py:171:101
+    |
+169 |         argument_bytes = len(old_text.encode("utf-8")) + len(new_text.encode("utf-8"))
+170 |         if argument_bytes > self.patch_limits.max_patch_bytes:
+171 |             raise ToolExecutionError(f"replacement arguments exceed {self.patch_limits.max_patch_bytes} bytes")
+    |                                                                                                     ^^^^^^^^^^^
+172 |
+173 |         target = self.policy.resolve(path)
+    |
+
+E501 Line too long (102 > 100)
+   --> .research/slice22-frozen/patching.py:179:101
+    |
+177 |             original = handle.read(self.read_limits.max_read_bytes + 1)
+178 |         if len(original) > self.read_limits.max_read_bytes:
+179 |             raise ToolExecutionError(f"file exceeds {self.read_limits.max_read_bytes} readable bytes")
+    |                                                                                                     ^^
+180 |         if b"\x00" in original:
+181 |             raise ToolExecutionError("replace_text accepts UTF-8 text files only")
+    |
+
+E501 Line too long (103 > 100)
+   --> .research/slice22-frozen/patching.py:193:101
+    |
+191 |         updated = source.replace(old_text, new_text, 1).encode("utf-8")
+192 |         if len(updated) > self.read_limits.max_read_bytes:
+193 |             raise ToolExecutionError(f"resulting file exceeds {self.read_limits.max_read_bytes} bytes")
+    |                                                                                                     ^^^
+194 |
+195 |         mode = stat.S_IMODE(target.stat().st_mode)
+    |
+
+E501 Line too long (106 > 100)
+   --> .research/slice22-frozen/search.py:99:101
+    |
+ 97 |                     if len(matches) >= self.search_limits.max_search_results:
+ 98 |                         matches.append(
+ 99 |                             f"... search truncated at {self.search_limits.max_search_results} matches ..."
+    |                                                                                                     ^^^^^^
+100 |                         )
+101 |                         return self.bound("\n".join(matches), self.output_limits.max_output_chars)
+    |
+
+E501 Line too long (110 > 100)
+   --> .research/slice22-frozen/search.py:152:101
+    |
+150 |             matches.append(line)
+151 |             if len(matches) >= self.search_limits.max_search_results:
+152 |                 matches.append(f"... search truncated at {self.search_limits.max_search_results} matches ...")
+    |                                                                                                     ^^^^^^^^^^
+153 |                 break
+154 |         return self.bound("\n".join(matches), self.output_limits.max_output_chars)
+    |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> .research/slice22-frozen/tools.py:1:1
+   |
+ 1 | / from __future__ import annotations
+ 2 | |
+ 3 | | import fnmatch as fnmatch
+ 4 | | import hashlib as hashlib
+ 5 | | import json as json
+ 6 | | import os as os
+ 7 | | import re as re
+ 8 | | import shlex as shlex
+ 9 | | import shutil
+10 | | import stat as stat
+11 | | import time
+12 | | from collections.abc import Mapping, Sequence
+13 | | from pathlib import Path
+14 | | from typing import Any
+15 | | from uuid import uuid4
+16 | |
+17 | | from .contracts import (
+18 | |     ToolCall,
+19 | |     ToolDefinition,
+20 | |     ToolObservation,
+21 | |     VerificationCommand,
+22 | |     VerificationOutcome,
+23 | | )
+24 | | from .mcp_client import (
+25 | |     HttpMcpClient,
+26 | |     McpError,
+27 | |     NativeMcpServerConfig,
+28 | |     StdioMcpClient,
+29 | |     native_mcp_prompt_tool_name,
+30 | |     native_mcp_resource_tool_name,
+31 | |     split_native_mcp_tool_name,
+32 | | )
+33 | | from .policy import PathPolicyError, SafePathPolicy
+34 | | from .runtime import (
+35 | |     LocalGitWorkspace,
+36 | |     bounded_text,
+37 | |     resolve_command_sandbox,
+38 | |     run_bounded_command,
+39 | |     sanitized_subprocess_env,
+40 | | )
+41 | | from .secret_scan import redact_secrets, scan_text_for_secrets
+42 | | from .tooling.definitions import tool_definitions
+43 | | from .tooling.filesystem import OutputLimits, ReadLimits, WorkspaceFiles
+44 | | from .tooling.patch_validation import PatchLimits, UnifiedDiffValidator
+45 | | from .tooling.patching import PatchOperations
+46 | | from .tooling.read_versions import ReadVersionStore
+47 | | from .tooling.search import SearchLimits, WorkspaceSearch
+48 | | from .tooling.snapshots import AtomicFileWriter, WorkspaceSnapshots
+49 | | from .tooling.mcp_bridge import McpBridge, McpClient, McpToolNames
+50 | | from .tooling.types import ReviewablePatch as ReviewablePatch
+51 | | from .tooling.types import ToolExecutionError as ToolExecutionError
+52 | | from .tooling.types import _PathSnapshot as _PathSnapshot
+   | |_________________________________________________________^
+help: Organize imports
+   |
+43 | from .tooling.filesystem import OutputLimits, ReadLimits, WorkspaceFiles
+44 + from .tooling.mcp_bridge import McpBridge, McpClient, McpToolNames
+45 | from .tooling.patch_validation import PatchLimits, UnifiedDiffValidator
+--------------------------------------------------------------------------------
+49 | from .tooling.snapshots import AtomicFileWriter, WorkspaceSnapshots
+   - from .tooling.mcp_bridge import McpBridge, McpClient, McpToolNames
+50 | from .tooling.types import ReviewablePatch as ReviewablePatch
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> .research/slice25-frozen/loop.py:3:1
+   |
+ 1 |   """Explicit, provider-neutral coding-agent loop."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | import asyncio
+ 6 | | import contextlib
+ 7 | | import hashlib
+ 8 | | import json
+ 9 | | import shlex
+10 | | from collections.abc import Callable, Mapping, Sequence
+11 | | from pathlib import Path
+12 | | from typing import Any, TypeVar
+13 | | from uuid import uuid4
+14 | |
+15 | | from looplane.agent import context, model_calls, subagent_dispatch, tool_scheduler
+16 | | from looplane.agent.model_calls import (
+17 | |     MODEL_ATTEMPTS as MODEL_ATTEMPTS,
+18 | |     RETRY_BACKOFF_BASE_SECONDS as RETRY_BACKOFF_BASE_SECONDS,
+19 | |     RETRY_JITTER_FRACTION as RETRY_JITTER_FRACTION,
+20 | |     RETRY_MAX_DELAY_SECONDS as RETRY_MAX_DELAY_SECONDS,
+21 | |     RETRY_SERVER_HINT_MAX_SECONDS as RETRY_SERVER_HINT_MAX_SECONDS,
+22 | |     retry_delay_seconds as retry_delay_seconds,
+23 | | )
+24 | | from looplane.agent.ports import PreparedToolCall
+25 | | from looplane.agent.checkpoints import (
+26 | |     RunPersistence,
+27 | |     check_resume_identity,
+28 | |     claim_session,
+29 | |     session_phase,
+30 | | )
+31 | | from looplane.agent.run_lifecycle import (
+32 | |     BoundedRunLifecycle,
+33 | |     validate_run_id,
+34 | |     validate_run_location,
+35 | | )
+36 | | from looplane.agent.state import ContextState, TurnState
+37 | | from looplane.approvals import (
+38 | |     ApprovalDecision,
+39 | |     ApprovalPolicy,
+40 | |     ApprovalReason,
+41 | |     ApprovalRequest,
+42 | |     HeadlessApprovalPolicy,
+43 | |     ToolEffect,
+44 | |     effect_for_tool_definition,
+45 | | )
+46 | | from looplane.console import CompositeEventSink, EventSink, JsonlEventSink
+47 | | from looplane.context_providers import (
+48 | |     ContextProviderRunner,
+49 | |     load_project_context_provider_runner,
+50 | | )
+51 | | from looplane.contracts import (
+52 | |     ConversationItem,
+53 | |     Message,
+54 | |     ModelTurn,
+55 | |     RunResult,
+56 | |     RunStatus,
+57 | |     TaskContract,
+58 | |     ToolCall,
+59 | |     ToolDefinition,
+60 | |     ToolObservation,
+61 | |     Usage,
+62 | |     VerificationCommand,
+63 | |     VerificationOutcome,
+64 | | )
+65 | | from looplane.events import EventWriter, atomic_write_json
+66 | | from looplane.hooks import HookDecision, HookEventName, HookRunner, load_project_hook_runner
+67 | | from looplane.mcp_client import load_native_mcp_server_configs
+68 | | from looplane.models import ModelProvider, ProviderError
+69 | | from looplane.permissions import PermissionGuard
+70 | | from looplane.policy import SafePathPolicy
+71 | | from looplane.prompts import (
+72 | |     CODING_AGENT_PROMPT_VERSION,
+73 | | )
+74 | | from looplane.runtime import (
+75 | |     LocalGitWorkspace,
+76 | |     WorkspacePreparationError,
+77 | |     bounded_text,
+78 | |     run_bounded_command,
+79 | |     sanitized_subprocess_env,
+80 | | )
+81 | | from looplane.session import (
+82 | |     ApprovalAuditRecord,
+83 | |     SessionBusyError,
+84 | |     SessionManifest,
+85 | |     SessionPhase,
+86 | |     SessionValidationError,
+87 | | )
+88 | | from looplane.tools import ToolExecutionError, ToolExecutor
+   | |___________________________________________________________^
+help: Organize imports
+   |
+15 | from looplane.agent import context, model_calls, subagent_dispatch, tool_scheduler
+16 + from looplane.agent.checkpoints import (
+17 +     RunPersistence,
+18 +     check_resume_identity,
+19 +     claim_session,
+20 +     session_phase,
+21 + )
+22 | from looplane.agent.model_calls import (
+23 |     MODEL_ATTEMPTS as MODEL_ATTEMPTS,
+24 + )
+25 + from looplane.agent.model_calls import (
+26 |     RETRY_BACKOFF_BASE_SECONDS as RETRY_BACKOFF_BASE_SECONDS,
+27 + )
+28 + from looplane.agent.model_calls import (
+29 |     RETRY_JITTER_FRACTION as RETRY_JITTER_FRACTION,
+30 + )
+31 + from looplane.agent.model_calls import (
+32 |     RETRY_MAX_DELAY_SECONDS as RETRY_MAX_DELAY_SECONDS,
+33 + )
+34 + from looplane.agent.model_calls import (
+35 |     RETRY_SERVER_HINT_MAX_SECONDS as RETRY_SERVER_HINT_MAX_SECONDS,
+36 + )
+37 + from looplane.agent.model_calls import (
+38 |     retry_delay_seconds as retry_delay_seconds,
+39 | )
+40 | from looplane.agent.ports import PreparedToolCall
+   - from looplane.agent.checkpoints import (
+   -     RunPersistence,
+   -     check_resume_identity,
+   -     claim_session,
+   -     session_phase,
+   - )
+41 | from looplane.agent.run_lifecycle import (
+   |
+
+F401 [*] `looplane.approvals.effect_for_tool_definition` imported but unused
+  --> .research/slice25-frozen/loop.py:44:5
+   |
+42 |     HeadlessApprovalPolicy,
+43 |     ToolEffect,
+44 |     effect_for_tool_definition,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 | )
+46 | from looplane.console import CompositeEventSink, EventSink, JsonlEventSink
+   |
+help: Remove unused import: `looplane.approvals.effect_for_tool_definition`
+   |
+43 |     ToolEffect,
+   -     effect_for_tool_definition,
+44 | )
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/agent/completion.py:3:1
+   |
+ 1 |   """Patch artifacts and ordered terminal persistence; no terminal policy engine."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | import asyncio
+ 6 | | from collections.abc import Awaitable, Callable
+ 7 | | from dataclasses import dataclass
+ 8 | | from pathlib import Path
+ 9 | | from typing import Any, Protocol
+10 | |
+11 | | from looplane.agent.ports import EventEmitter
+12 | | from looplane.agent.verification import JsonWriter
+13 | | from looplane.contracts import CostBreakdown, ModelUsageRecord, RunResult, RunStatus
+14 | | from looplane.contracts import Usage, VerificationOutcome
+15 | | from looplane.events import atomic_write_json
+16 | | from looplane.tooling.types import ToolExecutionError
+   | |_____________________________________________________^
+help: Organize imports
+   |
+12 | from looplane.agent.verification import JsonWriter
+   - from looplane.contracts import CostBreakdown, ModelUsageRecord, RunResult, RunStatus
+   - from looplane.contracts import Usage, VerificationOutcome
+13 + from looplane.contracts import (
+14 +     CostBreakdown,
+15 +     ModelUsageRecord,
+16 +     RunResult,
+17 +     RunStatus,
+18 +     Usage,
+19 +     VerificationOutcome,
+20 + )
+21 | from looplane.events import atomic_write_json
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/agent/model_calls.py:3:1
+   |
+ 1 |   """Native model waits, bounded retries, fallback, and usage/cache accounting."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | import asyncio
+ 6 | | import contextlib
+ 7 | | import json
+ 8 | | import random
+ 9 | | from collections.abc import Callable, Sequence
+10 | | from dataclasses import dataclass, field
+11 | | from pathlib import Path
+12 | |
+13 | | from looplane.agent.ports import EventEmitter, RemainingTime
+14 | | from looplane.agent.state import TurnState
+15 | | from looplane.cache_strategy import ProviderCacheTrace
+16 | | from looplane.contracts import (
+17 | |     ConversationItem, CostBreakdown, ModelTurn, ModelUsageRecord, ToolDefinition, Usage,
+18 | | )
+19 | | from looplane.models import ModelProvider, ProviderError
+20 | | from looplane.provider_catalog import estimate_cost
+   | |___________________________________________________^
+21 |
+22 |   MODEL_ATTEMPTS = 5
+   |
+help: Organize imports
+   |
+16 | from looplane.contracts import (
+   -     ConversationItem, CostBreakdown, ModelTurn, ModelUsageRecord, ToolDefinition, Usage,
+17 +     ConversationItem,
+18 +     CostBreakdown,
+19 +     ModelTurn,
+20 +     ModelUsageRecord,
+21 +     ToolDefinition,
+22 +     Usage,
+23 | )
+   |
+
+E501 Line too long (128 > 100)
+  --> src/looplane/agent/model_calls.py:73:101
+   |
+71 |     )
+72 |
+73 | async def record_provider_cache_trace(lane: str, model: ModelProvider, *, step: int, run_dir: Path, emit: EventEmitter) -> None:
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+74 |     trace = getattr(model, "last_cache_trace", None)
+75 |     if not isinstance(trace, ProviderCacheTrace):
+   |
+
+E501 Line too long (201 > 100)
+   --> src/looplane/agent/model_calls.py:116:101
+    |
+114 | …
+115 | …
+116 | …ionItem], tools: tuple[ToolDefinition, ...], cancel_requested: asyncio.Event, remaining: float) -> ModelTurn | None:
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+117 | …."""
+    |
+
+E501 Line too long (166 > 100)
+   --> src/looplane/agent/model_calls.py:149:101
+    |
+147 | …
+148 | …
+149 | …Sequence[ConversationItem], cancel_requested: asyncio.Event, remaining: float) -> ModelTurn | None:
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+150 | …
+    |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/agent/ports.py:3:1
+   |
+ 1 |   """Narrow callback and execution contracts shared by native scheduling leaves."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | from collections.abc import Mapping
+ 6 | | from dataclasses import dataclass
+ 7 | | from pathlib import Path
+ 8 | | from typing import Any, Protocol
+ 9 | |
+10 | | from looplane.approvals import ApprovalDecision, ApprovalPolicy, ApprovalReason, ToolEffect
+11 | | from looplane.contracts import (
+12 | |     RunResult, TaskContract, ToolCall, ToolObservation, VerificationCommand, VerificationOutcome,
+13 | | )
+14 | | from looplane.events import EventSink
+15 | | from looplane.hooks import HookDecision, HookEventName
+16 | | from looplane.models import ModelProvider
+   | |_________________________________________^
+help: Organize imports
+   |
+11 | from looplane.contracts import (
+   -     RunResult, TaskContract, ToolCall, ToolObservation, VerificationCommand, VerificationOutcome,
+12 +     RunResult,
+13 +     TaskContract,
+14 +     ToolCall,
+15 +     ToolObservation,
+16 +     VerificationCommand,
+17 +     VerificationOutcome,
+18 | )
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/agent/runner.py:3:1
+   |
+ 1 |   """Explicit, provider-neutral coding-agent loop."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | import asyncio
+ 6 | | import contextlib
+ 7 | | from collections.abc import Callable, Mapping, Sequence
+ 8 | | from pathlib import Path
+ 9 | | from typing import Any, TypeVar
+10 | | from uuid import uuid4
+11 | |
+12 | | from looplane.agent import completion, context, model_calls, subagent_dispatch, tool_scheduler
+13 | | from looplane.agent.verification import (
+14 | |     VerificationCache, VerificationInputs, VerificationPorts, VerificationService,
+15 | | )
+16 | | from looplane.agent.model_calls import (
+17 | |     MODEL_ATTEMPTS as MODEL_ATTEMPTS,
+18 | |     RETRY_BACKOFF_BASE_SECONDS as RETRY_BACKOFF_BASE_SECONDS,
+19 | |     RETRY_JITTER_FRACTION as RETRY_JITTER_FRACTION,
+20 | |     RETRY_MAX_DELAY_SECONDS as RETRY_MAX_DELAY_SECONDS,
+21 | |     RETRY_SERVER_HINT_MAX_SECONDS as RETRY_SERVER_HINT_MAX_SECONDS,
+22 | |     retry_delay_seconds as retry_delay_seconds,
+23 | | )
+24 | | from looplane.agent.ports import PreparedToolCall
+25 | | from looplane.agent.checkpoints import (
+26 | |     RunPersistence,
+27 | |     check_resume_identity,
+28 | |     claim_session,
+29 | |     session_phase,
+30 | | )
+31 | | from looplane.agent.run_lifecycle import (
+32 | |     BoundedRunLifecycle,
+33 | |     validate_run_id,
+34 | |     validate_run_location,
+35 | | )
+36 | | from looplane.agent.state import ContextState, TurnState
+37 | | from looplane.approvals import (
+38 | |     ApprovalDecision,
+39 | |     ApprovalPolicy,
+40 | |     ApprovalReason,
+41 | |     ApprovalRequest,
+42 | |     HeadlessApprovalPolicy,
+43 | |     ToolEffect,
+44 | |     effect_for_tool_definition,
+45 | | )
+46 | | from looplane.console import CompositeEventSink, JsonlEventSink
+47 | | from looplane.context_providers import (
+48 | |     ContextProviderRunner,
+49 | |     load_project_context_provider_runner,
+50 | | )
+51 | | from looplane.contracts import (
+52 | |     ConversationItem,
+53 | |     Message,
+54 | |     ModelTurn,
+55 | |     RunResult,
+56 | |     RunStatus,
+57 | |     TaskContract,
+58 | |     ToolCall,
+59 | |     ToolDefinition,
+60 | |     ToolObservation,
+61 | |     Usage,
+62 | |     VerificationCommand,
+63 | |     VerificationOutcome,
+64 | | )
+65 | | from looplane.events import EventSink, EventWriter, atomic_write_json
+66 | | from looplane.hooks import HookDecision, HookEventName, HookRunner, load_project_hook_runner
+67 | | from looplane.mcp_client import load_native_mcp_server_configs
+68 | | from looplane.models import ModelProvider, ProviderError
+69 | | from looplane.permissions import PermissionGuard
+70 | | from looplane.policy import SafePathPolicy
+71 | | from looplane.prompts import (
+72 | |     CODING_AGENT_PROMPT_VERSION,
+73 | | )
+74 | | from looplane.workspace.local_git import LocalGitWorkspace, WorkspacePreparationError
+75 | | from looplane.execution.capture import bounded_text
+76 | | from looplane.execution.local_process import run_local_process as run_bounded_command
+77 | | from looplane.execution.environment import sanitized_subprocess_env
+78 | | from looplane.session import (
+79 | |     ApprovalAuditRecord,
+80 | |     SessionBusyError,
+81 | |     SessionManifest,
+82 | |     SessionPhase,
+83 | |     SessionValidationError,
+84 | | )
+85 | | from looplane.tooling.types import ToolExecutionError
+86 | | from looplane.tooling.executor import ToolExecutor
+   | |__________________________________________________^
+help: Organize imports
+    |
+12  | from looplane.agent import completion, context, model_calls, subagent_dispatch, tool_scheduler
+    - from looplane.agent.verification import (
+    -     VerificationCache, VerificationInputs, VerificationPorts, VerificationService,
+13  + from looplane.agent.checkpoints import (
+14  +     RunPersistence,
+15  +     check_resume_identity,
+16  +     claim_session,
+17  +     session_phase,
+18  | )
+19  | from looplane.agent.model_calls import (
+20  |     MODEL_ATTEMPTS as MODEL_ATTEMPTS,
+21  + )
+22  + from looplane.agent.model_calls import (
+23  |     RETRY_BACKOFF_BASE_SECONDS as RETRY_BACKOFF_BASE_SECONDS,
+24  + )
+25  + from looplane.agent.model_calls import (
+26  |     RETRY_JITTER_FRACTION as RETRY_JITTER_FRACTION,
+27  + )
+28  + from looplane.agent.model_calls import (
+29  |     RETRY_MAX_DELAY_SECONDS as RETRY_MAX_DELAY_SECONDS,
+30  + )
+31  + from looplane.agent.model_calls import (
+32  |     RETRY_SERVER_HINT_MAX_SECONDS as RETRY_SERVER_HINT_MAX_SECONDS,
+33  + )
+34  + from looplane.agent.model_calls import (
+35  |     retry_delay_seconds as retry_delay_seconds,
+36  | )
+37  | from looplane.agent.ports import PreparedToolCall
+    - from looplane.agent.checkpoints import (
+    -     RunPersistence,
+    -     check_resume_identity,
+    -     claim_session,
+    -     session_phase,
+    - )
+38  | from looplane.agent.run_lifecycle import (
+--------------------------------------------------------------------------------
+43  | from looplane.agent.state import ContextState, TurnState
+44  + from looplane.agent.verification import (
+45  +     VerificationCache,
+46  +     VerificationInputs,
+47  +     VerificationPorts,
+48  +     VerificationService,
+49  + )
+50  | from looplane.approvals import (
+--------------------------------------------------------------------------------
+78  | from looplane.events import EventSink, EventWriter, atomic_write_json
+79  + from looplane.execution.capture import bounded_text
+80  + from looplane.execution.environment import sanitized_subprocess_env
+81  + from looplane.execution.local_process import run_local_process as run_bounded_command
+82  | from looplane.hooks import HookDecision, HookEventName, HookRunner, load_project_hook_runner
+--------------------------------------------------------------------------------
+89  | )
+    - from looplane.workspace.local_git import LocalGitWorkspace, WorkspacePreparationError
+    - from looplane.execution.capture import bounded_text
+    - from looplane.execution.local_process import run_local_process as run_bounded_command
+    - from looplane.execution.environment import sanitized_subprocess_env
+90  | from looplane.session import (
+--------------------------------------------------------------------------------
+96  | )
+97  + from looplane.tooling.executor import ToolExecutor
+98  | from looplane.tooling.types import ToolExecutionError
+    - from looplane.tooling.executor import ToolExecutor
+99  + from looplane.workspace.local_git import LocalGitWorkspace, WorkspacePreparationError
+100 |
+    |
+
+F401 [*] `contextlib` imported but unused
+ --> src/looplane/agent/runner.py:6:8
+  |
+5 | import asyncio
+6 | import contextlib
+  |        ^^^^^^^^^^
+7 | from collections.abc import Callable, Mapping, Sequence
+8 | from pathlib import Path
+  |
+help: Remove unused import: `contextlib`
+  |
+5 | import asyncio
+  - import contextlib
+6 | from collections.abc import Callable, Mapping, Sequence
+  |
+
+F401 [*] `looplane.approvals.effect_for_tool_definition` imported but unused
+  --> src/looplane/agent/runner.py:44:5
+   |
+42 |     HeadlessApprovalPolicy,
+43 |     ToolEffect,
+44 |     effect_for_tool_definition,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 | )
+46 | from looplane.console import CompositeEventSink, JsonlEventSink
+   |
+help: Remove unused import: `looplane.approvals.effect_for_tool_definition`
+   |
+43 |     ToolEffect,
+   -     effect_for_tool_definition,
+44 | )
+   |
+
+E501 Line too long (103 > 100)
+   --> src/looplane/agent/runner.py:186:101
+    |
+184 |         validate_run_id(self.run_id)
+185 |         self.run_dir = self.run_root / self.run_id
+186 |         self.events = self._event_writer_factory(self.run_dir / "events.jsonl", durable=durable_events)
+    |                                                                                                     ^^^
+187 |         self.allow_unsafe_local_exec = allow_unsafe_local_exec
+188 |         self.allow_direct_repo_edit = allow_direct_repo_edit
+    |
+
+E501 Line too long (108 > 100)
+   --> src/looplane/agent/runner.py:317:101
+    |
+315 |         self.run_id = run_id
+316 |         self.run_dir = self.run_root / self.run_id
+317 |         self.events = self._event_writer_factory(self.run_dir / "events.jsonl", durable=self.events.durable)
+    |                                                                                                     ^^^^^^^^
+318 |         durable_sink = JsonlEventSink(self.events)
+319 |         self._event_sink = (
+    |
+
+E501 Line too long (103 > 100)
+   --> src/looplane/agent/runner.py:332:101
+    |
+331 |         resolved = self.run_dir.resolve(strict=True)
+332 |         claimed = await self._claim_session(resolved, durable=self.events.durable, allow_terminal=True)
+    |                                                                                                     ^^^
+333 |         store, lease, manifest, persisted_task = (
+334 |             claimed.store,
+    |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/agent/subagent_dispatch.py:3:1
+   |
+ 1 |   """Programmatic subagent dispatch on isolated looplane run workspaces."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | import asyncio
+ 6 | | import json
+ 7 | | from collections.abc import Mapping, Sequence
+ 8 | | from dataclasses import dataclass
+ 9 | | from enum import StrEnum
+10 | | from pathlib import Path, PureWindowsPath
+11 | | from typing import Any
+12 | | from uuid import uuid4
+13 | |
+14 | | from looplane.agent.ports import (
+15 | |     EventEmitter, ExecutePreparedCall, PreparedToolCall, PrepareToolCall,
+16 | |     RemainingTime, SubagentRunnerFactory,
+17 | | )
+18 | | from looplane.agent.state import TurnState
+19 | | from looplane.approvals import ApprovalDecision, ApprovalPolicy, HeadlessApprovalPolicy
+20 | | from looplane.events import EventSink
+21 | | from looplane.contracts import (
+22 | |     Limits, RunResult, RunStatus, TaskContract, ToolCall, ToolDefinition, ToolObservation,
+23 | |     VerificationCommand,
+24 | | )
+25 | | from looplane.execution.capture import bounded_text
+26 | | from looplane.tooling.types import ToolExecutionError
+27 | | from looplane.models import ModelProvider
+   | |_________________________________________^
+help: Organize imports
+   |
+14 | from looplane.agent.ports import (
+   -     EventEmitter, ExecutePreparedCall, PreparedToolCall, PrepareToolCall,
+   -     RemainingTime, SubagentRunnerFactory,
+15 +     EventEmitter,
+16 +     ExecutePreparedCall,
+17 +     PreparedToolCall,
+18 +     PrepareToolCall,
+19 +     RemainingTime,
+20 +     SubagentRunnerFactory,
+21 | )
+22 | from looplane.agent.state import TurnState
+23 | from looplane.approvals import ApprovalDecision, ApprovalPolicy, HeadlessApprovalPolicy
+   - from looplane.events import EventSink
+24 | from looplane.contracts import (
+   -     Limits, RunResult, RunStatus, TaskContract, ToolCall, ToolDefinition, ToolObservation,
+25 +     Limits,
+26 +     RunResult,
+27 +     RunStatus,
+28 +     TaskContract,
+29 +     ToolCall,
+30 +     ToolDefinition,
+31 +     ToolObservation,
+32 |     VerificationCommand,
+33 | )
+34 + from looplane.events import EventSink
+35 | from looplane.execution.capture import bounded_text
+36 + from looplane.models import ModelProvider
+37 | from looplane.tooling.types import ToolExecutionError
+   - from looplane.models import ModelProvider
+38 |
+   |
+
+F401 [*] `looplane.agent.ports.PreparedToolCall` imported but unused
+  --> src/looplane/agent/subagent_dispatch.py:15:40
+   |
+14 | from looplane.agent.ports import (
+15 |     EventEmitter, ExecutePreparedCall, PreparedToolCall, PrepareToolCall,
+   |                                        ^^^^^^^^^^^^^^^^
+16 |     RemainingTime, SubagentRunnerFactory,
+17 | )
+   |
+help: Remove unused import: `looplane.agent.ports.PreparedToolCall`
+   |
+14 | from looplane.agent.ports import (
+   -     EventEmitter, ExecutePreparedCall, PreparedToolCall, PrepareToolCall,
+15 +     EventEmitter, ExecutePreparedCall, PrepareToolCall,
+16 |     RemainingTime, SubagentRunnerFactory,
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/agent/tool_scheduler.py:3:1
+   |
+ 1 |   """Tool preparation, approval lookahead, and ordered concurrent read execution."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | import asyncio
+ 6 | | import hashlib
+ 7 | | import json
+ 8 | | import shlex
+ 9 | | from collections.abc import Callable, Mapping, Sequence
+10 | | from dataclasses import dataclass
+11 | | from typing import Any, Literal, TypeVar
+12 | |
+13 | | from looplane.agent.checkpoints import RunPersistence
+14 | | from looplane.agent.context import BlockingCall
+15 | | from looplane.agent.ports import (
+16 | |     ApprovalCall, DispatchSubagents, EventEmitter, ExecutePreparedCall, HookCall,
+17 | |     MarkActionStarted, PreparedToolCall, PrepareToolCall, RemainingTime, ToolExecutionPort,
+18 | | )
+19 | | from looplane.agent.state import TurnState
+20 | | from looplane.approvals import (
+21 | |     ApprovalDecision, ApprovalReason, ToolEffect, effect_for_tool_definition,
+22 | | )
+23 | | from looplane.contracts import ToolCall, ToolDefinition, ToolObservation, VerificationCommand
+24 | | from looplane.execution.capture import bounded_text
+25 | | from looplane.hooks import HookEventName
+26 | | from looplane.tooling.types import ToolExecutionError
+   | |_____________________________________________________^
+27 |
+28 |   BlockingResult = TypeVar("BlockingResult")
+   |
+help: Organize imports
+   |
+15 | from looplane.agent.ports import (
+   -     ApprovalCall, DispatchSubagents, EventEmitter, ExecutePreparedCall, HookCall,
+   -     MarkActionStarted, PreparedToolCall, PrepareToolCall, RemainingTime, ToolExecutionPort,
+16 +     ApprovalCall,
+17 +     DispatchSubagents,
+18 +     EventEmitter,
+19 +     ExecutePreparedCall,
+20 +     HookCall,
+21 +     MarkActionStarted,
+22 +     PreparedToolCall,
+23 +     PrepareToolCall,
+24 +     RemainingTime,
+25 +     ToolExecutionPort,
+26 | )
+27 | from looplane.agent.state import TurnState
+28 | from looplane.approvals import (
+   -     ApprovalDecision, ApprovalReason, ToolEffect, effect_for_tool_definition,
+29 +     ApprovalDecision,
+30 +     ApprovalReason,
+31 +     ToolEffect,
+32 +     effect_for_tool_definition,
+33 | )
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/agent/verification.py:3:1
+   |
+ 1 |   """Declared-check evidence and advisory review policy, independent of the runner."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | import asyncio
+ 6 | | import contextlib
+ 7 | | import hashlib
+ 8 | | import json
+ 9 | | import shlex
+10 | | from collections.abc import Awaitable, Callable, MutableMapping
+11 | | from dataclasses import dataclass, field
+12 | | from pathlib import Path
+13 | | from typing import Protocol
+14 | |
+15 | | from looplane.agent.context import BlockingCall
+16 | | from looplane.agent.ports import EventEmitter, RemainingTime
+17 | | from looplane.agent.state import TurnState
+18 | | from looplane.approvals import ApprovalDecision, ApprovalReason, ToolEffect
+19 | | from looplane.contracts import Message, ToolCall, ToolObservation, Usage
+20 | | from looplane.contracts import VerificationCommand, VerificationOutcome
+21 | | from looplane.events import JsonValue, atomic_write_json
+22 | | from looplane.execution.capture import bounded_text
+23 | | from looplane.models import ModelProvider, ProviderError
+24 | | from looplane.tooling.types import ToolExecutionError
+   | |_____________________________________________________^
+help: Organize imports
+   |
+18 | from looplane.approvals import ApprovalDecision, ApprovalReason, ToolEffect
+   - from looplane.contracts import Message, ToolCall, ToolObservation, Usage
+   - from looplane.contracts import VerificationCommand, VerificationOutcome
+19 + from looplane.contracts import (
+20 +     Message,
+21 +     ToolCall,
+22 +     ToolObservation,
+23 +     Usage,
+24 +     VerificationCommand,
+25 +     VerificationOutcome,
+26 + )
+27 | from looplane.events import JsonValue, atomic_write_json
+   |
+
+E501 Line too long (103 > 100)
+   --> src/looplane/agent/verification.py:329:101
+    |
+327 |             [outcome.model_dump(mode="json") for outcome in outcomes],
+328 |         )
+329 |         (self.inputs.run_dir / "test.log").write_text("\n".join(self.cache.test_log), encoding="utf-8")
+    |                                                                                                     ^^^
+330 |         if workspace_changed_during_verification:
+331 |             raise ToolExecutionError(
+    |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/loop.py:7:1
+   |
+ 5 |   """
+ 6 |
+ 7 | / from __future__ import annotations
+ 8 | |
+ 9 | | import asyncio as asyncio
+10 | | import contextlib as contextlib
+11 | | from uuid import uuid4
+12 | |
+13 | | from looplane.agent import context as context
+14 | | from looplane.agent import model_calls as model_calls
+15 | | from looplane.agent import subagent_dispatch as subagent_dispatch
+16 | | from looplane.agent import tool_scheduler as tool_scheduler
+17 | | from looplane.agent.checkpoints import (
+18 | |     RunPersistence as RunPersistence,
+19 | |     check_resume_identity as check_resume_identity,
+20 | |     claim_session,
+21 | |     session_phase as session_phase,
+22 | | )
+23 | | from looplane.agent.model_calls import (
+24 | |     MODEL_ATTEMPTS as MODEL_ATTEMPTS,
+25 | |     RETRY_BACKOFF_BASE_SECONDS as RETRY_BACKOFF_BASE_SECONDS,
+26 | |     RETRY_JITTER_FRACTION as RETRY_JITTER_FRACTION,
+27 | |     RETRY_MAX_DELAY_SECONDS as RETRY_MAX_DELAY_SECONDS,
+28 | |     RETRY_SERVER_HINT_MAX_SECONDS as RETRY_SERVER_HINT_MAX_SECONDS,
+29 | |     retry_delay_seconds,
+30 | | )
+31 | | from looplane.agent.runner import AgentRunner as _AgentRunner
+32 | | from looplane.agent.runner import (
+33 | |     READ_ONLY_STALL_THRESHOLD as READ_ONLY_STALL_THRESHOLD,
+34 | |     UnsafeLocalExecutionError as UnsafeLocalExecutionError,
+35 | | )
+36 | | from looplane.agent.state import ContextState as ContextState, TurnState as TurnState
+37 | | from looplane.context_providers import load_project_context_provider_runner
+38 | | from looplane.events import EventWriter, atomic_write_json
+39 | | from looplane.hooks import load_project_hook_runner
+40 | | from looplane.mcp_client import load_native_mcp_server_configs
+41 | | from looplane.runtime import (
+42 | |     LocalGitWorkspace,
+43 | |     WorkspacePreparationError as WorkspacePreparationError,
+44 | |     bounded_text as bounded_text,
+45 | |     run_bounded_command,
+46 | |     sanitized_subprocess_env,
+47 | | )
+48 | | from looplane.tools import ToolExecutionError as ToolExecutionError, ToolExecutor
+   | |_________________________________________________________________________________^
+help: Organize imports
+   |
+18 |     RunPersistence as RunPersistence,
+19 + )
+20 + from looplane.agent.checkpoints import (
+21 |     check_resume_identity as check_resume_identity,
+22 + )
+23 + from looplane.agent.checkpoints import (
+24 |     claim_session,
+25 + )
+26 + from looplane.agent.checkpoints import (
+27 |     session_phase as session_phase,
+28 | )
+29 | from looplane.agent.model_calls import (
+30 |     MODEL_ATTEMPTS as MODEL_ATTEMPTS,
+31 + )
+32 + from looplane.agent.model_calls import (
+33 |     RETRY_BACKOFF_BASE_SECONDS as RETRY_BACKOFF_BASE_SECONDS,
+34 + )
+35 + from looplane.agent.model_calls import (
+36 |     RETRY_JITTER_FRACTION as RETRY_JITTER_FRACTION,
+37 + )
+38 + from looplane.agent.model_calls import (
+39 |     RETRY_MAX_DELAY_SECONDS as RETRY_MAX_DELAY_SECONDS,
+40 + )
+41 + from looplane.agent.model_calls import (
+42 |     RETRY_SERVER_HINT_MAX_SECONDS as RETRY_SERVER_HINT_MAX_SECONDS,
+43 + )
+44 + from looplane.agent.model_calls import (
+45 |     retry_delay_seconds,
+46 | )
+47 + from looplane.agent.runner import (
+48 +     READ_ONLY_STALL_THRESHOLD as READ_ONLY_STALL_THRESHOLD,
+49 + )
+50 | from looplane.agent.runner import AgentRunner as _AgentRunner
+51 | from looplane.agent.runner import (
+   -     READ_ONLY_STALL_THRESHOLD as READ_ONLY_STALL_THRESHOLD,
+52 |     UnsafeLocalExecutionError as UnsafeLocalExecutionError,
+53 | )
+   - from looplane.agent.state import ContextState as ContextState, TurnState as TurnState
+54 + from looplane.agent.state import ContextState as ContextState
+55 + from looplane.agent.state import TurnState as TurnState
+56 | from looplane.context_providers import load_project_context_provider_runner
+--------------------------------------------------------------------------------
+61 |     LocalGitWorkspace,
+   -     WorkspacePreparationError as WorkspacePreparationError,
+   -     bounded_text as bounded_text,
+62 |     run_bounded_command,
+63 |     sanitized_subprocess_env,
+64 | )
+   - from looplane.tools import ToolExecutionError as ToolExecutionError, ToolExecutor
+65 + from looplane.runtime import (
+66 +     WorkspacePreparationError as WorkspacePreparationError,
+67 + )
+68 + from looplane.runtime import (
+69 +     bounded_text as bounded_text,
+70 + )
+71 + from looplane.tools import ToolExecutionError as ToolExecutionError
+72 + from looplane.tools import ToolExecutor
+73 |
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/subagents.py:3:1
+   |
+ 1 |   """Compatibility entry points for native subagent tasks and schedule analysis."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | from pathlib import Path
+ 6 | |
+ 7 | | from looplane.agent.ports import SubagentRunnerFactory
+ 8 | | from looplane.agent.subagent_dispatch import (
+ 9 | |     SUBAGENT_ROLE_INSTRUCTIONS as SUBAGENT_ROLE_INSTRUCTIONS,
+10 | |     ScheduledSubagent as ScheduledSubagent,
+11 | |     SubagentRole as SubagentRole,
+12 | |     SubagentScheduleTraceAnalysis as SubagentScheduleTraceAnalysis,
+13 | |     _path_pattern_is_within as _path_pattern_is_within,
+14 | |     _validate_child_allowed_paths as _validate_child_allowed_paths,
+15 | |     _validate_subagent_id as _validate_subagent_id,
+16 | |     analyze_subagent_schedule_events as analyze_subagent_schedule_events,
+17 | |     analyze_subagent_schedule_jsonl as analyze_subagent_schedule_jsonl,
+18 | |     derive_subagent_task as derive_subagent_task,
+19 | |     normalize_subagent_schedule as normalize_subagent_schedule,
+20 | |     run_subagent_task as _run_subagent_task,
+21 | |     subagent_role_instruction as subagent_role_instruction,
+22 | | )
+23 | | from looplane.approvals import ApprovalPolicy
+24 | | from looplane.contracts import Limits, RunResult, TaskContract, VerificationCommand
+25 | | from looplane.events import EventSink
+26 | | from looplane.models import ModelProvider
+   | |_________________________________________^
+help: Organize imports
+   |
+9  |     SUBAGENT_ROLE_INSTRUCTIONS as SUBAGENT_ROLE_INSTRUCTIONS,
+10 + )
+11 + from looplane.agent.subagent_dispatch import (
+12 |     ScheduledSubagent as ScheduledSubagent,
+13 + )
+14 + from looplane.agent.subagent_dispatch import (
+15 |     SubagentRole as SubagentRole,
+16 + )
+17 + from looplane.agent.subagent_dispatch import (
+18 |     SubagentScheduleTraceAnalysis as SubagentScheduleTraceAnalysis,
+19 + )
+20 + from looplane.agent.subagent_dispatch import (
+21 |     _path_pattern_is_within as _path_pattern_is_within,
+22 + )
+23 + from looplane.agent.subagent_dispatch import (
+24 |     _validate_child_allowed_paths as _validate_child_allowed_paths,
+25 + )
+26 + from looplane.agent.subagent_dispatch import (
+27 |     _validate_subagent_id as _validate_subagent_id,
+28 + )
+29 + from looplane.agent.subagent_dispatch import (
+30 |     analyze_subagent_schedule_events as analyze_subagent_schedule_events,
+31 + )
+32 + from looplane.agent.subagent_dispatch import (
+33 |     analyze_subagent_schedule_jsonl as analyze_subagent_schedule_jsonl,
+34 + )
+35 + from looplane.agent.subagent_dispatch import (
+36 |     derive_subagent_task as derive_subagent_task,
+37 + )
+38 + from looplane.agent.subagent_dispatch import (
+39 |     normalize_subagent_schedule as normalize_subagent_schedule,
+40 + )
+41 + from looplane.agent.subagent_dispatch import (
+42 |     run_subagent_task as _run_subagent_task,
+43 + )
+44 + from looplane.agent.subagent_dispatch import (
+45 |     subagent_role_instruction as subagent_role_instruction,
+   |
+
+E501 Line too long (105 > 100)
+  --> src/looplane/tooling/filesystem.py:69:101
+   |
+67 |             files.append(file_path.relative_to(self.workspace).as_posix())
+68 |             if len(files) >= self.read_limits.max_list_files:
+69 |                 files.append(f"... file list truncated at {self.read_limits.max_list_files} entries ...")
+   |                                                                                                     ^^^^^
+70 |                 break
+71 |         return self.bound("\n".join(files), self.output_limits.max_output_chars)
+   |
+
+E501 Line too long (102 > 100)
+   --> src/looplane/tooling/git.py:296:101
+    |
+294 |             )
+295 |             if not added.ok:
+296 |                 raise ToolExecutionError(f"could not index workspace changes: {added.stderr.strip()}")
+    |                                                                                                     ^^
+297 |
+298 |             names = self.run(
+    |
+
+F401 [*] `pathlib.Path` imported but unused
+  --> src/looplane/tooling/patching.py:9:21
+   |
+ 7 | import time
+ 8 | from collections.abc import Callable, Mapping, Sequence
+ 9 | from pathlib import Path
+   |                     ^^^^
+10 | from typing import Protocol
+   |
+help: Remove unused import: `pathlib.Path`
+  |
+8 | from collections.abc import Callable, Mapping, Sequence
+  - from pathlib import Path
+9 | from typing import Protocol
+  |
+
+E501 Line too long (111 > 100)
+   --> src/looplane/tooling/patching.py:171:101
+    |
+169 |         argument_bytes = len(old_text.encode("utf-8")) + len(new_text.encode("utf-8"))
+170 |         if argument_bytes > self.patch_limits.max_patch_bytes:
+171 |             raise ToolExecutionError(f"replacement arguments exceed {self.patch_limits.max_patch_bytes} bytes")
+    |                                                                                                     ^^^^^^^^^^^
+172 |
+173 |         target = self.policy.resolve(path)
+    |
+
+E501 Line too long (102 > 100)
+   --> src/looplane/tooling/patching.py:179:101
+    |
+177 |             original = handle.read(self.read_limits.max_read_bytes + 1)
+178 |         if len(original) > self.read_limits.max_read_bytes:
+179 |             raise ToolExecutionError(f"file exceeds {self.read_limits.max_read_bytes} readable bytes")
+    |                                                                                                     ^^
+180 |         if b"\x00" in original:
+181 |             raise ToolExecutionError("replace_text accepts UTF-8 text files only")
+    |
+
+E501 Line too long (103 > 100)
+   --> src/looplane/tooling/patching.py:193:101
+    |
+191 |         updated = source.replace(old_text, new_text, 1).encode("utf-8")
+192 |         if len(updated) > self.read_limits.max_read_bytes:
+193 |             raise ToolExecutionError(f"resulting file exceeds {self.read_limits.max_read_bytes} bytes")
+    |                                                                                                     ^^^
+194 |
+195 |         mode = stat.S_IMODE(target.stat().st_mode)
+    |
+
+E501 Line too long (106 > 100)
+   --> src/looplane/tooling/search.py:99:101
+    |
+ 97 |                     if len(matches) >= self.search_limits.max_search_results:
+ 98 |                         matches.append(
+ 99 |                             f"... search truncated at {self.search_limits.max_search_results} matches ..."
+    |                                                                                                     ^^^^^^
+100 |                         )
+101 |                         return self.bound("\n".join(matches), self.output_limits.max_output_chars)
+    |
+
+E501 Line too long (110 > 100)
+   --> src/looplane/tooling/search.py:152:101
+    |
+150 |             matches.append(line)
+151 |             if len(matches) >= self.search_limits.max_search_results:
+152 |                 matches.append(f"... search truncated at {self.search_limits.max_search_results} matches ...")
+    |                                                                                                     ^^^^^^^^^^
+153 |                 break
+154 |         return self.bound("\n".join(matches), self.output_limits.max_output_chars)
+    |
+
+E501 Line too long (104 > 100)
+  --> src/looplane/tooling/transactions.py:71:101
+   |
+69 |             raise ToolExecutionError("steps must not be empty")
+70 |         if len(steps) > self.limits.max_tool_program_steps:
+71 |             raise ToolExecutionError(f"tool program exceeds {self.limits.max_tool_program_steps} steps")
+   |                                                                                                     ^^^^
+72 |         sections = ["[tool-program-v1]"]
+73 |         self.execute_steps(
+   |
+
+E501 Line too long (101 > 100)
+   --> src/looplane/tooling/transactions.py:121:101
+    |
+119 |                     if count > self.limits.max_tool_program_steps:
+120 |                         raise ToolExecutionError(
+121 |                             f"{label} repeat exceeds {self.limits.max_tool_program_steps} iterations"
+    |                                                                                                     ^
+122 |                         )
+123 |                     nested = self.nested_steps(step.get("steps"), label=f"{label} repeat")
+    |
+
+E501 Line too long (107 > 100)
+   --> src/looplane/tooling/transactions.py:146:101
+    |
+144 |                     raise ToolExecutionError("timeout_seconds is controlled by the harness")
+145 |                 if remaining <= 0:
+146 |                     raise ToolExecutionError(f"{label} exceeds {self.limits.max_tool_program_steps} steps")
+    |                                                                                                     ^^^^^^^
+147 |                 remaining -= 1
+148 |                 step_index += 1
+    |
+
+E501 Line too long (109 > 100)
+   --> src/looplane/tooling/transactions.py:184:101
+    |
+182 |                 last_output = content
+183 |                 sections.append(
+184 |                     f"## step {step_index}: {op}\n{self.bound(content, self.output_limits.max_output_chars)}"
+    |                                                                                                     ^^^^^^^^^
+185 |                 )
+    |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/looplane/tools.py:7:1
+   |
+ 5 |   """
+ 6 |
+ 7 | / from __future__ import annotations
+ 8 | |
+ 9 | | import fnmatch as fnmatch
+10 | | import hashlib as hashlib
+11 | | import json as json
+12 | | import os as os
+13 | | import re as re
+14 | | import shlex as shlex
+15 | | import shutil
+16 | | import stat as stat
+17 | | import time
+18 | | from collections.abc import Sequence
+19 | | from pathlib import Path
+20 | | from typing import Any
+21 | | from uuid import uuid4
+22 | |
+23 | | from looplane.contracts import (
+24 | |     ToolCall as ToolCall,
+25 | |     ToolDefinition as ToolDefinition,
+26 | |     ToolObservation as ToolObservation,
+27 | |     VerificationCommand as VerificationCommand,
+28 | |     VerificationOutcome as VerificationOutcome,
+29 | | )
+30 | | from looplane.execution.types import CommandResult
+31 | | from looplane.mcp_client import (
+32 | |     HttpMcpClient as HttpMcpClient,
+33 | |     McpError as McpError,
+34 | |     NativeMcpServerConfig as NativeMcpServerConfig,
+35 | |     StdioMcpClient as StdioMcpClient,
+36 | |     native_mcp_prompt_tool_name as native_mcp_prompt_tool_name,
+37 | |     native_mcp_resource_tool_name as native_mcp_resource_tool_name,
+38 | |     split_native_mcp_tool_name as split_native_mcp_tool_name,
+39 | | )
+40 | | from looplane.policy import PathPolicyError as PathPolicyError, SafePathPolicy as SafePathPolicy
+41 | | from looplane.runtime import (
+42 | |     LocalGitWorkspace as LocalGitWorkspace,
+43 | |     bounded_text as bounded_text,
+44 | |     resolve_command_sandbox as resolve_command_sandbox,
+45 | |     run_bounded_command as run_bounded_command,
+46 | |     sanitized_subprocess_env as sanitized_subprocess_env,
+47 | | )
+48 | | from looplane.secret_scan import (
+49 | |     redact_secrets as redact_secrets,
+50 | |     scan_text_for_secrets as scan_text_for_secrets,
+51 | | )
+52 | | from looplane.tooling.definitions import tool_definitions as tool_definitions
+53 | | from looplane.tooling.executor import ToolExecutor as _ToolExecutor
+54 | | from looplane.tooling.filesystem import (
+55 | |     OutputLimits as OutputLimits,
+56 | |     ReadLimits as ReadLimits,
+57 | |     WorkspaceFiles as WorkspaceFiles,
+58 | | )
+59 | | from looplane.tooling.mcp_bridge import (
+60 | |     McpBridge as McpBridge,
+61 | |     McpClient as McpClient,
+62 | |     McpToolNames as McpToolNames,
+63 | | )
+64 | | from looplane.tooling.patch_validation import (
+65 | |     PatchLimits as PatchLimits,
+66 | |     UnifiedDiffValidator as UnifiedDiffValidator,
+67 | | )
+68 | | from looplane.tooling.patching import PatchOperations as PatchOperations
+69 | | from looplane.tooling.read_versions import ReadVersionStore as ReadVersionStore
+70 | | from looplane.tooling.search import SearchLimits as SearchLimits, WorkspaceSearch as WorkspaceSearch
+71 | | from looplane.tooling.snapshots import (
+72 | |     AtomicFileWriter as AtomicFileWriter,
+73 | |     WorkspaceSnapshots as WorkspaceSnapshots,
+74 | | )
+75 | | from looplane.tooling.types import (
+76 | |     ReviewablePatch as ReviewablePatch,
+77 | |     ToolExecutionError as ToolExecutionError,
+78 | |     _PathSnapshot as _PathSnapshot,
+79 | | )
+   | |_^
+help: Organize imports
+    |
+24  |     ToolCall as ToolCall,
+25  + )
+26  + from looplane.contracts import (
+27  |     ToolDefinition as ToolDefinition,
+28  + )
+29  + from looplane.contracts import (
+30  |     ToolObservation as ToolObservation,
+31  + )
+32  + from looplane.contracts import (
+33  |     VerificationCommand as VerificationCommand,
+34  + )
+35  + from looplane.contracts import (
+36  |     VerificationOutcome as VerificationOutcome,
+--------------------------------------------------------------------------------
+40  |     HttpMcpClient as HttpMcpClient,
+41  + )
+42  + from looplane.mcp_client import (
+43  |     McpError as McpError,
+44  + )
+45  + from looplane.mcp_client import (
+46  |     NativeMcpServerConfig as NativeMcpServerConfig,
+47  + )
+48  + from looplane.mcp_client import (
+49  |     StdioMcpClient as StdioMcpClient,
+50  + )
+51  + from looplane.mcp_client import (
+52  |     native_mcp_prompt_tool_name as native_mcp_prompt_tool_name,
+53  + )
+54  + from looplane.mcp_client import (
+55  |     native_mcp_resource_tool_name as native_mcp_resource_tool_name,
+56  + )
+57  + from looplane.mcp_client import (
+58  |     split_native_mcp_tool_name as split_native_mcp_tool_name,
+59  | )
+    - from looplane.policy import PathPolicyError as PathPolicyError, SafePathPolicy as SafePathPolicy
+60  + from looplane.policy import PathPolicyError as PathPolicyError
+61  + from looplane.policy import SafePathPolicy as SafePathPolicy
+62  | from looplane.runtime import (
+63  |     LocalGitWorkspace as LocalGitWorkspace,
+64  + )
+65  + from looplane.runtime import (
+66  |     bounded_text as bounded_text,
+67  + )
+68  + from looplane.runtime import (
+69  |     resolve_command_sandbox as resolve_command_sandbox,
+70  + )
+71  + from looplane.runtime import (
+72  |     run_bounded_command as run_bounded_command,
+73  + )
+74  + from looplane.runtime import (
+75  |     sanitized_subprocess_env as sanitized_subprocess_env,
+76  | )
+77  | from looplane.secret_scan import (
+78  |     redact_secrets as redact_secrets,
+79  + )
+80  + from looplane.secret_scan import (
+81  |     scan_text_for_secrets as scan_text_for_secrets,
+--------------------------------------------------------------------------------
+86  |     OutputLimits as OutputLimits,
+87  + )
+88  + from looplane.tooling.filesystem import (
+89  |     ReadLimits as ReadLimits,
+90  + )
+91  + from looplane.tooling.filesystem import (
+92  |     WorkspaceFiles as WorkspaceFiles,
+93  | )
+94  | from looplane.tooling.mcp_bridge import (
+95  |     McpBridge as McpBridge,
+96  + )
+97  + from looplane.tooling.mcp_bridge import (
+98  |     McpClient as McpClient,
+99  + )
+100 + from looplane.tooling.mcp_bridge import (
+101 |     McpToolNames as McpToolNames,
+102 | )
+103 | from looplane.tooling.patch_validation import (
+104 |     PatchLimits as PatchLimits,
+105 + )
+106 + from looplane.tooling.patch_validation import (
+107 |     UnifiedDiffValidator as UnifiedDiffValidator,
+108 | )
+109 | from looplane.tooling.patching import PatchOperations as PatchOperations
+110 | from looplane.tooling.read_versions import ReadVersionStore as ReadVersionStore
+    - from looplane.tooling.search import SearchLimits as SearchLimits, WorkspaceSearch as WorkspaceSearch
+111 + from looplane.tooling.search import SearchLimits as SearchLimits
+112 + from looplane.tooling.search import WorkspaceSearch as WorkspaceSearch
+113 | from looplane.tooling.snapshots import (
+114 |     AtomicFileWriter as AtomicFileWriter,
+115 + )
+116 + from looplane.tooling.snapshots import (
+117 |     WorkspaceSnapshots as WorkspaceSnapshots,
+118 | )
+119 | from looplane.tooling.types import (
+120 |     ReviewablePatch as ReviewablePatch,
+121 + )
+122 + from looplane.tooling.types import (
+123 |     ToolExecutionError as ToolExecutionError,
+124 + )
+125 + from looplane.tooling.types import (
+126 |     _PathSnapshot as _PathSnapshot,
+    |
+
+Found 42 errors.
+[*] 18 fixable with the `--fix` option.

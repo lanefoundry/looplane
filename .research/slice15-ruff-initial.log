@@ -1,0 +1,171 @@
+E501 Line too long (104 > 100)
+   --> src/looplane/terminal/app.py:533:101
+    |
+531 |                     yield RuntimeLoadingIndicator(id="loading-indicator")
+532 |                     yield RuntimeStatus("Ready", id="status")
+533 |                     yield RuntimeMetrics(id="metrics", token_formatter=self._dependencies.format_tokens)
+    |                                                                                                     ^^^^
+534 |                     yield Button("New items", id="new-items", flat=True)
+535 |                 yield RichLog(highlight=False, markup=False, wrap=True, id="activity")
+    |
+
+E501 Line too long (102 > 100)
+    --> src/looplane/terminal/app.py:1910:101
+     |
+1908 |             return False
+1909 |         self.query_one("#status", Static).update("Compacting native context…")
+1910 |         event_sink = RecordingConversationEventSink(TextualEventSink(self._binding, self._generation))
+     |                                                                                                     ^^
+1911 |         try:
+1912 |             compact_id = await resource.compact_context(
+     |
+
+B012 `return` inside `finally` blocks cause exceptions to be silenced
+    --> src/looplane/terminal/app.py:2375:17
+     |
+2373 |                         self.query_one("#status", Static).update(self.last_error)
+2374 |             if not self._binding.current(token):
+2375 |                 return
+     |                 ^^^^^^
+2376 |             self._runner = None
+2377 |             self._resource = None
+     |
+
+E501 Line too long (105 > 100)
+  --> src/looplane/terminal/events.py:15:101
+   |
+13 |     """Deliver one immutable harness event to the UI reducer."""
+14 |
+15 |     def __init__(self, event: RunEvent, generation: int, *, attachment_epoch: int | None = None) -> None:
+   |                                                                                                     ^^^^^
+16 |         super().__init__()
+17 |         self.event = event
+   |
+
+E501 Line too long (115 > 100)
+  --> src/looplane/terminal/events.py:25:101
+   |
+23 |     """Deliver one bounded external-runtime event without pretending it is a core event."""
+24 |
+25 |     def __init__(self, event: ExternalAgentEvent, generation: int, *, attachment_epoch: int | None = None) -> None:
+   |                                                                                                     ^^^^^^^^^^^^^^^
+26 |         super().__init__()
+27 |         self.event = event
+   |
+
+E501 Line too long (121 > 100)
+  --> src/looplane/terminal/events.py:35:101
+   |
+33 |     """Deliver one typed live-session event to the transcript reducer."""
+34 |
+35 |     def __init__(self, event: ConversationRuntimeEvent, generation: int, *, attachment_epoch: int | None = None) -> None:
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^
+36 |         super().__init__()
+37 |         self.event = event
+   |
+
+F821 Undefined name `RunEvent`
+   --> src/looplane/terminal/projection.py:199:30
+    |
+197 |         return commands
+198 |
+199 |     def project(self, event: RunEvent | ExternalAgentEvent | ConversationRuntimeEvent,
+    |                              ^^^^^^^^
+200 |                 context: ProjectionContext) -> tuple[ViewCommand, ...]:
+201 |         self.context = context
+    |
+
+F821 Undefined name `ExternalAgentEvent`
+   --> src/looplane/terminal/projection.py:199:41
+    |
+197 |         return commands
+198 |
+199 |     def project(self, event: RunEvent | ExternalAgentEvent | ConversationRuntimeEvent,
+    |                                         ^^^^^^^^^^^^^^^^^^
+200 |                 context: ProjectionContext) -> tuple[ViewCommand, ...]:
+201 |         self.context = context
+    |
+
+F821 Undefined name `ConversationRuntimeEvent`
+   --> src/looplane/terminal/projection.py:199:62
+    |
+197 |         return commands
+198 |
+199 |     def project(self, event: RunEvent | ExternalAgentEvent | ConversationRuntimeEvent,
+    |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^
+200 |                 context: ProjectionContext) -> tuple[ViewCommand, ...]:
+201 |         self.context = context
+    |
+
+F821 Undefined name `RunEvent`
+   --> src/looplane/terminal/projection.py:202:30
+    |
+200 |                 context: ProjectionContext) -> tuple[ViewCommand, ...]:
+201 |         self.context = context
+202 |         if isinstance(event, RunEvent):
+    |                              ^^^^^^^^
+203 |             self.event_received(event)
+204 |         elif isinstance(event, ExternalAgentEvent):
+    |
+
+F821 Undefined name `ExternalAgentEvent`
+   --> src/looplane/terminal/projection.py:204:32
+    |
+202 |         if isinstance(event, RunEvent):
+203 |             self.event_received(event)
+204 |         elif isinstance(event, ExternalAgentEvent):
+    |                                ^^^^^^^^^^^^^^^^^^
+205 |             self.external_event_received(event)
+206 |         else:
+    |
+
+E501 Line too long (101 > 100)
+   --> src/looplane/terminal/projection.py:345:101
+    |
+343 |                              detail_kind='plain', collapsed_detail=summary)
+344 |             if action_id not in self._turn_completed_verification_actions:
+345 |                 self.reducer.add_tool(action.title, 'completed' if outcome.ok else 'failed', summary)
+    |                                                                                                     ^
+346 |             self._turn_completed_verification_actions.add(action_id)
+347 |         if context.mode == 'agent':
+    |
+
+F821 Undefined name `RunEvent`
+   --> src/looplane/terminal/projection.py:517:37
+    |
+517 |     def event_received(self, event: RunEvent) -> None:
+    |                                     ^^^^^^^^
+518 |         try:
+519 |             projected = self._projection.apply(message.event)
+    |
+
+F821 Undefined name `message`
+   --> src/looplane/terminal/projection.py:519:48
+    |
+517 |     def event_received(self, event: RunEvent) -> None:
+518 |         try:
+519 |             projected = self._projection.apply(message.event)
+    |                                                ^^^^^^^
+520 |         except ValueError as exc:
+521 |             # Display layer is best-effort: never let a single malformed event
+    |
+
+F821 Undefined name `ExternalAgentEvent`
+   --> src/looplane/terminal/projection.py:688:46
+    |
+688 |     def external_event_received(self, event: ExternalAgentEvent) -> None:
+    |                                              ^^^^^^^^^^^^^^^^^^
+689 |         if self.context.mode == "ask" and event.event_type == "message" and event.text:
+690 |             self._set_loading(None)
+    |
+
+F821 Undefined name `ConversationRuntimeEvent`
+   --> src/looplane/terminal/projection.py:726:58
+    |
+726 |     def conversation_runtime_event_received(self, event: ConversationRuntimeEvent) -> None:
+    |                                                          ^^^^^^^^^^^^^^^^^^^^^^^^
+727 |         if isinstance(event, TurnStartedEvent):
+728 |             self._runtime_stream_text[event.turn_id] = ""
+    |
+
+Found 54 errors (38 fixed, 16 remaining).

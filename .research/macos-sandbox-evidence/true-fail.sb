@@ -1,0 +1,4 @@
+(version 1)
+(deny default)
+(allow process-exec)
+(allow file-read-data (literal "/usr/bin/true"))

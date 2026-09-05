@@ -1,0 +1,20 @@
+[
+  {
+    "case": "original_inprocess_root_open",
+    "returncode": 0,
+    "stdout": "{\"open_root\": \"denied\", \"errno\": 1}\n",
+    "stderr": ""
+  },
+  {
+    "case": "root_data_inprocess_root_open",
+    "returncode": 0,
+    "stdout": "{\"open_root\": \"allowed\"}\n",
+    "stderr": ""
+  },
+  {
+    "case": "candidate_boundary_checks",
+    "returncode": 0,
+    "stdout": "{\"network-inbound_policy\": 1, \"network-outbound_policy\": 1, \"outside_read\": {\"denied_errno\": 1}, \"outside_write\": {\"denied_errno\": 1}, \"root_directory_listing\": \"allowed\", \"root_fd_openat_escape\": {\"denied_errno\": 1}, \"symlink_escape_read\": {\"denied_errno\": 1}, \"workspace_read\": \"allowed\", \"workspace_write\": \"allowed\"}\n",
+    "stderr": ""
+  }
+]

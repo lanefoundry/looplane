@@ -1,0 +1,16 @@
+[
+  {
+    "profile": "true-fail",
+    "pid": 35275,
+    "returncode": -6,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "profile": "true-root-only",
+    "pid": 35276,
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+]

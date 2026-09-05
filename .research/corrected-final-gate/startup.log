@@ -1,0 +1,15 @@
+Paired 15-sample medians recorded for help, config, and TUI import.
+'looplane --help'
+  baseline median : 0.2637s
+  candidate median: 0.2250s
+  change          : -14.7% (FASTER)
+'looplane config'
+  baseline median : 0.1510s
+  candidate median: 0.1467s
+  change          : -2.8% (FASTER)
+'import looplane.tui'
+  baseline median : 0.2790s
+  candidate median: 0.2890s
+  change          : +3.6% (SLOWER)
+
+no regression beyond 10% across 3 scenario(s)

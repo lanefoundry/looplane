@@ -1,0 +1,163 @@
+E501 Line too long (128 > 100)
+  --> src/looplane/agent/model_calls.py:78:101
+   |
+76 |     )
+77 |
+78 | async def record_provider_cache_trace(lane: str, model: ModelProvider, *, step: int, run_dir: Path, emit: EventEmitter) -> None:
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+79 |     trace = getattr(model, "last_cache_trace", None)
+80 |     if not isinstance(trace, ProviderCacheTrace):
+   |
+
+E501 Line too long (201 > 100)
+   --> src/looplane/agent/model_calls.py:121:101
+    |
+119 | …
+120 | …
+121 | …ionItem], tools: tuple[ToolDefinition, ...], cancel_requested: asyncio.Event, remaining: float) -> ModelTurn | None:
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+122 | …."""
+    |
+
+E501 Line too long (166 > 100)
+   --> src/looplane/agent/model_calls.py:154:101
+    |
+152 | …
+153 | …
+154 | …Sequence[ConversationItem], cancel_requested: asyncio.Event, remaining: float) -> ModelTurn | None:
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+155 | …
+    |
+
+E501 Line too long (103 > 100)
+   --> src/looplane/agent/runner.py:197:101
+    |
+195 |         validate_run_id(self.run_id)
+196 |         self.run_dir = self.run_root / self.run_id
+197 |         self.events = self._event_writer_factory(self.run_dir / "events.jsonl", durable=durable_events)
+    |                                                                                                     ^^^
+198 |         self.allow_unsafe_local_exec = allow_unsafe_local_exec
+199 |         self.allow_direct_repo_edit = allow_direct_repo_edit
+    |
+
+E501 Line too long (108 > 100)
+   --> src/looplane/agent/runner.py:328:101
+    |
+326 |         self.run_id = run_id
+327 |         self.run_dir = self.run_root / self.run_id
+328 |         self.events = self._event_writer_factory(self.run_dir / "events.jsonl", durable=self.events.durable)
+    |                                                                                                     ^^^^^^^^
+329 |         durable_sink = JsonlEventSink(self.events)
+330 |         self._event_sink = (
+    |
+
+E501 Line too long (103 > 100)
+   --> src/looplane/agent/runner.py:343:101
+    |
+342 |         resolved = self.run_dir.resolve(strict=True)
+343 |         claimed = await self._claim_session(resolved, durable=self.events.durable, allow_terminal=True)
+    |                                                                                                     ^^^
+344 |         store, lease, manifest, persisted_task = (
+345 |             claimed.store,
+    |
+
+E501 Line too long (103 > 100)
+   --> src/looplane/agent/verification.py:335:101
+    |
+333 |             [outcome.model_dump(mode="json") for outcome in outcomes],
+334 |         )
+335 |         (self.inputs.run_dir / "test.log").write_text("\n".join(self.cache.test_log), encoding="utf-8")
+    |                                                                                                     ^^^
+336 |         if workspace_changed_during_verification:
+337 |             raise ToolExecutionError(
+    |
+
+E501 Line too long (105 > 100)
+  --> src/looplane/tooling/filesystem.py:69:101
+   |
+67 |             files.append(file_path.relative_to(self.workspace).as_posix())
+68 |             if len(files) >= self.read_limits.max_list_files:
+69 |                 files.append(f"... file list truncated at {self.read_limits.max_list_files} entries ...")
+   |                                                                                                     ^^^^^
+70 |                 break
+71 |         return self.bound("\n".join(files), self.output_limits.max_output_chars)
+   |
+
+E501 Line too long (102 > 100)
+   --> src/looplane/tooling/git.py:296:101
+    |
+294 |             )
+295 |             if not added.ok:
+296 |                 raise ToolExecutionError(f"could not index workspace changes: {added.stderr.strip()}")
+    |                                                                                                     ^^
+297 |
+298 |             names = self.run(
+    |
+
+E501 Line too long (111 > 100)
+   --> src/looplane/tooling/patching.py:170:101
+    |
+168 |         argument_bytes = len(old_text.encode("utf-8")) + len(new_text.encode("utf-8"))
+169 |         if argument_bytes > self.patch_limits.max_patch_bytes:
+170 |             raise ToolExecutionError(f"replacement arguments exceed {self.patch_limits.max_patch_bytes} bytes")
+    |                                                                                                     ^^^^^^^^^^^
+171 |
+172 |         target = self.policy.resolve(path)
+    |
+
+E501 Line too long (102 > 100)
+   --> src/looplane/tooling/patching.py:178:101
+    |
+176 |             original = handle.read(self.read_limits.max_read_bytes + 1)
+177 |         if len(original) > self.read_limits.max_read_bytes:
+178 |             raise ToolExecutionError(f"file exceeds {self.read_limits.max_read_bytes} readable bytes")
+    |                                                                                                     ^^
+179 |         if b"\x00" in original:
+180 |             raise ToolExecutionError("replace_text accepts UTF-8 text files only")
+    |
+
+E501 Line too long (103 > 100)
+   --> src/looplane/tooling/patching.py:192:101
+    |
+190 |         updated = source.replace(old_text, new_text, 1).encode("utf-8")
+191 |         if len(updated) > self.read_limits.max_read_bytes:
+192 |             raise ToolExecutionError(f"resulting file exceeds {self.read_limits.max_read_bytes} bytes")
+    |                                                                                                     ^^^
+193 |
+194 |         mode = stat.S_IMODE(target.stat().st_mode)
+    |
+
+E501 Line too long (110 > 100)
+   --> src/looplane/tooling/search.py:153:101
+    |
+151 |             matches.append(line)
+152 |             if len(matches) >= self.search_limits.max_search_results:
+153 |                 matches.append(f"... search truncated at {self.search_limits.max_search_results} matches ...")
+    |                                                                                                     ^^^^^^^^^^
+154 |                 break
+155 |         return self.bound("\n".join(matches), self.output_limits.max_output_chars)
+    |
+
+E501 Line too long (104 > 100)
+  --> src/looplane/tooling/transactions.py:71:101
+   |
+69 |             raise ToolExecutionError("steps must not be empty")
+70 |         if len(steps) > self.limits.max_tool_program_steps:
+71 |             raise ToolExecutionError(f"tool program exceeds {self.limits.max_tool_program_steps} steps")
+   |                                                                                                     ^^^^
+72 |         sections = ["[tool-program-v1]"]
+73 |         self.execute_steps(
+   |
+
+E501 Line too long (107 > 100)
+   --> src/looplane/tooling/transactions.py:147:101
+    |
+145 |                     raise ToolExecutionError("timeout_seconds is controlled by the harness")
+146 |                 if remaining <= 0:
+147 |                     raise ToolExecutionError(f"{label} exceeds {self.limits.max_tool_program_steps} steps")
+    |                                                                                                     ^^^^^^^
+148 |                 remaining -= 1
+149 |                 step_index += 1
+    |
+
+Found 29 errors (14 fixed, 15 remaining).

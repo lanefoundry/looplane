@@ -1,0 +1,14 @@
+refactor(modularization): 完成 Slice 1.1 純契約與葉節點抽取
+
+## Why is this necessary?
+
+- TUI、Codex session 與 ToolExecutor 仍同時承擔純型別和執行協調責任
+- 後續 protocol 與 UI 拆分需要可獨立匯入和測試的模組
+- 每次抽取需保留舊介面並留下可追溯的 Gate 證據
+
+## How does it address?
+
+- 並行抽出 terminal types/events/status、Codex parsing/mappers 和 tooling types/definitions
+- 保留舊入口 re-export、session wrappers 與既有 monkeypatch 行為
+- 加入相容性、邊界、資料快照與新 feature 套件循環依賴測試
+- 記錄完整測試、startup、build 和既有動態 import cycle 的實際結果

@@ -1,0 +1,13 @@
+refactor(runners): 補齊外部代理正名與舊入口相容
+
+## Why is this necessary?
+
+- 外部代理契約已正名為 ExternalAgentRunner，各 CLI runner 仍使用 Backend 名稱
+- 現有呼叫端與測試依賴舊 import 和 monkeypatch 位置
+- 計畫要求命名相容切片與實作搬移分開提交
+
+## How does it address?
+
+- 將六個 CLI runner 設為 canonical class 名稱並保留直接舊名 alias
+- 新增暫時的 runner 入口模組，維持原始實作與 module globals 位置
+- 加入 identity、pickle lookup、protocol、繼承與 monkeypatch 相容測試

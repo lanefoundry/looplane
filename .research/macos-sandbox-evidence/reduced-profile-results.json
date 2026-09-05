@@ -1,0 +1,23 @@
+[
+  {
+    "name": "reduced-no-sysctl",
+    "pid": 33233,
+    "returncode": 0,
+    "stdout": "ready",
+    "stderr": ""
+  },
+  {
+    "name": "reduced-no-global-metadata",
+    "pid": 33234,
+    "returncode": 0,
+    "stdout": "ready",
+    "stderr": "Error opening /private/var/select/sh: Operation not permitted\nshell-init: error retrieving current directory: getcwd: cannot access parent directories: Operation not permitted\n"
+  },
+  {
+    "name": "reduced-shell-only",
+    "pid": 33235,
+    "returncode": 0,
+    "stdout": "ready",
+    "stderr": "Error opening /private/var/select/sh: Operation not permitted\nshell-init: error retrieving current directory: getcwd: cannot access parent directories: Operation not permitted\n"
+  }
+]

@@ -1,0 +1,4256 @@
+diff --git a/src/looplane/codex_app_server.py b/src/looplane/codex_app_server.py
+index 2df48f8..de9e55a 100644
+--- a/src/looplane/codex_app_server.py
++++ b/src/looplane/codex_app_server.py
+@@ -1,135 +1,24 @@
+-"""Long-lived Codex app-server adapter for unified looplane conversations."""
++"""Compatibility imports and patchable ID factory for the canonical Codex session."""
+ 
+-from __future__ import annotations
+-
+-import asyncio
+-import hashlib
+-import json
+-import logging
+-import os
+-import re
+-import shutil
+-import signal
+-import tomllib
+-from collections import deque
+-from collections.abc import AsyncIterator, Mapping
+-from contextlib import suppress
+-from dataclasses import dataclass
++import json as json
++from collections.abc import Mapping
+ from pathlib import Path
+-from typing import Any, Literal
++from typing import Literal
+ from uuid import uuid4
+ 
+-from looplane.approvals import ApprovalDecision, ToolEffect
+-from looplane.conversation_runtime import (
+-    ActionPreviewUpdatedEvent,
+-    ApprovalRequestedEvent,
+-    ApprovalResolvedEvent,
+-    CompactionCompletedEvent,
+-    CompactionStartedEvent,
+-    ContextUsageUpdatedEvent,
+-    ConversationProtocolError,
+-    ConversationRuntimeEvent,
+-    NoticeEvent,
+-    RuntimeApprovalKind,
+-    RuntimeApprovalRequest,
+-    RuntimeSkillsChangedEvent,
+-    RuntimeToolKind,
+-    RuntimeTurnStatus,
+-    TextDeltaEvent,
+-    ToolCompletedEvent,
+-    ToolOutputDeltaEvent,
+-    ToolStartedEvent,
+-    TurnCompletedEvent,
+-    TurnStartedEvent,
+-)
++from looplane.approvals import ApprovalDecision as ApprovalDecision
++from looplane.conversation_runtime import ConversationProtocolError as ConversationProtocolError
+ from looplane.conversation_runtime import RuntimeToolStatus as RuntimeToolStatus
+-from looplane.runtime_semantics import (
+-    ContextTelemetry,
+-    ContextTelemetryAccuracy,
+-    ProposedChange,
+-    ProposedChangeKind,
+-    RuntimeCapabilities,
+-)
+-from looplane.runtimes.codex import approval_mapper as _codex_approvals
+-from looplane.runtimes.codex import parsing as _codex_parsing
+-from looplane.runtimes.codex import tool_mapper as _codex_tools
+-
+-_SAFE_ENV_KEYS = {
+-    "CODEX_HOME",
+-    "HOME",
+-    "LANG",
+-    "LC_ALL",
+-    "LC_CTYPE",
+-    "LOGNAME",
+-    "PATH",
+-    "SHELL",
+-    "SYSTEMROOT",
+-    "TEMP",
+-    "TERM",
+-    "TMP",
+-    "TMPDIR",
+-    "TZ",
+-    "USER",
+-}
+-_SECRET_ENV_MARKERS = ("API_KEY", "AUTH", "CREDENTIAL", "PASSWORD", "SECRET", "TOKEN")
+-_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+-_TOML_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+-_LOG = logging.getLogger(__name__)
+-_APPROVAL_METHODS = {
+-    "item/commandExecution/requestApproval": RuntimeApprovalKind.COMMAND,
+-    "item/fileChange/requestApproval": RuntimeApprovalKind.FILE_CHANGE,
+-    "item/permissions/requestApproval": RuntimeApprovalKind.PERMISSIONS,
+-}
+-_IGNORED_NOTIFICATIONS = {
+-    "account/rateLimits/updated",
+-    "account/updated",
+-    "app/list/updated",
+-    "remoteControl/status/changed",
+-    "mcpServer/startupStatus/updated",
+-    "thread/started",
+-    "thread/status/changed",
+-    "thread/name/updated",
+-    "turn/plan/updated",
+-    "item/plan/delta",
+-    "item/reasoning/summaryTextDelta",
+-    "item/reasoning/summaryPartAdded",
+-    "item/reasoning/textDelta",
+-    "serverRequest/resolved",
+-}
+-_TOOL_ITEM_TYPES = {
+-    "collabAgentToolCall",
+-    "commandExecution",
+-    "dynamicToolCall",
+-    "fileChange",
+-    "mcpToolCall",
+-    "webSearch",
+-}
+-_NON_TOOL_ITEM_TYPES = {
+-    "agentMessage",
+-    "contextCompaction",
+-    "enteredReviewMode",
+-    "exitedReviewMode",
+-    "hookPrompt",
+-    "imageView",
+-    "plan",
+-    "reasoning",
+-    "sleep",
+-    "subAgentActivity",
+-    "userMessage",
+-}
++from looplane.runtimes.codex.approval_mapper import PendingApproval
++from looplane.runtimes.codex.session import CodexAppServerSession as _CanonicalSession
+ 
+ 
+-@dataclass(frozen=True)
+-class _PendingApproval:
+-    wire_id: int | str
+-    method: str
+-    turn_id: str
+-    requested_permissions: dict[str, Any] | None
+-    available: tuple[ApprovalDecision, ...]
++class _PendingApproval(PendingApproval):
++    """Historical name retained for callers constructing pending wire results."""
+ 
+ 
+-class CodexAppServerSession:
+-    """Manage one ephemeral Codex thread over the app-server JSONL protocol."""
++class CodexAppServerSession(_CanonicalSession):
++    """Compatibility constructor retaining the module-level UUID patch point."""
+ 
+     def __init__(
+         self,
+@@ -147,1241 +36,18 @@ class CodexAppServerSession:
+         host_env: Mapping[str, str] | None = None,
+         allowed_mcp_servers: tuple[str, ...] = ("groundlane",),
+     ) -> None:
+-        if request_timeout_seconds <= 0 or shutdown_timeout_seconds <= 0:
+-            raise ValueError("timeouts must be positive")
+-        if min(max_input_bytes, max_frame_bytes, max_frames) <= 0:
+-            raise ValueError("protocol bounds must be positive")
+-        if sandbox_mode not in {"read-only", "workspace-write"}:
+-            raise ValueError("sandbox_mode must be read-only or workspace-write")
+-        candidate = Path(working_directory).expanduser()
+-        if candidate.is_symlink():
+-            raise ValueError("working_directory cannot be a symlink")
+-        self.working_directory = candidate.resolve(strict=True)
+-        if not self.working_directory.is_dir():
+-            raise ValueError("working_directory must be an existing directory")
+-        raw_roots = runtime_workspace_roots or (self.working_directory,)
+-        resolved_roots: list[Path] = []
+-        for raw_root in raw_roots:
+-            root = Path(raw_root).expanduser()
+-            if root.is_symlink():
+-                raise ValueError("runtime workspace roots cannot be symlinks")
+-            resolved = root.resolve(strict=True)
+-            if not resolved.is_dir():
+-                raise ValueError("runtime workspace roots must be directories")
+-            resolved_roots.append(resolved)
+-        if not any(
+-            self.working_directory == root or self.working_directory.is_relative_to(root)
+-            for root in resolved_roots
+-        ):
+-            raise ValueError("working_directory must be inside a runtime workspace root")
+-        self.runtime_workspace_roots = tuple(dict.fromkeys(resolved_roots))
+-        self.executable = str(executable)
+-        self.model = self._validate_model(model)
+-        self.sandbox_mode = sandbox_mode
+-        self.request_timeout_seconds = request_timeout_seconds
+-        self.shutdown_timeout_seconds = shutdown_timeout_seconds
+-        self.max_input_bytes = max_input_bytes
+-        self.max_frame_bytes = max_frame_bytes
+-        self.max_frames = max_frames
+-        self._host_env = host_env
+-        self.allowed_mcp_servers = tuple(dict.fromkeys(allowed_mcp_servers))
+-        self._process: asyncio.subprocess.Process | None = None
+-        self._reader_task: asyncio.Task[None] | None = None
+-        self._stderr_task: asyncio.Task[None] | None = None
+-        self._pending_rpc: dict[int, asyncio.Future[dict[str, Any]]] = {}
+-        self._pending_approvals: dict[str, _PendingApproval] = {}
+-        self._wire_approval_ids: set[int | str] = set()
+-        self._event_queue: asyncio.Queue[ConversationRuntimeEvent | BaseException | None] = (
+-            asyncio.Queue()
+-        )
+-        self._next_rpc_id = 1
+-        self._next_sequence = 0
+-        self._frame_count = 0
+-        self._native_thread_id: str | None = None
+-        self._native_turns: dict[str, str] = {}
+-        self._stderr_tail: deque[bytes] = deque(maxlen=8)
+-        self._local_turns: dict[str, str] = {}
+-        self._starting_turn: str | None = None
+-        self._active_turn: str | None = None
+-        self._started_turns: set[str] = set()
+-        self._completed_turns: set[str] = set()
+-        self._native_actions: dict[tuple[str, str], str] = {}
+-        self._started_actions: set[str] = set()
+-        self._action_approval_context: dict[str, str] = {}
+-        self._action_previews: dict[str, tuple[ProposedChange, ...]] = {}
+-        self._preview_change_ids: dict[tuple[str, tuple[str, ...]], str] = {}
+-        self._turn_diffs: dict[str, str] = {}
+-        self._compaction_turns: set[str] = set()
+-        self._started_compactions: set[str] = set()
+-        self._completed_compactions: set[str] = set()
+-        self._compaction_start_future: asyncio.Future[str] | None = None
+-        self._closed = False
+-        self._fatal: BaseException | None = None
+-        self._write_lock = asyncio.Lock()
+-
+-    @staticmethod
+-    def _validate_model(model: str | None) -> str | None:
+-        if model is None:
+-            return None
+-        normalized = model.strip()
+-        if not normalized or len(normalized) > 256 or not normalized.isprintable():
+-            raise ValueError("model must be a printable model name")
+-        return normalized
+-
+-    @property
+-    def capabilities(self) -> RuntimeCapabilities:
+-        return RuntimeCapabilities(
+-            token_usage=True,
+-            native_compaction=True,
+-            proposed_file_preview=True,
+-        )
+-
+-    def _resolve_executable(self) -> str:
+-        if os.path.dirname(self.executable):
+-            path = Path(self.executable).expanduser().resolve(strict=False)
+-            if not path.is_file() or not os.access(path, os.X_OK):
+-                raise FileNotFoundError("Codex executable is unavailable")
+-            return str(path)
+-        source = os.environ if self._host_env is None else self._host_env
+-        resolved = shutil.which(self.executable, path=source.get("PATH"))
+-        if resolved is None:
+-            raise FileNotFoundError("Codex executable is unavailable")
+-        return resolved
+-
+-    def _controlled_env(self) -> dict[str, str]:
+-        source = os.environ if self._host_env is None else self._host_env
+-        env = {key: value for key, value in source.items() if key in _SAFE_ENV_KEYS}
+-        forwarded_credentials: set[str] = set()
+-        for name, config in self._configured_mcp_servers().items():
+-            if name not in self.allowed_mcp_servers:
+-                continue
+-            variable = config.get("bearer_token_env_var")
+-            if isinstance(variable, str) and _ENV_NAME.fullmatch(variable) and variable in source:
+-                env[variable] = source[variable]
+-                forwarded_credentials.add(variable)
+-        env["PATH"] = env.get("PATH", os.defpath)
+-        env.update(
+-            {
+-                "GIT_ASKPASS": "/usr/bin/false",
+-                "GIT_CONFIG_GLOBAL": os.devnull,
+-                "GIT_CONFIG_NOSYSTEM": "1",
+-                "GIT_TERMINAL_PROMPT": "0",
+-                "NO_COLOR": "1",
+-                "PYTHONDONTWRITEBYTECODE": "1",
+-            }
+-        )
+-        assert not any(
+-            marker in key.upper()
+-            for key in env
+-            if key not in forwarded_credentials
+-            for marker in _SECRET_ENV_MARKERS
+-        )
+-        return env
+-
+-    def _configured_mcp_servers(self) -> dict[str, Mapping[str, Any]]:
+-        source = os.environ if self._host_env is None else self._host_env
+-        codex_home = source.get("CODEX_HOME")
+-        if codex_home:
+-            config_path = Path(codex_home).expanduser() / "config.toml"
+-        else:
+-            home = source.get("HOME")
+-            if not home:
+-                return {}
+-            config_path = Path(home).expanduser() / ".codex" / "config.toml"
+-        try:
+-            with config_path.open("rb") as config_file:
+-                config = tomllib.load(config_file)
+-        except (OSError, tomllib.TOMLDecodeError):
+-            return {}
+-        servers = config.get("mcp_servers")
+-        if not isinstance(servers, dict):
+-            return {}
+-        return {
+-            name: server
+-            for name, server in servers.items()
+-            if isinstance(name, str) and isinstance(server, dict)
+-        }
+-
+-    def _mcp_configuration_args(self) -> tuple[str, ...]:
+-        args: list[str] = []
+-        allowed = set(self.allowed_mcp_servers)
+-        for name in self._configured_mcp_servers():
+-            if not _TOML_BARE_KEY.fullmatch(name):
+-                raise ConversationProtocolError(
+-                    "Codex MCP server names must be TOML bare keys for safe isolation"
+-                )
+-            enabled = "true" if name in allowed else "false"
+-            args.extend(("-c", f"mcp_servers.{name}.enabled={enabled}"))
+-        return tuple(args)
+-
+-    async def start(self) -> None:
+-        if self._process is not None or self._closed:
+-            raise RuntimeError("session cannot be started more than once")
+-        executable = self._resolve_executable()
+-        self._process = await asyncio.create_subprocess_exec(
+-            executable,
+-            "app-server",
+-            "--disable",
+-            "hooks",
+-            "--disable",
+-            "plugins",
+-            "--disable",
+-            "remote_plugin",
+-            "-c",
+-            "hooks.state={}",
+-            *self._mcp_configuration_args(),
+-            "--listen",
+-            "stdio://",
+-            stdin=asyncio.subprocess.PIPE,
+-            stdout=asyncio.subprocess.PIPE,
+-            stderr=asyncio.subprocess.PIPE,
+-            cwd=self.working_directory,
+-            env=self._controlled_env(),
+-            start_new_session=os.name == "posix",
+-            limit=self.max_frame_bytes + 1,
+-        )
+-        self._reader_task = asyncio.create_task(self._reader_loop())
+-        self._stderr_task = asyncio.create_task(self._drain_stderr())
+-        try:
+-            await self._rpc(
+-                "initialize",
+-                {
+-                    "clientInfo": {
+-                        "name": "looplane",
+-                        "title": "looplane",
+-                        "version": "0.1.0",
+-                    },
+-                    # runtimeWorkspaceRoots is the safety boundary that keeps
+-                    # the native session inside looplane's disposable workspace.
+-                    # Codex gates that field behind this explicit capability.
+-                    "capabilities": {
+-                        "experimentalApi": True,
+-                        "optOutNotificationMethods": sorted(_IGNORED_NOTIFICATIONS),
+-                    },
+-                },
+-            )
+-            await self._write_frame({"method": "initialized"})
+-            params: dict[str, Any] = {
+-                "cwd": str(self.working_directory),
+-                "runtimeWorkspaceRoots": [str(root) for root in self.runtime_workspace_roots],
+-                "approvalPolicy": "untrusted",
+-                "approvalsReviewer": "user",
+-                "sandbox": self.sandbox_mode,
+-                "ephemeral": True,
+-            }
+-            if self.model is not None:
+-                params["model"] = self.model
+-            response = await self._rpc("thread/start", params)
+-            thread = response.get("thread")
+-            if not isinstance(thread, dict) or not self._safe_id(thread.get("id")):
+-                raise ConversationProtocolError("thread/start returned an invalid thread")
+-            self._native_thread_id = thread["id"]
+-        except BaseException:
+-            await self.aclose()
+-            raise
+-
+-    async def send_turn(self, text: str) -> str:
+-        self._ensure_ready()
+-        normalized = text.strip()
+-        if not normalized or "\x00" in normalized:
+-            raise ValueError("turn text must be non-blank and NUL-free")
+-        if len(normalized.encode("utf-8")) > self.max_input_bytes:
+-            raise ValueError("turn text exceeds max_input_bytes")
+-        if self._active_turn is not None or self._starting_turn is not None:
+-            raise RuntimeError("a turn is already active")
+-        local_turn = uuid4().hex
+-        self._starting_turn = local_turn
+-        try:
+-            response = await self._rpc(
+-                "turn/start",
+-                {
+-                    "threadId": self._native_thread_id,
+-                    "clientUserMessageId": uuid4().hex,
+-                    "input": [{"type": "text", "text": normalized, "text_elements": []}],
+-                },
+-            )
+-            turn = response.get("turn")
+-            if not isinstance(turn, dict) or not self._safe_id(turn.get("id")):
+-                raise ConversationProtocolError("turn/start returned an invalid turn")
+-            self._bind_turn(turn["id"], local_turn)
+-            if local_turn not in self._completed_turns:
+-                self._active_turn = local_turn
+-            self._emit_turn_started(local_turn)
+-            return local_turn
+-        except BaseException:
+-            self._starting_turn = None
+-            raise
+-        finally:
+-            if self._starting_turn == local_turn:
+-                self._starting_turn = None
+-
+-    async def compact_context(self, guidance: str | None = None) -> str:
+-        self._ensure_ready()
+-        if guidance is not None and guidance.strip():
+-            raise ValueError("Codex native compaction does not accept guidance")
+-        if self._active_turn is not None or self._starting_turn is not None:
+-            raise RuntimeError("a turn is already active")
+-        local_turn = uuid4().hex
+-        self._starting_turn = local_turn
+-        self._compaction_turns.add(local_turn)
+-        binding: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+-        self._compaction_start_future = binding
+-        try:
+-            await self._rpc("thread/compact/start", {"threadId": self._native_thread_id})
+-            await asyncio.wait_for(asyncio.shield(binding), timeout=self.request_timeout_seconds)
+-            return local_turn
+-        except BaseException:
+-            self._compaction_turns.discard(local_turn)
+-            raise
+-        finally:
+-            if self._starting_turn == local_turn:
+-                self._starting_turn = None
+-            if self._compaction_start_future is binding:
+-                self._compaction_start_future = None
+-
+-    def events(self) -> AsyncIterator[ConversationRuntimeEvent]:
+-        return self._events()
+-
+-    async def _events(self) -> AsyncIterator[ConversationRuntimeEvent]:
+-        while True:
+-            value = await self._event_queue.get()
+-            if value is None:
+-                return
+-            if isinstance(value, BaseException):
+-                raise value
+-            yield value
+-
+-    async def respond_approval(self, request_id: str, decision: ApprovalDecision) -> None:
+-        self._ensure_ready()
+-        pending = self._pending_approvals.get(request_id)
+-        if pending is None:
+-            raise ConversationProtocolError("approval response is stale or duplicate")
+-        normalized = ApprovalDecision(decision)
+-        if normalized not in pending.available:
+-            raise ValueError("approval decision is unavailable for this request")
+-        result = self._approval_result(pending, normalized)
+-        await self._write_frame({"id": pending.wire_id, "result": result})
+-        del self._pending_approvals[request_id]
+-        self._wire_approval_ids.remove(pending.wire_id)
+-        self._emit(
+-            ApprovalResolvedEvent,
+-            turn_id=pending.turn_id,
+-            request_id=request_id,
+-            decision=normalized,
+-        )
+-
+-    async def interrupt(self, turn_id: str) -> None:
+-        self._ensure_ready()
+-        native_turn = self._local_turns.get(turn_id)
+-        if native_turn is None or turn_id in self._completed_turns:
+-            raise ConversationProtocolError("turn is unknown or already terminal")
+-        await self._rpc(
+-            "turn/interrupt",
+-            {"threadId": self._native_thread_id, "turnId": native_turn},
+-        )
+-
+-    async def aclose(self) -> None:
+-        if self._closed:
+-            return
+-        self._closed = True
+-        process = self._process
+-        if process is not None and process.returncode is None:
+-            self._terminate_process(process)
+-            try:
+-                await asyncio.wait_for(process.wait(), self.shutdown_timeout_seconds)
+-            except TimeoutError:
+-                self._kill_process(process)
+-                with suppress(Exception):
+-                    await process.wait()
+-        current = asyncio.current_task()
+-        for task in (self._reader_task, self._stderr_task):
+-            if task is not None and task is not current and not task.done():
+-                task.cancel()
+-        for task in (self._reader_task, self._stderr_task):
+-            if task is not None and task is not current:
+-                with suppress(asyncio.CancelledError, Exception):
+-                    await task
+-        error = ConversationProtocolError("Codex app-server session closed")
+-        for future in self._pending_rpc.values():
+-            if not future.done():
+-                future.set_exception(error)
+-        self._pending_rpc.clear()
+-        await self._event_queue.put(None)
+-
+-    def _ensure_ready(self) -> None:
+-        if self._fatal is not None:
+-            raise ConversationProtocolError("Codex app-server session failed") from self._fatal
+-        if self._closed or self._process is None or self._native_thread_id is None:
+-            raise RuntimeError("session is not started")
+-        if self._process.returncode is not None:
+-            raise ConversationProtocolError("Codex app-server exited")
+-
+-    async def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+-        if self._fatal is not None:
+-            raise ConversationProtocolError("Codex app-server session failed") from self._fatal
+-        request_id = self._next_rpc_id
+-        self._next_rpc_id += 1
+-        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+-        self._pending_rpc[request_id] = future
+-        await self._write_frame({"method": method, "id": request_id, "params": params})
+-        try:
+-            return await asyncio.wait_for(
+-                asyncio.shield(future), timeout=self.request_timeout_seconds
+-            )
+-        except TimeoutError as exc:
+-            self._pending_rpc.pop(request_id, None)
+-            raise ConversationProtocolError(f"Codex request timed out: {method}") from exc
+-
+-    async def _write_frame(self, frame: dict[str, Any]) -> None:
+-        process = self._process
+-        if process is None or process.stdin is None or process.returncode is not None:
+-            raise ConversationProtocolError("Codex app-server stdin is unavailable")
+-        payload = json.dumps(frame, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
+-        if len(payload) > self.max_frame_bytes:
+-            raise ConversationProtocolError("outbound app-server frame exceeds bound")
+-        async with self._write_lock:
+-            process.stdin.write(payload)
+-            try:
+-                await process.stdin.drain()
+-            except (BrokenPipeError, ConnectionResetError) as exc:
+-                raise ConversationProtocolError("Codex app-server pipe closed") from exc
+-
+-    async def _reader_loop(self) -> None:
+-        assert self._process is not None and self._process.stdout is not None
+-        try:
+-            while True:
+-                raw = await self._process.stdout.readline()
+-                if not raw:
+-                    if not self._closed:
+-                        raise ConversationProtocolError("Codex app-server closed stdout")
+-                    return
+-                self._frame_count += 1
+-                frame = _codex_parsing.parse_frame(
+-                    raw,
+-                    frame_count=self._frame_count,
+-                    max_frames=self.max_frames,
+-                    max_frame_bytes=self.max_frame_bytes,
+-                )
+-                await self._handle_frame(frame)
+-        except asyncio.CancelledError:
+-            raise
+-        except BaseException as exc:
+-            await self._fail(exc)
+-
+-    async def _handle_frame(self, frame: dict[str, Any]) -> None:
+-        method = frame.get("method")
+-        has_id = "id" in frame
+-        if isinstance(method, str):
+-            params = frame.get("params", {})
+-            if not isinstance(params, dict):
+-                raise ConversationProtocolError("app-server params must be an object")
+-            if has_id:
+-                await self._handle_server_request(method, frame["id"], params)
+-            else:
+-                self._handle_notification(method, params)
+-            return
+-        if not has_id or not isinstance(frame["id"], int):
+-            raise ConversationProtocolError("unrecognized app-server frame")
+-        request_id = frame["id"]
+-        future = self._pending_rpc.get(request_id)
+-        if future is None:
+-            raise ConversationProtocolError("response id is stale, duplicate, or unknown")
+-        if ("result" in frame) == ("error" in frame):
+-            raise ConversationProtocolError("response requires exactly one result or error")
+-        if "error" in frame:
+-            del self._pending_rpc[request_id]
+-            error = frame["error"]
+-            future.set_exception(ConversationProtocolError(f"Codex request failed: {error!r}"))
+-            return
+-        result = frame["result"]
+-        if not isinstance(result, dict):
+-            raise ConversationProtocolError("app-server result must be an object")
+-        del self._pending_rpc[request_id]
+-        future.set_result(result)
+-
+-    async def _handle_server_request(
+-        self, method: str, wire_id: object, params: dict[str, Any]
+-    ) -> None:
+-        if method not in _APPROVAL_METHODS:
+-            raise ConversationProtocolError(f"unsupported server request: {method}")
+-        if not isinstance(wire_id, (int, str)) or isinstance(wire_id, bool):
+-            raise ConversationProtocolError("server request has invalid id")
+-        if wire_id in self._wire_approval_ids:
+-            raise ConversationProtocolError("duplicate approval request id")
+-        if params.get("threadId") != self._native_thread_id:
+-            raise ConversationProtocolError("approval request references the wrong thread")
+-        native_turn = params.get("turnId")
+-        native_item = params.get("itemId")
+-        if not self._safe_id(native_turn) or not self._safe_id(native_item):
+-            raise ConversationProtocolError("approval request has invalid correlation ids")
+-        local_turn = self._local_turn(native_turn, context=f"server request {method}")
+-        action_id = self._local_action(native_turn, native_item)
+-        kind = _APPROVAL_METHODS[method]
+-        available = self._available_decisions(kind, params.get("availableDecisions"))
+-        request_id = uuid4().hex
+-        requested_permissions = (
+-            params.get("permissions") if kind == RuntimeApprovalKind.PERMISSIONS else None
+-        )
+-        if requested_permissions is not None and not isinstance(requested_permissions, dict):
+-            raise ConversationProtocolError("permissions request is malformed")
+-        pending = _PendingApproval(
+-            wire_id=wire_id,
+-            method=method,
+-            turn_id=local_turn,
+-            requested_permissions=requested_permissions,
+-            available=available,
+-        )
+-        self._pending_approvals[request_id] = pending
+-        self._wire_approval_ids.add(wire_id)
+-        preview = self._approval_preview(
+-            kind,
+-            params,
+-            fallback=self._action_approval_context.get(action_id, ""),
+-        )
+-        approval = RuntimeApprovalRequest(
+-            request_id=request_id,
+-            turn_id=local_turn,
+-            action_id=action_id,
+-            kind=kind,
+-            effect=(
+-                ToolEffect.MODIFY if kind == RuntimeApprovalKind.FILE_CHANGE else ToolEffect.EXECUTE
+-            ),
+-            preview=preview,
+-            proposed_changes=self._action_previews.get(action_id, ()),
+-            grant_scope=(
+-                self._file_change_grant_scope(action_id)
+-                if kind == RuntimeApprovalKind.FILE_CHANGE
+-                else None
+-            ),
+-            available_decisions=available,
+-        )
+-        self._emit(ApprovalRequestedEvent, turn_id=local_turn, approval=approval)
+-
+-    def _handle_notification(self, method: str, params: dict[str, Any]) -> None:
+-        if method in _IGNORED_NOTIFICATIONS:
+-            return
+-        if method == "turn/started":
+-            turn = params.get("turn")
+-            if not isinstance(turn, dict) or not self._safe_id(turn.get("id")):
+-                raise ConversationProtocolError("turn/started is malformed")
+-            native_turn = turn["id"]
+-            if (
+-                native_turn not in self._native_turns
+-                and self._starting_turn is None
+-                and self._active_turn is not None
+-            ):
+-                # Codex 0.149+ can replace its internal turn (for example after a
+-                # failed collab spawn) and announce a brand-new native turn id on
+-                # the same connection.  The user's logical turn is still the one
+-                # looplane started, so adopt the replacement instead of failing the
+-                # whole conversation.
+-                _LOG.warning(
+-                    "codex app-server: adopting server-initiated turn %r into the "
+-                    "active local turn (previous native binding retained)",
+-                    native_turn,
+-                )
+-                self._adopt_turn(native_turn, self._active_turn)
+-            self._emit_turn_started(self._local_turn(native_turn, context="turn/started"))
+-            return
+-        if method == "turn/completed":
+-            self._complete_turn(params)
+-            return
+-        if method == "thread/tokenUsage/updated":
+-            self._observe_token_usage(params)
+-            return
+-        if method == "thread/compacted":
+-            self._emit_compaction_completed(
+-                self._correlated_turn(params, context="thread/compacted")
+-            )
+-            return
+-        if method == "turn/diff/updated":
+-            self._observe_turn_diff(params)
+-            return
+-        if method == "skills/changed":
+-            self._observe_skills_changed(params)
+-            return
+-        if method == "item/agentMessage/delta":
+-            turn = self._correlated_turn(params, context=method)
+-            delta = params.get("delta")
+-            if not isinstance(delta, str) or not delta:
+-                raise ConversationProtocolError("agent message delta is malformed")
+-            self._emit(TextDeltaEvent, turn_id=turn, text=self._bounded(delta))
+-            return
+-        if method in {"item/started", "item/completed"}:
+-            self._handle_item(method, params)
+-            return
+-        if method == "item/fileChange/patchUpdated":
+-            self._handle_file_change_preview(params)
+-            return
+-        if method in {
+-            "item/commandExecution/outputDelta",
+-            "item/mcpToolCall/progress",
+-        }:
+-            self._handle_tool_delta(method, params)
+-            return
+-        if method == "error":
+-            if params.get("willRetry") is True:
+-                return
+-            turn = self._correlated_turn(params, context="error")
+-            error = self._bounded(str(params.get("error", "Codex turn failed")))
+-            self._terminal(turn, RuntimeTurnStatus.FAILED, error)
+-            return
+-        if method == "warning":
+-            self._observe_warning(params)
+-            return
+-        raise ConversationProtocolError(f"unsupported server notification: {method}")
+-
+-    def _observe_token_usage(self, params: dict[str, Any]) -> None:
+-        # Telemetry only: a drifted payload must not end the conversation.
+-        try:
+-            turn = self._correlated_turn(params, context="thread/tokenUsage/updated")
+-            self._emit(
+-                ContextUsageUpdatedEvent,
+-                turn_id=turn,
+-                telemetry=self._context_telemetry(params.get("tokenUsage")),
+-            )
+-        except ConversationProtocolError:
+-            _LOG.warning(
+-                "codex app-server: dropping malformed token usage notification; recent stderr: %s",
+-                self._stderr_tail_text(),
+-            )
+-
+-    def _observe_turn_diff(self, params: dict[str, Any]) -> None:
+-        # Display-only delta text: a drifted payload must not end the conversation.
+-        try:
+-            turn = self._correlated_turn(params, context="turn/diff/updated")
+-            diff = params.get("diff")
+-            if not isinstance(diff, str):
+-                raise ConversationProtocolError("turn diff update is malformed")
+-            self._turn_diffs[turn] = self._bounded(diff)[:64000]
+-        except ConversationProtocolError:
+-            _LOG.warning(
+-                "codex app-server: dropping malformed turn diff notification; recent stderr: %s",
+-                self._stderr_tail_text(),
+-            )
+-
+-    def _observe_skills_changed(self, params: dict[str, Any]) -> None:
+-        # Observational runtime metadata: surfacing should not end the turn if
+-        # Codex changes this notification shape.
+-        try:
+-            thread = params.get("threadId")
+-            if thread is not None and thread != self._native_thread_id:
+-                raise ConversationProtocolError("skills change references the wrong thread")
+-            native_turn = params.get("turnId")
+-            if native_turn is not None:
+-                if not self._safe_id(native_turn):
+-                    raise ConversationProtocolError("skills change has invalid turn id")
+-                turn = self._local_turn(native_turn, context="skills/changed")
+-            else:
+-                turn = self._active_turn or self._starting_turn
+-                if turn is None:
+-                    return
+-            self._emit(
+-                RuntimeSkillsChangedEvent,
+-                turn_id=turn,
+-                source=self._skills_changed_source(params),
+-                skill_names=self._skills_changed_names(params.get("skills")),
+-                summary=self._skills_changed_summary(params),
+-            )
+-        except ConversationProtocolError:
+-            _LOG.warning(
+-                "codex app-server: dropping malformed skills/changed notification; "
+-                "recent stderr: %s",
+-                self._stderr_tail_text(),
+-            )
+-
+-    def _skills_changed_source(self, params: dict[str, Any]) -> str | None:
+-        value = params.get("source") or params.get("reason")
+-        if value is None:
+-            return None
+-        if not isinstance(value, str) or "\x00" in value:
+-            raise ConversationProtocolError("skills change source is malformed")
+-        value = self._bounded(value).strip()
+-        return value[:256] or None
+-
+-    def _skills_changed_summary(self, params: dict[str, Any]) -> str:
+-        value = params.get("message") or params.get("summary")
+-        if value is None:
+-            return "Runtime skill set changed."
+-        if not isinstance(value, str) or "\x00" in value:
+-            raise ConversationProtocolError("skills change summary is malformed")
+-        return self._bounded(value).strip()[:4000] or "Runtime skill set changed."
+-
+-    def _skills_changed_names(self, raw: object) -> tuple[str, ...]:
+-        if raw is None:
+-            return ()
+-        if not isinstance(raw, list):
+-            raise ConversationProtocolError("skills change list is malformed")
+-        names: list[str] = []
+-        seen: set[str] = set()
+-        for item in raw[:256]:
+-            if isinstance(item, str):
+-                name = item
+-            elif isinstance(item, dict):
+-                name = item.get("name")
+-            else:
+-                raise ConversationProtocolError("skills change entry is malformed")
+-            if not isinstance(name, str) or "\x00" in name:
+-                raise ConversationProtocolError("skills change name is malformed")
+-            name = self._bounded(name).strip()[:256]
+-            if name and name not in seen:
+-                names.append(name)
+-                seen.add(name)
+-        return tuple(names)
+-
+-    def _observe_warning(self, params: dict[str, Any]) -> None:
+-        # Secondary notice: a drifted payload must not end the conversation.
+-        message = params.get("message")
+-        try:
+-            if not isinstance(message, str) or not message:
+-                raise ConversationProtocolError("warning notification is malformed")
+-            thread_id = params.get("threadId")
+-            if thread_id is not None:
+-                if not self._safe_id(thread_id):
+-                    raise ConversationProtocolError("warning notification has invalid thread")
+-                if thread_id != self._native_thread_id:
+-                    raise ConversationProtocolError("warning notification has foreign thread")
+-        except ConversationProtocolError:
+-            _LOG.warning(
+-                "codex app-server: dropping malformed warning notification; recent stderr: %s",
+-                self._stderr_tail_text(),
+-            )
+-            return
+-        turn = self._active_turn or self._starting_turn
+-        if turn is not None and isinstance(message, str):
+-            self._emit(
+-                NoticeEvent,
+-                turn_id=turn,
+-                level="warning",
+-                text=self._bounded(message)[:16000],
+-            )
+-
+-    def _handle_item(self, method: str, params: dict[str, Any]) -> None:
+-        turn = self._correlated_turn(params, context=method)
+-        item = params.get("item")
+-        if not isinstance(item, dict) or not self._safe_id(item.get("id")):
+-            raise ConversationProtocolError("item lifecycle notification is malformed")
+-        item_type = item.get("type")
+-        if item_type == "contextCompaction":
+-            if method == "item/started":
+-                self._emit_compaction_started(turn)
+-            else:
+-                self._emit_compaction_completed(turn)
+-            return
+-        if item_type in _NON_TOOL_ITEM_TYPES:
+-            return
+-        if item_type not in _TOOL_ITEM_TYPES:
+-            raise ConversationProtocolError(f"unsupported Codex item type: {item_type!r}")
+-        native_turn = params["turnId"]
+-        action = self._local_action(native_turn, item["id"])
+-        if method == "item/started":
+-            if action in self._started_actions:
+-                raise ConversationProtocolError("duplicate tool start")
+-            self._started_actions.add(action)
+-            kind, name, effect, summary, path, paths = self._tool_description(item_type, item)
+-            self._action_approval_context[action] = self._tool_approval_context(
+-                kind=kind,
+-                summary=summary,
+-                path=path,
+-                paths=paths,
+-            )
+-            if item_type == "fileChange":
+-                changes = self._proposed_changes(action, item.get("changes"))
+-                if changes:
+-                    self._action_previews[action] = changes
+-            self._emit(
+-                ToolStartedEvent,
+-                turn_id=turn,
+-                action_id=action,
+-                kind=kind,
+-                tool_name=name,
+-                effect=effect,
+-                summary=summary,
+-                path=path,
+-                paths=paths,
+-            )
+-            return
+-        if action not in self._started_actions:
+-            raise ConversationProtocolError("tool completed before it started")
+-        self._started_actions.remove(action)
+-        self._action_approval_context.pop(action, None)
+-        status = self._tool_status(item.get("status"))
+-        self._emit(
+-            ToolCompletedEvent,
+-            turn_id=turn,
+-            action_id=action,
+-            status=status,
+-            summary=self._tool_completion_summary(item_type, item),
+-            output=self._tool_completion_output(item_type, item),
+-            diff=self._tool_completion_diff(item_type, item),
+-        )
+-
+-    def _handle_tool_delta(self, method: str, params: dict[str, Any]) -> None:
+-        turn = self._correlated_turn(params, context=method)
+-        native_item = params.get("itemId")
+-        if not self._safe_id(native_item):
+-            raise ConversationProtocolError("tool delta has invalid item id")
+-        action = self._native_actions.get((params["turnId"], native_item))
+-        if action is None or action not in self._started_actions:
+-            raise ConversationProtocolError("tool delta preceded tool start")
+-        value = params.get("delta" if method.endswith("outputDelta") else "message")
+-        if not isinstance(value, str) or not value:
+-            raise ConversationProtocolError("tool output delta is malformed")
+-        self._emit(
+-            ToolOutputDeltaEvent,
+-            turn_id=turn,
+-            action_id=action,
+-            text=self._bounded(value),
++        super().__init__(
++            working_directory=working_directory,
++            runtime_workspace_roots=runtime_workspace_roots,
++            executable=executable,
++            model=model,
++            sandbox_mode=sandbox_mode,
++            request_timeout_seconds=request_timeout_seconds,
++            shutdown_timeout_seconds=shutdown_timeout_seconds,
++            max_input_bytes=max_input_bytes,
++            max_frame_bytes=max_frame_bytes,
++            max_frames=max_frames,
++            host_env=host_env,
++            allowed_mcp_servers=allowed_mcp_servers,
++            _new_id=lambda: uuid4().hex,
+         )
+-
+-    def _handle_file_change_preview(self, params: dict[str, Any]) -> None:
+-        turn = self._correlated_turn(params, context="item/fileChange/patchUpdated")
+-        native_item = params.get("itemId")
+-        if not self._safe_id(native_item):
+-            raise ConversationProtocolError("file change preview has invalid item id")
+-        action = self._native_actions.get((params["turnId"], native_item))
+-        if action is None or action not in self._started_actions:
+-            raise ConversationProtocolError("file change preview preceded tool start")
+-        changes = self._proposed_changes(action, params.get("changes"))
+-        if not changes:
+-            raise ConversationProtocolError("file change preview contains no changes")
+-        self._action_previews[action] = changes
+-        self._emit(
+-            ActionPreviewUpdatedEvent,
+-            turn_id=turn,
+-            action_id=action,
+-            proposed_changes=changes,
+-        )
+-
+-    def _proposed_changes(self, action_id: str, raw_changes: object) -> tuple[ProposedChange, ...]:
+-        if not isinstance(raw_changes, list):
+-            raise ConversationProtocolError("file changes are malformed")
+-        proposed: list[ProposedChange] = []
+-        for raw in raw_changes:
+-            if not isinstance(raw, dict):
+-                raise ConversationProtocolError("file change entry is malformed")
+-            path = raw.get("path")
+-            diff = raw.get("diff")
+-            raw_kind = raw.get("kind")
+-            if not isinstance(path, str) or not path or len(path) > 4096 or "\x00" in path:
+-                raise ConversationProtocolError("file change path is malformed")
+-            if diff is not None and not isinstance(diff, str):
+-                raise ConversationProtocolError("file change diff is malformed")
+-            kind_name: object = raw_kind
+-            move_path: object = None
+-            if isinstance(raw_kind, dict):
+-                kind_name = raw_kind.get("type")
+-                move_path = raw_kind.get("move_path")
+-            mapping = {
+-                "add": ProposedChangeKind.CREATE,
+-                "update": ProposedChangeKind.UPDATE,
+-                "delete": ProposedChangeKind.DELETE,
+-            }
+-            kind = mapping.get(kind_name)
+-            if kind is None:
+-                raise ConversationProtocolError("file change kind is malformed")
+-            paths = (path,)
+-            if kind_name == "update" and move_path is not None:
+-                if (
+-                    not isinstance(move_path, str)
+-                    or not move_path
+-                    or len(move_path) > 4096
+-                    or "\x00" in move_path
+-                ):
+-                    raise ConversationProtocolError("file move path is malformed")
+-                kind = ProposedChangeKind.MOVE
+-                paths = (path, move_path)
+-            shown_diff, original_bytes, truncated = self._preview_diff(diff)
+-            key = (action_id, paths)
+-            change_id = self._preview_change_ids.setdefault(key, uuid4().hex)
+-            proposed.append(
+-                ProposedChange(
+-                    change_id=change_id,
+-                    action_id=action_id,
+-                    kind=kind,
+-                    paths=paths,
+-                    summary=f"{kind.value} {' -> '.join(paths)}",
+-                    unified_diff=shown_diff,
+-                    original_diff_bytes=original_bytes,
+-                    truncated=truncated,
+-                )
+-            )
+-        return tuple(proposed)
+-
+-    _preview_diff = staticmethod(_codex_parsing.preview_diff)
+-
+-    def _file_change_grant_scope(self, action_id: str) -> str | None:
+-        changes = self._action_previews.get(action_id, ())
+-        if not changes:
+-            return None
+-        fingerprint = hashlib.sha256()
+-        normalized = sorted((change.kind.value, change.paths) for change in changes)
+-        for kind, paths in normalized:
+-            fingerprint.update(kind.encode("utf-8"))
+-            fingerprint.update(b"\0")
+-            for path in paths:
+-                fingerprint.update(path.encode("utf-8"))
+-                fingerprint.update(b"\0")
+-        return f"file_change:{fingerprint.hexdigest()}"
+-
+-    @staticmethod
+-    def _context_telemetry(raw: object) -> ContextTelemetry:
+-        if not isinstance(raw, dict) or not isinstance(raw.get("last"), dict):
+-            raise ConversationProtocolError("token usage update is malformed")
+-        last = raw["last"]
+-
+-        def count(name: str) -> int:
+-            value = last.get(name)
+-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+-                raise ConversationProtocolError("token usage update is malformed")
+-            return value
+-
+-        context_window = raw.get("modelContextWindow")
+-        if context_window is not None and (
+-            not isinstance(context_window, int)
+-            or isinstance(context_window, bool)
+-            or context_window <= 0
+-        ):
+-            raise ConversationProtocolError("token usage context window is malformed")
+-        try:
+-            return ContextTelemetry(
+-                accuracy=ContextTelemetryAccuracy.EXACT,
+-                input_tokens=count("inputTokens"),
+-                cached_input_tokens=count("cachedInputTokens"),
+-                output_tokens=count("outputTokens"),
+-                reasoning_output_tokens=count("reasoningOutputTokens"),
+-                total_tokens=count("totalTokens"),
+-                context_window=context_window,
+-            )
+-        except ValueError as exc:
+-            raise ConversationProtocolError("token usage update is incoherent") from exc
+-
+-    def _emit_compaction_started(self, turn: str) -> None:
+-        if turn in self._started_compactions:
+-            return
+-        self._compaction_turns.add(turn)
+-        self._started_compactions.add(turn)
+-        self._active_turn = turn
+-        self._emit(CompactionStartedEvent, turn_id=turn, guidance=None)
+-
+-    def _emit_compaction_completed(self, turn: str) -> None:
+-        self._emit_compaction_started(turn)
+-        if turn in self._completed_compactions:
+-            return
+-        self._completed_compactions.add(turn)
+-        self._emit(CompactionCompletedEvent, turn_id=turn, checkpoint=None)
+-
+-    def _complete_turn(self, params: dict[str, Any]) -> None:
+-        turn = params.get("turn")
+-        if not isinstance(turn, dict) or not self._safe_id(turn.get("id")):
+-            raise ConversationProtocolError("turn/completed is malformed")
+-        local = self._local_turn(turn["id"], context="turn/completed")
+-        native_turn = turn["id"]
+-        if any(
+-            action in self._started_actions
+-            for (action_turn, _), action in self._native_actions.items()
+-            if action_turn == native_turn
+-        ):
+-            raise ConversationProtocolError("turn completed with an unfinished tool")
+-        raw_status = turn.get("status")
+-        statuses = {
+-            "completed": RuntimeTurnStatus.COMPLETED,
+-            "failed": RuntimeTurnStatus.FAILED,
+-            "interrupted": RuntimeTurnStatus.INTERRUPTED,
+-        }
+-        if raw_status not in statuses:
+-            raise ConversationProtocolError("turn/completed has invalid status")
+-        if local in self._compaction_turns:
+-            if local in self._completed_turns:
+-                raise ConversationProtocolError("duplicate terminal turn event")
+-            if raw_status == "completed":
+-                self._emit_compaction_completed(local)
+-            self._completed_turns.add(local)
+-            if self._active_turn == local:
+-                self._active_turn = None
+-            self._compaction_turns.discard(local)
+-            return
+-        error: str | None = None
+-        if raw_status == "failed":
+-            error = self._bounded(str(turn.get("error") or "Codex turn failed"))
+-        self._terminal(local, statuses[raw_status], error)
+-
+-    def _terminal(self, turn: str, status: RuntimeTurnStatus, error: str | None) -> None:
+-        if turn in self._completed_turns:
+-            raise ConversationProtocolError("duplicate terminal turn event")
+-        self._completed_turns.add(turn)
+-        if self._active_turn == turn:
+-            self._active_turn = None
+-        self._emit(TurnCompletedEvent, turn_id=turn, status=status, error=error)
+-
+-    def _emit_turn_started(self, turn: str) -> None:
+-        if turn in self._compaction_turns:
+-            self._emit_compaction_started(turn)
+-            return
+-        if turn in self._started_turns:
+-            return
+-        self._started_turns.add(turn)
+-        self._emit(TurnStartedEvent, turn_id=turn)
+-
+-    def _emit(self, cls: type[Any], **kwargs: Any) -> None:
+-        event = cls(sequence=self._next_sequence, **kwargs)
+-        self._next_sequence += 1
+-        self._event_queue.put_nowait(event)
+-
+-    async def _fail(self, exc: BaseException) -> None:
+-        if self._fatal is not None or self._closed:
+-            return
+-        self._fatal = exc
+-        wrapped = (
+-            exc
+-            if isinstance(exc, ConversationProtocolError)
+-            else ConversationProtocolError("Codex app-server protocol failed")
+-        )
+-        for future in self._pending_rpc.values():
+-            if not future.done():
+-                future.set_exception(wrapped)
+-        self._pending_rpc.clear()
+-        self._event_queue.put_nowait(wrapped)
+-        process = self._process
+-        if process is not None and process.returncode is None:
+-            self._terminate_process(process)
+-
+-    async def _drain_stderr(self) -> None:
+-        assert self._process is not None and self._process.stderr is not None
+-        retained = 0
+-        while True:
+-            chunk = await self._process.stderr.read(64 * 1024)
+-            if not chunk:
+-                return
+-            self._stderr_tail.append(chunk)
+-            retained += len(chunk)
+-            if retained > self.max_frame_bytes:
+-                retained = self.max_frame_bytes
+-
+-    def _stderr_tail_text(self, *, limit: int = 1_000) -> str:
+-        if not self._stderr_tail:
+-            return "(empty)"
+-        text = b"".join(self._stderr_tail).decode(errors="replace")
+-        text = " ".join(text.split())
+-        return text[-limit:]
+-
+-    def _local_turn(self, native_turn: str, *, context: str) -> str:
+-        existing = self._native_turns.get(native_turn)
+-        if existing is not None:
+-            return existing
+-        if self._starting_turn is None:
+-            if self._active_turn is not None:
+-                # Codex 0.149+ may abandon its internal turn and continue the
+-                # same logical turn under a fresh id (see the turn/started
+-                # adoption); item-level notifications then reference an id
+-                # looplane never bound.  Adopt instead of failing the whole
+-                # conversation.
+-                _LOG.warning(
+-                    "codex app-server: %s adopts replacement native turn %r "
+-                    "into the active local turn",
+-                    context,
+-                    native_turn,
+-                )
+-                self._adopt_turn(native_turn, self._active_turn)
+-                return self._active_turn
+-            known = len(self._native_turns)
+-            _LOG.warning(
+-                "codex app-server: %s references an unbound turn "
+-                "(native_turn=%r, bound_turns=%d, thread=%r); recent stderr: %s",
+-                context,
+-                native_turn,
+-                known,
+-                self._native_thread_id,
+-                self._stderr_tail_text(),
+-            )
+-            raise ConversationProtocolError(
+-                f"{context} references an unknown turn "
+-                f"(native_turn={native_turn!r}, bound_turns={known})"
+-            )
+-        _LOG.debug(
+-            "codex app-server: %s binds native_turn=%r to the starting turn",
+-            context,
+-            native_turn,
+-        )
+-        self._bind_turn(native_turn, self._starting_turn)
+-        return self._starting_turn
+-
+-    def _bind_turn(self, native_turn: str, local_turn: str) -> None:
+-        existing = self._native_turns.get(native_turn)
+-        if existing is not None and existing != local_turn:
+-            raise ConversationProtocolError("native turn id was rebound")
+-        reverse = self._local_turns.get(local_turn)
+-        if reverse is not None and reverse != native_turn:
+-            raise ConversationProtocolError("local turn id was rebound")
+-        self._native_turns[native_turn] = local_turn
+-        self._local_turns[local_turn] = native_turn
+-        if local_turn in self._compaction_turns:
+-            binding = self._compaction_start_future
+-            if binding is not None and not binding.done():
+-                binding.set_result(local_turn)
+-
+-    def _adopt_turn(self, native_turn: str, local_turn: str) -> None:
+-        """Map a replacement native id onto an already-active local turn.
+-
+-        Unlike :meth:`_bind_turn` this intentionally allows several native ids
+-        to share one local turn: Codex 0.149+ may abandon its internal turn and
+-        continue the same logical turn under a fresh id.  The original reverse
+-        binding is preserved so interrupts still target the id Codex knows.
+-        """
+-
+-        existing = self._native_turns.get(native_turn)
+-        if existing is not None and existing != local_turn:
+-            raise ConversationProtocolError("native turn id was rebound")
+-        self._native_turns[native_turn] = local_turn
+-
+-    def _local_action(self, native_turn: str, native_item: str) -> str:
+-        key = (native_turn, native_item)
+-        value = self._native_actions.get(key)
+-        if value is None:
+-            value = uuid4().hex
+-            self._native_actions[key] = value
+-        return value
+-
+-    def _correlated_turn(self, params: dict[str, Any], *, context: str) -> str:
+-        thread = params.get("threadId")
+-        native_turn = params.get("turnId")
+-        # An absent thread id is tolerated the same way as in the warning
+-        # handler: the app-server pipe is dedicated to one ephemeral thread,
+-        # so a missing field cannot point at a foreign conversation.  A
+-        # present but different id still fails closed.
+-        if (thread is not None and thread != self._native_thread_id) or not self._safe_id(
+-            native_turn
+-        ):
+-            _LOG.warning(
+-                "codex app-server: %s has invalid correlation "
+-                "(thread=%r, expected=%r, turnId=%r); recent stderr: %s",
+-                context,
+-                thread,
+-                self._native_thread_id,
+-                native_turn,
+-                self._stderr_tail_text(),
+-            )
+-            raise ConversationProtocolError(f"{context} notification correlation is invalid")
+-        return self._local_turn(native_turn, context=context)
+-
+-    _safe_id = staticmethod(_codex_parsing.safe_id)
+-
+-    def _bounded(self, value: str) -> str:
+-        return _codex_parsing.bounded_text(value, max_frame_bytes=self.max_frame_bytes)
+-
+-    def _approval_preview(
+-        self,
+-        kind: RuntimeApprovalKind,
+-        params: dict[str, Any],
+-        *,
+-        fallback: str = "",
+-    ) -> str:
+-        if kind == RuntimeApprovalKind.COMMAND:
+-            labels = (
+-                ("Command", params.get("command")),
+-                ("Working directory", params.get("cwd")),
+-                ("Reason", params.get("reason")),
+-            )
+-        elif kind == RuntimeApprovalKind.FILE_CHANGE:
+-            labels = (
+-                ("Reason", params.get("reason")),
+-                ("Grant root", params.get("grantRoot")),
+-            )
+-        else:
+-            labels = (
+-                ("Reason", params.get("reason")),
+-                ("Working directory", params.get("cwd")),
+-            )
+-        details = [
+-            f"{label}: {value}" for label, value in labels if isinstance(value, str) and value
+-        ]
+-        if fallback:
+-            details.insert(0, fallback)
+-        if not details:
+-            details = [
+-                f"Action: {kind.value.replace('_', ' ')}",
+-                "Details: The runtime did not identify the command, files, or working directory.",
+-            ]
+-        return self._bounded("\n".join(details))[:16000]
+-
+-    def _tool_approval_context(
+-        self,
+-        *,
+-        kind: RuntimeToolKind,
+-        summary: str,
+-        path: str | None,
+-        paths: tuple[str, ...],
+-    ) -> str:
+-        if kind == RuntimeToolKind.COMMAND:
+-            lines = [
+-                "Action: Execute command",
+-                f"Command: {summary}",
+-                f"Working directory: {path or self.working_directory}",
+-                "Impact: Runs a command in the workspace.",
+-            ]
+-        elif kind == RuntimeToolKind.FILE_CHANGE:
+-            lines = [
+-                "Action: Modify files",
+-                f"Working directory: {self.working_directory}",
+-                f"Impact: {summary} in the workspace.",
+-            ]
+-            if paths:
+-                lines.append("Files:")
+-                lines.extend(f"- {item}" for item in paths)
+-            elif path:
+-                lines.append(f"File: {path}")
+-            else:
+-                lines.append("Files: The runtime did not identify the affected paths.")
+-        else:
+-            lines = [
+-                f"Action: {kind.value.replace('_', ' ')}",
+-                f"Working directory: {self.working_directory}",
+-            ]
+-            if summary:
+-                lines.append(f"Details: {summary}")
+-        return self._bounded("\n".join(lines))[:16000]
+-
+-    _available_decisions = staticmethod(_codex_approvals.available_decisions)
+-
+-    @staticmethod
+-    def _approval_result(pending: _PendingApproval, decision: ApprovalDecision) -> dict[str, Any]:
+-        return _codex_approvals.approval_result(
+-            pending.method, pending.requested_permissions, decision
+-        )
+-
+-    _tool_description = staticmethod(_codex_tools.tool_description)
+-
+-    def _tool_completion_summary(self, item_type: str, item: dict[str, Any]) -> str:
+-        return _codex_tools.tool_completion_summary(item_type, item, bounded=self._bounded)
+-
+-    def _tool_completion_output(self, item_type: str, item: dict[str, Any]) -> str | None:
+-        return _codex_tools.tool_completion_output(item_type, item, bounded=self._bounded)
+-
+-    def _tool_completion_diff(self, item_type: str, item: dict[str, Any]) -> str | None:
+-        return _codex_tools.tool_completion_diff(item_type, item, bounded=self._bounded)
+-
+-    _tool_status = staticmethod(_codex_tools.tool_status)
+-
+-    @staticmethod
+-    def _terminate_process(process: asyncio.subprocess.Process) -> None:
+-        if os.name == "posix":
+-            try:
+-                os.killpg(process.pid, signal.SIGTERM)
+-                return
+-            except (PermissionError, ProcessLookupError):
+-                pass
+-        with suppress(ProcessLookupError):
+-            if process.returncode is None:
+-                process.terminate()
+-
+-    @staticmethod
+-    def _kill_process(process: asyncio.subprocess.Process) -> None:
+-        if os.name == "posix":
+-            try:
+-                os.killpg(process.pid, signal.SIGKILL)
+-                return
+-            except (PermissionError, ProcessLookupError):
+-                pass
+-        with suppress(ProcessLookupError):
+-            if process.returncode is None:
+-                process.kill()
+diff --git a/src/looplane/codex_conversation.py b/src/looplane/codex_conversation.py
+index 5f662d0..e526db5 100644
+--- a/src/looplane/codex_conversation.py
++++ b/src/looplane/codex_conversation.py
+@@ -1,31 +1,13 @@
+-"""Secure disposable-workspace host for a live Codex app-server session."""
++"""Compatibility host retaining the historical session factory patch point."""
+ 
+-from __future__ import annotations
+-
+-import asyncio
+-from collections.abc import AsyncIterator
+ from pathlib import Path
+ 
+-from looplane.approvals import ApprovalDecision
+ from looplane.codex_app_server import CodexAppServerSession
+-from looplane.conversation_runtime import (
+-    ConversationRuntimeEvent,
+-    RuntimeToolKind,
+-    RuntimeToolStatus,
+-    RuntimeTurnStatus,
+-    ToolCompletedEvent,
+-    ToolStartedEvent,
+-    TurnCompletedEvent,
+-)
+-from looplane.conversation_workspace import (
+-    ConversationWorkspace,
+-    ConversationWorkspaceIntegrityError,
+-)
+-
++from looplane.conversation_workspace import ConversationWorkspace as ConversationWorkspace
++from looplane.runtimes.codex.conversation import IsolatedCodexConversation as _CanonicalHost
+ 
+-class IsolatedCodexConversation:
+-    """Keep one Codex thread inside one audited disposable HEAD clone."""
+ 
++class IsolatedCodexConversation(_CanonicalHost):
+     def __init__(
+         self,
+         source_repository: str | Path,
+@@ -34,139 +16,10 @@ class IsolatedCodexConversation:
+         model: str | None = None,
+         allowed_paths: tuple[str, ...] = ("**",),
+     ) -> None:
+-        self.source_repository = Path(source_repository)
+-        self.executable = executable
+-        self.model = model
+-        self.allowed_paths = allowed_paths
+-        self.workspace: ConversationWorkspace | None = None
+-        self.session: CodexAppServerSession | None = None
+-        self._claimed_paths: set[str] = set()
+-        self._action_paths: dict[str, tuple[str, ...]] = {}
+-        self._closed = False
+-        self._lifecycle_lock = asyncio.Lock()
+-
+-    @property
+-    def source_snapshot_warning(self) -> str | None:
+-        return self.workspace.source_snapshot_warning if self.workspace else None
+-
+-    async def start(self) -> None:
+-        async with self._lifecycle_lock:
+-            if self.workspace is not None or self._closed:
+-                raise RuntimeError("conversation cannot be started more than once")
+-            workspace = await ConversationWorkspace.create(self.source_repository)
+-            try:
+-                session = CodexAppServerSession(
+-                    working_directory=workspace.workspace_path,
+-                    runtime_workspace_roots=(workspace.root_path,),
+-                    executable=self.executable,
+-                    model=self.model,
+-                    sandbox_mode="workspace-write",
+-                )
+-                await session.start()
+-            except BaseException:
+-                await workspace.aclose()
+-                raise
+-            self.workspace = workspace
+-            self.session = session
+-
+-    async def send_turn(self, text: str) -> str:
+-        return await self._session().send_turn(text)
+-
+-    def events(self) -> AsyncIterator[ConversationRuntimeEvent]:
+-        return self._events()
+-
+-    async def _events(self) -> AsyncIterator[ConversationRuntimeEvent]:
+-        async for event in self._session().events():
+-            if (
+-                isinstance(event, ToolStartedEvent)
+-                and event.kind == RuntimeToolKind.FILE_CHANGE
+-                and (event.paths or event.path)
+-            ):
+-                raw_paths = event.paths or ((event.path,) if event.path else ())
+-                normalized = tuple(self._relative_path(path) for path in raw_paths)
+-                self._action_paths[event.action_id] = normalized
+-                event = event.model_copy(
+-                    update={"path": normalized[0] if normalized else None, "paths": normalized}
+-                )
+-            elif (
+-                isinstance(event, ToolCompletedEvent)
+-                and event.status == RuntimeToolStatus.COMPLETED
+-                and event.diff
+-                and (paths := self._action_paths.get(event.action_id))
+-            ):
+-                self._claimed_paths.update(paths)
+-            if isinstance(event, TurnCompletedEvent):
+-                event = await self._audited_terminal(event)
+-            yield event
+-
+-    def _relative_path(self, value: str) -> str:
+-        workspace = self._workspace().workspace_path
+-        candidate = Path(value)
+-        if candidate.is_absolute():
+-            try:
+-                candidate = candidate.resolve(strict=False).relative_to(workspace)
+-            except ValueError as exc:
+-                raise ConversationWorkspaceIntegrityError(
+-                    "runtime reported a file change outside the disposable workspace"
+-                ) from exc
+-        normalized = candidate.as_posix()
+-        if normalized in {"", "."} or normalized.startswith("../"):
+-            raise ConversationWorkspaceIntegrityError("runtime reported an unsafe changed path")
+-        return normalized
+-
+-    async def _audited_terminal(self, event: TurnCompletedEvent) -> TurnCompletedEvent:
+-        workspace = self._workspace()
+-        try:
+-            review = await workspace.review(allowed_paths=self.allowed_paths)
+-            actual = set(review.changed_paths)
+-            if actual != self._claimed_paths:
+-                raise ConversationWorkspaceIntegrityError(
+-                    "runtime file-change events do not match the audited workspace patch"
+-                )
+-        except Exception as exc:
+-            return TurnCompletedEvent(
+-                sequence=event.sequence,
+-                turn_id=event.turn_id,
+-                status=RuntimeTurnStatus.FAILED,
+-                error=f"Workspace audit failed: {exc}",
+-            )
+-        return event
+-
+-    async def changed_paths(self) -> tuple[str, ...]:
+-        review = await self._workspace().review(allowed_paths=self.allowed_paths)
+-        return review.changed_paths
+-
+-    async def respond_approval(self, request_id: str, decision: ApprovalDecision) -> None:
+-        await self._session().respond_approval(request_id, decision)
+-
+-    async def interrupt(self, turn_id: str) -> None:
+-        await self._session().interrupt(turn_id)
+-
+-    async def aclose(self) -> None:
+-        async with self._lifecycle_lock:
+-            await self._close_locked()
+-
+-    async def _close_locked(self) -> None:
+-        if self._closed:
+-            return
+-        self._closed = True
+-        error: BaseException | None = None
+-        if self.session is not None:
+-            try:
+-                await self.session.aclose()
+-            except BaseException as exc:
+-                error = exc
+-        if self.workspace is not None:
+-            await self.workspace.aclose()
+-        if error is not None:
+-            raise error
+-
+-    def _session(self) -> CodexAppServerSession:
+-        if self.session is None:
+-            raise RuntimeError("conversation is not started")
+-        return self.session
+-
+-    def _workspace(self) -> ConversationWorkspace:
+-        if self.workspace is None:
+-            raise RuntimeError("conversation is not started")
+-        return self.workspace
++        super().__init__(
++            source_repository,
++            executable=executable,
++            model=model,
++            allowed_paths=allowed_paths,
++            _session_factory=lambda **options: CodexAppServerSession(**options),
++        )
+diff --git a/src/looplane/console.py b/src/looplane/console.py
+index f1448b8..90e16ea 100644
+--- a/src/looplane/console.py
++++ b/src/looplane/console.py
+@@ -3,17 +3,12 @@
+ from __future__ import annotations
+ 
+ from collections.abc import Iterable
+-from typing import Protocol, TextIO, runtime_checkable
++from typing import TextIO
+ 
+-from looplane.events import EventWriter, RunEvent
++from looplane.events import EventSink, EventWriter, RunEvent
+ from looplane.runtime import bounded_text
+ 
+ 
+-@runtime_checkable
+-class EventSink(Protocol):
+-    async def emit(self, event: RunEvent) -> None: ...
+-
+-
+ class JsonlEventSink:
+     """Durable sink backed by the existing append-only event writer."""
+ 
+diff --git a/src/looplane/conversation_controller.py b/src/looplane/conversation_controller.py
+index 4c57387..2a283c1 100644
+--- a/src/looplane/conversation_controller.py
++++ b/src/looplane/conversation_controller.py
+@@ -48,8 +48,8 @@ class ConversationEventSink(Protocol):
+ RuntimeApprovalCallback = Callable[[ApprovalRequestedEvent], Awaitable[ApprovalDecision]]
+ 
+ 
+-class BackendTurnLimiter:
+-    """Bound concurrent active backend turns across conversation controllers."""
++class TurnLimiter:
++    """Bound concurrent active runtime turns across conversation controllers."""
+ 
+     def __init__(self, max_active_turns: int = 2) -> None:
+         if max_active_turns <= 0:
+@@ -57,7 +57,7 @@ class BackendTurnLimiter:
+         self.max_active_turns = max_active_turns
+         self._semaphore = asyncio.Semaphore(max_active_turns)
+ 
+-    async def __aenter__(self) -> BackendTurnLimiter:
++    async def __aenter__(self) -> TurnLimiter:
+         await self._semaphore.acquire()
+         return self
+ 
+@@ -65,6 +65,10 @@ class BackendTurnLimiter:
+         self._semaphore.release()
+ 
+ 
++# Compatibility name for existing controller construction and SDK integrations.
++BackendTurnLimiter = TurnLimiter
++
++
+ async def decide_runtime_approval(
+     policy: ApprovalPolicy, event: ApprovalRequestedEvent
+ ) -> ApprovalDecision:
+@@ -106,7 +110,7 @@ class ConversationController:
+         *,
+         interrupt_grace_seconds: float = 5.0,
+         compaction_timeout_seconds: float = 120.0,
+-        backend_limiter: BackendTurnLimiter | None = None,
++        backend_limiter: TurnLimiter | None = None,
+         hook_runner: HookRunner | None = None,
+         context_provider_runner: ContextProviderRunner | None = None,
+     ) -> None:
+diff --git a/src/looplane/events.py b/src/looplane/events.py
+index 8838330..9754bc2 100644
+--- a/src/looplane/events.py
++++ b/src/looplane/events.py
+@@ -9,7 +9,7 @@ import tempfile
+ from collections.abc import Mapping
+ from datetime import UTC, datetime
+ from pathlib import Path
+-from typing import Any
++from typing import Any, Protocol, runtime_checkable
+ from uuid import uuid4
+ 
+ from pydantic import BaseModel, ConfigDict, Field
+@@ -30,6 +30,13 @@ class RunEvent(BaseModel):
+     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+ 
+ 
++@runtime_checkable
++class EventSink(Protocol):
++    """Consumer of canonical native-run events, shared by console and SDK."""
++
++    async def emit(self, event: RunEvent) -> None: ...
++
++
+ JsonValue = BaseModel | Mapping[str, Any] | list[Any] | tuple[Any, ...]
+ 
+ 
+diff --git a/src/looplane/runtime_registry.py b/src/looplane/runtime_registry.py
+index a9f947f..c8f89ca 100644
+--- a/src/looplane/runtime_registry.py
++++ b/src/looplane/runtime_registry.py
+@@ -17,6 +17,10 @@ import importlib
+ import shutil
+ from dataclasses import dataclass, field
+ from enum import StrEnum
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from looplane.runtime_semantics import RuntimeCapabilities
+ 
+ 
+ class RuntimeKind(StrEnum):
+@@ -76,7 +80,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
+         label="Claude Code · uses installed local login",
+         kind=RuntimeKind.EXTERNAL,
+         executable="claude",
+-        backend="looplane.claude_backend.ClaudeCodeBackend",
++        backend="looplane.claude_runner.ClaudeCodeRunner",
+         native_session="looplane.claude_conversation.IsolatedClaudeConversation",
+         model_options=(
+             ("Automatic · account default (recommended)", None),
+@@ -92,7 +96,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
+         label="Codex CLI · uses installed local login",
+         kind=RuntimeKind.EXTERNAL,
+         executable="codex",
+-        backend="looplane.codex_backend.CodexCliBackend",
++        backend="looplane.codex_runner.CodexCliRunner",
+         native_session="looplane.codex_conversation.IsolatedCodexConversation",
+         model_options=(
+             ("Automatic · Codex default (recommended)", None),
+@@ -107,7 +111,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
+         label="OpenCode · local CLI, 75+ providers",
+         kind=RuntimeKind.EXTERNAL,
+         executable="opencode",
+-        backend="looplane.opencode_backend.OpenCodeBackend",
++        backend="looplane.opencode_runner.OpenCodeRunner",
+         model_options=(
+             ("Automatic · configured provider (recommended)", None),
+             ("Anthropic · Claude Sonnet", "anthropic/claude-sonnet-4-5"),
+@@ -133,7 +137,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
+         label="Pi · local coding agent (JSON event stream)",
+         kind=RuntimeKind.EXTERNAL,
+         executable="pi",
+-        backend="looplane.pi_backend.PiBackend",
++        backend="looplane.pi_runner.PiRunner",
+         model_options=(
+             ("Automatic · configured provider (recommended)", None),
+             ("Anthropic · Claude Opus", "anthropic/claude-opus-4-7"),
+@@ -158,7 +162,7 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
+         label="Oh My Pi · IDE-wired coding agent",
+         kind=RuntimeKind.EXTERNAL,
+         executable="omp",
+-        backend="looplane.omp_backend.OmpBackend",
++        backend="looplane.omp_runner.OmpRunner",
+         model_options=(
+             ("Automatic · configured provider (recommended)", None),
+             ("Anthropic · Claude Opus", "anthropic/claude-opus-4-7"),
+@@ -188,6 +192,26 @@ RUNTIME_REGISTRY: dict[str, RuntimeAdapter] = {
+ }
+ 
+ 
++def validate_runtime_capabilities(
++    adapter: RuntimeAdapter, capabilities: RuntimeCapabilities
++) -> None:
++    """Check overlapping discovery/live semantics without a third capability model.
++
++    Usage describes the same feature in both contracts. Structured approvals and
++    proposed previews are narrower than discovery's approval/diff categories, so
++    their presence implies discovery support, but absence does not contradict it.
++    Other fields have no counterpart and are deliberately not inferred.
++    """
++    if capabilities.token_usage != (RuntimeCapability.USAGE in adapter.capabilities):
++        raise ValueError(f"{adapter.slug}: token usage disagrees with discovery")
++    for enabled, required in (
++        (capabilities.structured_approvals, RuntimeCapability.APPROVAL),
++        (capabilities.proposed_file_preview, RuntimeCapability.DIFF_REPORTING),
++    ):
++        if enabled and required not in adapter.capabilities:
++            raise ValueError(f"{adapter.slug}: live session requires discovery {required.value}")
++
++
+ def runtime_options() -> tuple[tuple[str, str], ...]:
+     """Selectable runtimes for the TUI picker, in registry order.
+ 
+diff --git a/src/looplane/runtimes/codex/approval_mapper.py b/src/looplane/runtimes/codex/approval_mapper.py
+index 661c48b..fe46d12 100644
+--- a/src/looplane/runtimes/codex/approval_mapper.py
++++ b/src/looplane/runtimes/codex/approval_mapper.py
+@@ -1,11 +1,40 @@
+-"""Pure Codex approval decision and wire-result mapping."""
++"""Owned approval request correlation and canonical/wire conversion."""
+ 
+ from __future__ import annotations
+ 
++from collections.abc import Callable
++from dataclasses import dataclass
+ from typing import Any
+ 
+-from looplane.approvals import ApprovalDecision
+-from looplane.conversation_runtime import ConversationProtocolError, RuntimeApprovalKind
++from looplane.approvals import ApprovalDecision, ToolEffect
++from looplane.conversation_runtime import (
++    ApprovalRequestedEvent,
++    ConversationProtocolError,
++    RuntimeApprovalKind,
++    RuntimeApprovalRequest,
++)
++from looplane.conversation_runtime import RuntimeToolStatus as RuntimeToolStatus
++from looplane.runtime_semantics import (
++    ProposedChange,
++)
++from looplane.runtimes.codex import parsing as _codex_parsing
++from looplane.runtimes.codex.correlation import CodexCorrelation
++from looplane.runtimes.codex.event_mapper import EventEmitter
++
++_APPROVAL_METHODS = {
++    "item/commandExecution/requestApproval": RuntimeApprovalKind.COMMAND,
++    "item/fileChange/requestApproval": RuntimeApprovalKind.FILE_CHANGE,
++    "item/permissions/requestApproval": RuntimeApprovalKind.PERMISSIONS,
++}
++
++
++@dataclass(frozen=True)
++class PendingApproval:
++    wire_id: int | str
++    method: str
++    turn_id: str
++    requested_permissions: dict[str, Any] | None
++    available: tuple[ApprovalDecision, ...]
+ 
+ 
+ def available_decisions(kind: RuntimeApprovalKind, raw: object) -> tuple[ApprovalDecision, ...]:
+@@ -56,3 +85,116 @@ def approval_result(
+         ApprovalDecision.CANCEL: "cancel",
+     }
+     return {"decision": mapping[decision]}
++
++
++class CodexApprovalMapper:
++    def __init__(
++        self,
++        *,
++        correlation: CodexCorrelation,
++        emit: EventEmitter,
++        bounded: Callable[[str], str],
++        new_id: Callable[[], str],
++        action_context: Callable[[str], tuple[str, tuple[ProposedChange, ...], str | None]],
++    ) -> None:
++        self.correlation = correlation
++        self.emit = emit
++        self.bounded = bounded
++        self.new_id = new_id
++        self.action_context = action_context
++        self.pending: dict[str, PendingApproval] = {}
++        self.wire_ids: set[int | str] = set()
++
++    def handle_server_request(self, method: str, wire_id: object, params: dict[str, Any]) -> None:
++        if method not in _APPROVAL_METHODS:
++            raise ConversationProtocolError(f"unsupported server request: {method}")
++        if not isinstance(wire_id, (int, str)) or isinstance(wire_id, bool):
++            raise ConversationProtocolError("server request has invalid id")
++        if wire_id in self.wire_ids:
++            raise ConversationProtocolError("duplicate approval request id")
++        if params.get("threadId") != self.correlation.native_thread_id:
++            raise ConversationProtocolError("approval request references the wrong thread")
++        native_turn = params.get("turnId")
++        native_item = params.get("itemId")
++        if not _codex_parsing.safe_id(native_turn) or not _codex_parsing.safe_id(native_item):
++            raise ConversationProtocolError("approval request has invalid correlation ids")
++        local_turn = self.correlation.local_turn(native_turn, context=f"server request {method}")
++        action_id = self.correlation.local_action(native_turn, native_item)
++        kind = _APPROVAL_METHODS[method]
++        available = self.available_decisions(kind, params.get("availableDecisions"))
++        request_id = self.new_id()
++        requested_permissions = (
++            params.get("permissions") if kind == RuntimeApprovalKind.PERMISSIONS else None
++        )
++        if requested_permissions is not None and not isinstance(requested_permissions, dict):
++            raise ConversationProtocolError("permissions request is malformed")
++        pending = PendingApproval(
++            wire_id=wire_id,
++            method=method,
++            turn_id=local_turn,
++            requested_permissions=requested_permissions,
++            available=available,
++        )
++        self.pending[request_id] = pending
++        self.wire_ids.add(wire_id)
++        fallback, changes, grant_scope = self.action_context(action_id)
++        preview = self.approval_preview(
++            kind,
++            params,
++            fallback=fallback,
++        )
++        approval = RuntimeApprovalRequest(
++            request_id=request_id,
++            turn_id=local_turn,
++            action_id=action_id,
++            kind=kind,
++            effect=(
++                ToolEffect.MODIFY if kind == RuntimeApprovalKind.FILE_CHANGE else ToolEffect.EXECUTE
++            ),
++            preview=preview,
++            proposed_changes=changes,
++            grant_scope=(grant_scope if kind == RuntimeApprovalKind.FILE_CHANGE else None),
++            available_decisions=available,
++        )
++        self.emit(ApprovalRequestedEvent, turn_id=local_turn, approval=approval)
++
++    def approval_preview(
++        self,
++        kind: RuntimeApprovalKind,
++        params: dict[str, Any],
++        *,
++        fallback: str = "",
++    ) -> str:
++        if kind == RuntimeApprovalKind.COMMAND:
++            labels = (
++                ("Command", params.get("command")),
++                ("Working directory", params.get("cwd")),
++                ("Reason", params.get("reason")),
++            )
++        elif kind == RuntimeApprovalKind.FILE_CHANGE:
++            labels = (
++                ("Reason", params.get("reason")),
++                ("Grant root", params.get("grantRoot")),
++            )
++        else:
++            labels = (
++                ("Reason", params.get("reason")),
++                ("Working directory", params.get("cwd")),
++            )
++        details = [
++            f"{label}: {value}" for label, value in labels if isinstance(value, str) and value
++        ]
++        if fallback:
++            details.insert(0, fallback)
++        if not details:
++            details = [
++                f"Action: {kind.value.replace('_', ' ')}",
++                "Details: The runtime did not identify the command, files, or working directory.",
++            ]
++        return self.bounded("\n".join(details))[:16000]
++
++    available_decisions = staticmethod(available_decisions)
++
++    @staticmethod
++    def approval_result(pending: PendingApproval, decision: ApprovalDecision) -> dict[str, Any]:
++        return approval_result(pending.method, pending.requested_permissions, decision)
+diff --git a/src/looplane/sdk.py b/src/looplane/sdk.py
+index df1f2e2..daf8076 100644
+--- a/src/looplane/sdk.py
++++ b/src/looplane/sdk.py
+@@ -7,7 +7,6 @@ orchestration helpers without importing the CLI/TUI or provider SDK adapters.
+ from __future__ import annotations
+ 
+ from pathlib import Path
+-from typing import Protocol, runtime_checkable
+ 
+ from looplane.cache_strategy import (
+     CacheAwarePromptOrdering,
+@@ -44,7 +43,7 @@ from looplane.contracts import (
+     Usage,
+     VerificationCommand,
+ )
+-from looplane.conversation_controller import BackendTurnLimiter
++from looplane.conversation_controller import BackendTurnLimiter, TurnLimiter
+ from looplane.conversation_runtime import (
+     ConversationRuntimeEvent,
+     ConversationRuntimeSession,
+@@ -53,7 +52,8 @@ from looplane.conversation_runtime import (
+     RuntimeSkillsChangedEvent,
+ )
+ from looplane.conversation_websocket import ConversationWebSocketApp
+-from looplane.events import RunEvent
++from looplane.events import EventSink
++from looplane.events import RunEvent as RunEvent
+ from looplane.hooks import HookCommandConfig, HookConfig, HookDecision, HookEventName, HookRunner
+ from looplane.ide import (
+     EditorDeepLinkStyle,
+@@ -126,13 +126,6 @@ from looplane.subagents import (
+ SDK_STABILITY = "0.x: contracts are typed and versioned, but may change before 1.0."
+ 
+ 
+-@runtime_checkable
+-class EventSink(Protocol):
+-    """Minimal async sink accepted by SDK runner helpers."""
+-
+-    async def emit(self, event: RunEvent) -> None: ...
+-
+-
+ async def run_task(
+     task: TaskContract,
+     model: ModelProvider,
+@@ -181,6 +174,7 @@ __all__ = [
+     "ConversationWebSocketApp",
+     "A10_SUBAGENT_PLANNER_POLICY_VERSION",
+     "BackendTurnLimiter",
++    "TurnLimiter",
+     "CacheAwarePromptOrdering",
+     "CacheAwarePromptOrderingMode",
+     "ContextProviderCommand",
+diff --git a/src/looplane/tui.py b/src/looplane/tui.py
+index 72af0c9..30ffed2 100644
+--- a/src/looplane/tui.py
++++ b/src/looplane/tui.py
+@@ -14,36 +14,28 @@ from time import monotonic
+ from typing import TYPE_CHECKING, Any
+ from uuid import uuid4
+ 
+-from rich.syntax import Syntax
+ from rich.text import Text
+-from textual import events, on, work
++from textual import on, work
+ from textual.app import App, ComposeResult
+ from textual.binding import Binding
+-from textual.containers import Horizontal, Vertical, VerticalScroll
++from textual.containers import Horizontal, Vertical
+ from textual.events import Resize
+-from textual.message import Message
+-from textual.screen import ModalScreen
+ from textual.theme import Theme
+ from textual.widgets import (
+     Button,
+     Collapsible,
+-    Input,
+-    Label,
+     OptionList,
+     RichLog,
+     Select,
+     Static,
+     TextArea,
+ )
+-from textual.widgets._collapsible import CollapsibleTitle
+ from textual.widgets.option_list import Option
+ 
+ import looplane.runtime_registry as runtime_registry
+ from looplane.approvals import (
+     ApprovalDecision,
+-    ApprovalReason,
+     ApprovalRequest,
+-    ToolEffect,
+ )
+ from looplane.backends import ExternalAgentEvent
+ from looplane.cli_config import CliConfig, save_cli_config
+@@ -84,11 +76,9 @@ from looplane.prompts import WORKSPACE_CONTEXT_REMINDER_VERSION, build_workspace
+ from looplane.provider_catalog import estimate_cost
+ from looplane.runtime_semantics import (
+     ContextTelemetry,
+-    PermissionDecision,
+     PermissionMode,
+     ProcessLocalGrant,
+     RuntimeCapabilities,
+-    decide_permission,
+     input_cache_hit_rate,
+     should_auto_compact_context,
+ )
+@@ -98,6 +88,13 @@ from looplane.slash_commands import (
+     SlashCommand,
+     UnknownSlashCommand,
+ )
++from looplane.terminal.approvals import ApprovalModal as ApprovalModal
++from looplane.terminal.approvals import ApprovalPreview as ApprovalPreview
++from looplane.terminal.approvals import InlineApprovalBlock as InlineApprovalBlock
++from looplane.terminal.approvals import InlineApprovalChoices as InlineApprovalChoices
++from looplane.terminal.approvals import TextualApprovalPolicy as _TerminalApprovalPolicy
++from looplane.terminal.clipboard import copy_with_native_command, selected_text_for_copy
++from looplane.terminal.composer import MessageComposer as MessageComposer
+ from looplane.terminal.events import (
+     ConversationRuntimeEventMessage as ConversationRuntimeEventMessage,
+ )
+@@ -107,6 +104,10 @@ from looplane.terminal.events import (
+ from looplane.terminal.events import (
+     RunEventMessage as RunEventMessage,
+ )
++from looplane.terminal.onboarding import OnboardingModal as OnboardingModal
++from looplane.terminal.scroll import TranscriptScroll as TranscriptScroll
++from looplane.terminal.selectors import InlineSelectorBlock as InlineSelectorBlock
++from looplane.terminal.selectors import InlineSelectorChoices as InlineSelectorChoices
+ from looplane.terminal.status import (
+     _add_usage as _add_usage,
+ )
+@@ -116,6 +117,13 @@ from looplane.terminal.status import (
+ from looplane.terminal.status import (
+     format_token_count as format_token_count,
+ )
++from looplane.terminal.status_widgets import RuntimeLoadingIndicator as RuntimeLoadingIndicator
++from looplane.terminal.status_widgets import RuntimeMetrics as _TerminalRuntimeMetrics
++from looplane.terminal.status_widgets import RuntimeStatus as RuntimeStatus
++from looplane.terminal.tool_widgets import ToolActionBlock as ToolActionBlock
++from looplane.terminal.tool_widgets import ToolGroupBlock as ToolGroupBlock
++from looplane.terminal.transcript import MessageBlock as MessageBlock
++from looplane.terminal.transcript import TimelineEntry as TimelineEntry
+ from looplane.terminal.types import (
+     CommandMenuChoice as CommandMenuChoice,
+ )
+@@ -154,8 +162,28 @@ from looplane.terminal.types import (
+ )
+ from looplane.transcript import infer_tool_detail_kind
+ from looplane.transcript_export import TranscriptReducer
+-from looplane.tui_clipboard import copy_with_native_command, selected_text_for_copy
+-from looplane.tui_links import TranscriptMarkdown
++
++
++class TextualApprovalPolicy(_TerminalApprovalPolicy):
++    """Adapt the legacy App constructor to the canonical approval callbacks."""
++
++    def __init__(self, app: Any, session_grants: set[ProcessLocalGrant]) -> None:
++        self.app = app
++        super().__init__(
++            app.request_approval,
++            session_grants,
++            permission_mode=lambda: PermissionMode(
++                getattr(app, "_permission_mode", PermissionMode.ASK)
++            ),
++        )
++
++
++class RuntimeMetrics(_TerminalRuntimeMetrics):
++    """Keep the original formatter monkeypatch seam at the compatibility boundary."""
++
++    def __init__(self, *, id: str) -> None:
++        super().__init__(id=id, token_formatter=lambda count: format_token_count(count))
++
+ 
+ if TYPE_CHECKING:
+     from looplane.provider_verification import VerificationResult
+@@ -191,45 +219,6 @@ def _rewindable_prompts_from_events(
+     )
+ 
+ 
+-class RuntimeLoadingIndicator(Static):
+-    """Non-interactive looplane swimming indicator."""
+-
+-    _FRAMES = (
+-        "[🦦≋≋≋] ",
+-        "[≋🦦≋≋] ",
+-        "[≋≋🦦≋] ",
+-        "[≋≋≋🦦] ",
+-        "[≋≋🦦≋] ",
+-        "[≋🦦≋≋] ",
+-    )
+-    _STATIC_FRAME = "[≋🦦≋≋] "
+-    _CADENCE = 0.20
+-
+-    def __init__(self, *, id: str) -> None:
+-        super().__init__("", id=id, markup=False)
+-        self.phase: LoadingPhase | None = None
+-        self._phase_started_at = monotonic()
+-
+-    def set_phase(self, phase: LoadingPhase | None) -> None:
+-        if phase != self.phase:
+-            self.phase = phase
+-            self._phase_started_at = monotonic()
+-        self.display = phase is not None
+-        if phase is None or self.app.animation_level == "none":
+-            self.auto_refresh = None
+-        else:
+-            self.auto_refresh = self._CADENCE
+-        self.refresh()
+-
+-    def render(self) -> Text:
+-        if self.phase is None:
+-            return Text("")
+-        if self.app.animation_level == "none":
+-            return Text(self._STATIC_FRAME)
+-        frame = int((monotonic() - self._phase_started_at) / self._CADENCE) % len(self._FRAMES)
+-        return Text(self._FRAMES[frame])
+-
+-
+ def _looplane_version() -> str:
+     try:
+         return importlib.metadata.version("looplane")
+@@ -237,199 +226,6 @@ def _looplane_version() -> str:
+         return "dev"
+ 
+ 
+-class RuntimeMetrics(Static):
+-    """Persistent turn metrics: tokens, context pressure, elapsed time."""
+-
+-    _CONTEXT_WARNING_PERCENT = 70.0
+-    _CONTEXT_CRITICAL_PERCENT = 90.0
+-
+-    def __init__(self, *, id: str) -> None:
+-        super().__init__("", id=id, markup=False)
+-
+-    def set_metrics(
+-        self,
+-        *,
+-        model: str | None = None,
+-        input_tokens: int | None = None,
+-        output_tokens: int | None = None,
+-        context_percent: float | None = None,
+-        elapsed_seconds: float | None = None,
+-        stream_output_tokens: int | None = None,
+-        running_tools: int | None = None,
+-        queued_prompts: int | None = None,
+-    ) -> None:
+-        text = Text()
+-        if model:
+-            text.append(model, style="dim")
+-        if running_tools:
+-            if text.plain:
+-                text.append(" · ", style="dim")
+-            text.append(f"⚙{running_tools}", style="dim")
+-        if queued_prompts:
+-            if text.plain:
+-                text.append(" · ", style="dim")
+-            text.append(f"☰{queued_prompts} queued", style="dim")
+-        if stream_output_tokens is not None:
+-            if text.plain:
+-                text.append(" · ", style="dim")
+-            text.append(f"↓~{format_token_count(stream_output_tokens)}", style="dim")
+-        elif input_tokens is not None:
+-            if text.plain:
+-                text.append(" · ", style="dim")
+-            text.append(f"↑{format_token_count(input_tokens)}", style="dim")
+-            text.append(f" ↓{format_token_count(output_tokens or 0)}", style="dim")
+-        if context_percent is not None:
+-            if text.plain:
+-                text.append(" · ", style="dim")
+-            if context_percent >= self._CONTEXT_CRITICAL_PERCENT:
+-                style = "bold red"
+-            elif context_percent >= self._CONTEXT_WARNING_PERCENT:
+-                style = "yellow"
+-            else:
+-                style = "dim"
+-            text.append(f"ctx {context_percent:.0f}%", style=style)
+-        if elapsed_seconds is not None:
+-            if text.plain:
+-                text.append(" · ", style="dim")
+-            text.append(f"{elapsed_seconds:.0f}s", style="dim")
+-        self.update(text)
+-
+-
+-class RuntimeStatus(Static):
+-    """Status text with a restrained Claude-style loading glimmer."""
+-
+-    _CADENCE = RuntimeLoadingIndicator._CADENCE
+-    _GLIMMER_FRAMES = len(RuntimeLoadingIndicator._FRAMES)
+-    _GLIMMER_WIDTH = 3
+-    _ELAPSED_DELAY = 16.0
+-
+-    def __init__(self, content: str = "", *, id: str) -> None:
+-        self.loading_phase: LoadingPhase | None = None
+-        self.loading_label: str | None = None
+-        self._loading_started_at = monotonic()
+-        super().__init__(content, id=id, markup=False)
+-
+-    def update(self, content: Any = "") -> None:
+-        self.loading_phase = None
+-        self.loading_label = None
+-        self.auto_refresh = None
+-        super().update(content)
+-
+-    def set_loading(self, label: str | None, phase: LoadingPhase | None) -> None:
+-        if phase != self.loading_phase or label != self.loading_label:
+-            self._loading_started_at = monotonic()
+-        self.loading_phase = phase
+-        self.loading_label = label
+-        if label is None or phase is None or self.app.animation_level == "none":
+-            self.auto_refresh = None
+-        else:
+-            self.auto_refresh = self._CADENCE
+-        self.refresh()
+-
+-    def render(self) -> Text:
+-        if self.loading_label is None or self.loading_phase is None:
+-            return super().render()
+-
+-        label = self.loading_label
+-        text = Text(label, style="dim")
+-        elapsed = monotonic() - self._loading_started_at
+-        if self.app.animation_level != "none" and label:
+-            frame = int(elapsed / self._CADENCE) % self._GLIMMER_FRAMES
+-            center = round(frame * (len(label) - 1) / (self._GLIMMER_FRAMES - 1))
+-            radius = self._GLIMMER_WIDTH // 2
+-            start = max(0, center - radius)
+-            end = min(len(label), center + radius + 1)
+-            primary = self.app.get_css_variables().get("primary", "")
+-            text.stylize(f"not dim bold {primary}".strip(), start, end)
+-        if elapsed >= self._ELAPSED_DELAY:
+-            text.append(f" ({int(elapsed)}s", style="dim")
+-            text.append(" · esc to interrupt)", style="dim")
+-        else:
+-            text.append(" (esc to interrupt)", style="dim")
+-        return text
+-
+-
+-class MessageComposer(TextArea):
+-    """Multiline composer with submit, command navigation, and history messages."""
+-
+-    class Submitted(Message):
+-        def __init__(self, composer: MessageComposer) -> None:
+-            super().__init__()
+-            self.composer = composer
+-            self.text = composer.text
+-
+-    class CommandNavigation(Message):
+-        def __init__(self, delta: int) -> None:
+-            super().__init__()
+-            self.delta = delta
+-
+-    class CommandCompletion(Message):
+-        pass
+-
+-    class HistoryNavigation(Message):
+-        def __init__(self, delta: int) -> None:
+-            super().__init__()
+-            self.delta = delta
+-
+-    class TranscriptNavigation(Message):
+-        def __init__(self, delta: int) -> None:
+-            super().__init__()
+-            self.delta = delta
+-
+-    def set_text(self, text: str) -> None:
+-        """Replace the draft and leave the cursor at its natural editing edge."""
+-
+-        self.load_text(text)
+-        self.move_cursor(self.document.end)
+-
+-    async def _on_key(self, event: events.Key) -> None:
+-        command_input = self.text.startswith("/") and "\n" not in self.text
+-        if event.key == "enter":
+-            event.stop()
+-            event.prevent_default()
+-            self.post_message(self.Submitted(self))
+-            return
+-        if event.key in {"shift+enter", "ctrl+enter"}:
+-            event.stop()
+-            event.prevent_default()
+-            start, end = self.selection
+-            self.replace("\n", start, end, maintain_selection_offset=False)
+-            return
+-        if command_input and event.key in {"up", "down"}:
+-            event.stop()
+-            event.prevent_default()
+-            self.post_message(self.CommandNavigation(-1 if event.key == "up" else 1))
+-            return
+-        if command_input and event.key == "tab":
+-            event.stop()
+-            event.prevent_default()
+-            self.post_message(self.CommandCompletion())
+-            return
+-        if event.key in {"ctrl+p", "ctrl+n"}:
+-            event.stop()
+-            event.prevent_default()
+-            self.post_message(self.HistoryNavigation(-1 if event.key == "ctrl+p" else 1))
+-            return
+-        if event.key in {"pageup", "pagedown"}:
+-            event.stop()
+-            event.prevent_default()
+-            self.post_message(self.TranscriptNavigation(-1 if event.key == "pageup" else 1))
+-            return
+-        await super()._on_key(event)
+-
+-
+-class TranscriptScroll(VerticalScroll):
+-    """Transcript viewport that reports when the user returns to the live edge."""
+-
+-    class PositionChanged(Message):
+-        pass
+-
+-    def watch_scroll_y(self, old: float, new: float) -> None:
+-        super().watch_scroll_y(old, new)
+-        if self.is_mounted:
+-            self.post_message(self.PositionChanged())
+-
+-
+ class TextualEventSink:
+     def __init__(self, app: looplaneApp, generation: int) -> None:
+         self.app = app
+@@ -461,1419 +257,6 @@ class RecordingConversationEventSink:
+         await self.wrapped.emit(event)
+ 
+ 
+-class TextualApprovalPolicy:
+-    def __init__(self, app: looplaneApp, session_grants: set[ProcessLocalGrant]) -> None:
+-        self.app = app
+-        self._session_grants = session_grants
+-
+-    @staticmethod
+-    def _grant_scope(request: ApprovalRequest) -> str | None:
+-        if request.tool_call is not None:
+-            supplied = request.tool_call.arguments.get("grant_scope")
+-            if isinstance(supplied, str) and supplied.strip():
+-                return supplied.strip()[:4_096]
+-            if request.tool_call.name == "external_agent":
+-                backend = request.tool_call.arguments.get("backend")
+-                if isinstance(backend, str) and backend:
+-                    return f"external_agent:{backend}"[:4_096]
+-            if request.tool_call.name == "run_check":
+-                name = request.tool_call.arguments.get("name")
+-                if isinstance(name, str) and name.strip():
+-                    return f"run_check:{name.strip()}"[:4_096]
+-        if request.command is not None:
+-            return "command:" + "\u0000".join(request.command.argv)[:4_088]
+-        return None
+-
+-    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
+-        scope = self._grant_scope(request) or f"action:{request.action_id}"
+-        policy_decision = decide_permission(
+-            PermissionMode(getattr(self.app, "_permission_mode", PermissionMode.ASK)),
+-            request.effect,
+-            scope=scope,
+-            grants=self._session_grants,
+-        )
+-        if policy_decision is PermissionDecision.ALLOW:
+-            return ApprovalDecision.ALLOW_ONCE
+-        if policy_decision is PermissionDecision.DENY:
+-            return ApprovalDecision.DENY
+-        decision = await self.app.request_approval(request)
+-        if decision == ApprovalDecision.ALLOW_SESSION:
+-            self._session_grants.add(ProcessLocalGrant(effect=request.effect, scope=scope))
+-        return decision
+-
+-
+-class ApprovalModal(ModalScreen[ApprovalDecision]):
+-    BINDINGS = [
+-        Binding("escape", "cancel", "Cancel run", show=False),
+-        Binding("1", "choose_index(0)", "Choice 1", show=False),
+-        Binding("2", "choose_index(1)", "Choice 2", show=False),
+-        Binding("3", "choose_index(2)", "Choice 3", show=False),
+-        Binding("4", "choose_index(3)", "Choice 4", show=False),
+-    ]
+-    DEFAULT_CSS = """
+-    ApprovalModal { align: center bottom; background: $background 35%; }
+-    ApprovalModal > .approval-sheet {
+-        width: 100%; max-width: 100%; height: auto; max-height: 16;
+-        padding: 1 2; border-top: solid $warning; background: $surface;
+-    }
+-    ApprovalModal .title { height: 1; text-style: bold; color: $warning; }
+-    ApprovalModal .preview {
+-        height: auto; max-height: 7; margin: 1 0 0 2; color: $text-muted;
+-        overflow-y: auto;
+-    }
+-    ApprovalModal OptionList {
+-        height: auto; max-height: 4; margin-top: 1; padding: 0;
+-        background: transparent; border: none; scrollbar-size: 0 0;
+-    }
+-    ApprovalModal OptionList > .option-list--option { padding: 0 1; }
+-    ApprovalModal OptionList > .option-list--option-highlighted,
+-    ApprovalModal OptionList:focus > .option-list--option-highlighted {
+-        background: transparent; color: $warning; text-style: bold;
+-    }
+-    """
+-
+-    _DECISION_LABELS = {
+-        ApprovalDecision.ALLOW_ONCE: "Allow once",
+-        ApprovalDecision.ALLOW_SESSION: "Allow for this session",
+-        ApprovalDecision.DENY: "Deny this action",
+-        ApprovalDecision.CANCEL: "Cancel run",
+-    }
+-
+-    def __init__(self, request: ApprovalRequest) -> None:
+-        super().__init__()
+-        self.request = request
+-        self.available_decisions = self._available_decisions(request) or frozenset(
+-            {ApprovalDecision.CANCEL}
+-        )
+-
+-    @staticmethod
+-    def _available_decisions(request: ApprovalRequest) -> frozenset[ApprovalDecision]:
+-        if request.tool_call is None:
+-            return frozenset(ApprovalDecision)
+-        raw = request.tool_call.arguments.get("available_decisions")
+-        if not isinstance(raw, list):
+-            return frozenset(ApprovalDecision)
+-        try:
+-            return frozenset(ApprovalDecision(value) for value in raw)
+-        except ValueError:
+-            return frozenset()
+-
+-    def compose(self) -> ComposeResult:
+-        preview = self._preview_text(self.request)
+-        default = self._default_decision()
+-        with Vertical(classes="approval-sheet"):
+-            yield Label(self._question(), classes="title")
+-            yield Static(
+-                preview,
+-                classes="preview",
+-                markup=False,
+-            )
+-            yield OptionList(
+-                *(
+-                    Option(
+-                        self._choice_prompt(
+-                            index,
+-                            decision,
+-                            highlighted=decision == default,
+-                        ),
+-                        id=decision.value,
+-                    )
+-                    for index, decision in enumerate(self._ordered_decisions(), start=1)
+-                ),
+-                id="approval-choices",
+-                compact=True,
+-            )
+-
+-    def _question(self) -> str:
+-        if self.request.reason == ApprovalReason.FINAL_VERIFICATION:
+-            return "Run final verification?"
+-        if self.request.effect == ToolEffect.MODIFY:
+-            return "Allow this file change?"
+-        return "Run this command?"
+-
+-    def _ordered_decisions(self) -> tuple[ApprovalDecision, ...]:
+-        return tuple(
+-            decision
+-            for decision in (
+-                ApprovalDecision.ALLOW_ONCE,
+-                ApprovalDecision.ALLOW_SESSION,
+-                ApprovalDecision.DENY,
+-                ApprovalDecision.CANCEL,
+-            )
+-            if decision in self.available_decisions
+-        )
+-
+-    def _default_decision(self) -> ApprovalDecision:
+-        if not self.request.preview.strip() and ApprovalDecision.DENY in self.available_decisions:
+-            return ApprovalDecision.DENY
+-        if (
+-            self.request.action_id == "external-runtime"
+-            and ApprovalDecision.ALLOW_SESSION in self.available_decisions
+-        ):
+-            return ApprovalDecision.ALLOW_SESSION
+-        return next(
+-            decision
+-            for decision in (
+-                ApprovalDecision.ALLOW_ONCE,
+-                ApprovalDecision.DENY,
+-                ApprovalDecision.CANCEL,
+-            )
+-            if decision in self.available_decisions
+-        )
+-
+-    def _choice_prompt(
+-        self,
+-        index: int,
+-        decision: ApprovalDecision,
+-        *,
+-        highlighted: bool,
+-    ) -> str:
+-        pointer = "›" if highlighted else " "
+-        return f"{pointer} {index}  {self._DECISION_LABELS[decision]}"
+-
+-    def _sync_choice_prompts(self, highlighted: int | None) -> None:
+-        choices = self.query_one("#approval-choices", OptionList)
+-        for index, decision in enumerate(self._ordered_decisions()):
+-            choices.replace_option_prompt_at_index(
+-                index,
+-                self._choice_prompt(index + 1, decision, highlighted=index == highlighted),
+-            )
+-
+-    @staticmethod
+-    def _preview_text(request: ApprovalRequest) -> str:
+-        if request.preview.strip():
+-            if request.policy_reason:
+-                return f"{request.preview}\n\nPolicy: {request.policy_reason}"
+-            return request.preview
+-        if request.command is not None:
+-            action = f"verification command ({request.command.name})"
+-        elif request.tool_call is not None:
+-            action = request.tool_call.name.removeprefix("external_").replace("_", " ")
+-        else:  # The approval contract rejects this, but keep the renderer fail-safe.
+-            action = "unknown action"
+-        lines = [
+-            f"Action: {action}",
+-            f"Effect: {request.effect.value}",
+-        ]
+-        if request.policy_reason:
+-            lines.append(f"Policy: {request.policy_reason}")
+-        lines.extend(
+-            (
+-                "Details: The runtime did not provide a command, file list, or diff.",
+-                "Recommendation: Deny unless the preceding tool activity makes the impact clear.",
+-            )
+-        )
+-        return "\n".join(lines)
+-
+-    def on_mount(self) -> None:
+-        choices = self.query_one("#approval-choices", OptionList)
+-        default = self._default_decision()
+-        choices.highlighted = self._ordered_decisions().index(default)
+-        self._sync_choice_prompts(choices.highlighted)
+-        choices.focus()
+-
+-    @on(OptionList.OptionHighlighted, "#approval-choices")
+-    def highlight_choice(self, event: OptionList.OptionHighlighted) -> None:
+-        self._sync_choice_prompts(event.option_index)
+-
+-    @on(OptionList.OptionSelected, "#approval-choices")
+-    def choose(self, event: OptionList.OptionSelected) -> None:
+-        if event.option.id is not None:
+-            self.dismiss(ApprovalDecision(event.option.id))
+-
+-    def action_choose_index(self, index: int) -> None:
+-        decisions = self._ordered_decisions()
+-        if 0 <= index < len(decisions):
+-            self.dismiss(decisions[index])
+-
+-    def action_cancel(self) -> None:
+-        self.dismiss(ApprovalDecision.CANCEL)
+-
+-
+-class ApprovalPreview(VerticalScroll):
+-    """Bounded evidence pane controlled from the adjacent approval choices."""
+-
+-    def __init__(self, content: str) -> None:
+-        super().__init__(classes="preview")
+-        self.content = content
+-
+-    def compose(self) -> ComposeResult:
+-        yield Static(self.content, markup=False)
+-
+-
+-class InlineApprovalChoices(OptionList):
+-    """Approval list that keeps numeric shortcuts local to the inline prompt."""
+-
+-    async def _on_key(self, event: events.Key) -> None:
+-        if event.key in {"pageup", "pagedown", "home", "end"}:
+-            event.stop()
+-            event.prevent_default()
+-            parent = self.parent
+-            if isinstance(parent, InlineApprovalBlock):
+-                parent.scroll_preview(event.key)
+-            return
+-        if event.key in {"1", "2", "3", "4"}:
+-            event.stop()
+-            event.prevent_default()
+-            parent = self.parent
+-            if isinstance(parent, InlineApprovalBlock):
+-                parent.action_choose_index(int(event.key) - 1)
+-            return
+-        if event.key == "escape":
+-            event.stop()
+-            event.prevent_default()
+-            parent = self.parent
+-            if isinstance(parent, InlineApprovalBlock):
+-                parent.action_cancel()
+-            return
+-        await super()._on_key(event)
+-
+-
+-class InlineApprovalBlock(Vertical):
+-    """One focused approval attached to the pending transcript action."""
+-
+-    BINDINGS = [
+-        Binding("escape", "cancel", "Cancel run", show=False),
+-        Binding("1", "choose_index(0)", "Choice 1", show=False),
+-        Binding("2", "choose_index(1)", "Choice 2", show=False),
+-        Binding("3", "choose_index(2)", "Choice 3", show=False),
+-        Binding("4", "choose_index(3)", "Choice 4", show=False),
+-    ]
+-    DEFAULT_CSS = """
+-    InlineApprovalBlock {
+-        height: auto; max-height: 16; margin: 0 0 1 1; padding: 1 1;
+-        border-left: thick $warning; background: $surface;
+-    }
+-    InlineApprovalBlock .title { height: 1; color: $warning; text-style: bold; }
+-    InlineApprovalBlock .preview {
+-        height: auto; max-height: 7; margin: 1 0 0 2; color: $text-muted;
+-        overflow-y: auto;
+-    }
+-    InlineApprovalBlock OptionList {
+-        height: auto; max-height: 4; margin-top: 1; padding: 0;
+-        background: transparent; border: none; scrollbar-size: 0 0;
+-    }
+-    InlineApprovalBlock OptionList > .option-list--option { padding: 0 1; }
+-    InlineApprovalBlock OptionList > .option-list--option-highlighted,
+-    InlineApprovalBlock OptionList:focus > .option-list--option-highlighted {
+-        background: transparent; color: $warning; text-style: bold;
+-    }
+-    """
+-
+-    def __init__(self, request: ApprovalRequest) -> None:
+-        super().__init__(classes="inline-approval")
+-        self.request = request
+-        self.available_decisions = ApprovalModal._available_decisions(request) or frozenset(
+-            {ApprovalDecision.CANCEL}
+-        )
+-        self.decision: asyncio.Future[ApprovalDecision] = asyncio.get_running_loop().create_future()
+-
+-    def compose(self) -> ComposeResult:
+-        yield Label(self._question(), classes="title")
+-        yield ApprovalPreview(ApprovalModal._preview_text(self.request))
+-        yield InlineApprovalChoices(
+-            *(
+-                Option(
+-                    self._choice_prompt(index, decision, highlighted=decision == self._default()),
+-                    id=decision.value,
+-                )
+-                for index, decision in enumerate(self._ordered(), start=1)
+-            ),
+-            classes="approval-choices",
+-            compact=True,
+-        )
+-
+-    def _question(self) -> str:
+-        if self.request.reason == ApprovalReason.FINAL_VERIFICATION:
+-            return "Run final verification?"
+-        if self.request.effect == ToolEffect.MODIFY:
+-            return "Allow this file change?"
+-        return "Run this command?"
+-
+-    def _ordered(self) -> tuple[ApprovalDecision, ...]:
+-        return tuple(
+-            decision
+-            for decision in (
+-                ApprovalDecision.ALLOW_ONCE,
+-                ApprovalDecision.ALLOW_SESSION,
+-                ApprovalDecision.DENY,
+-                ApprovalDecision.CANCEL,
+-            )
+-            if decision in self.available_decisions
+-        )
+-
+-    def _default(self) -> ApprovalDecision:
+-        if not self.request.preview.strip() and ApprovalDecision.DENY in self.available_decisions:
+-            return ApprovalDecision.DENY
+-        if (
+-            self.request.action_id == "external-runtime"
+-            and ApprovalDecision.ALLOW_SESSION in self.available_decisions
+-        ):
+-            return ApprovalDecision.ALLOW_SESSION
+-        return next(
+-            decision
+-            for decision in (
+-                ApprovalDecision.ALLOW_ONCE,
+-                ApprovalDecision.DENY,
+-                ApprovalDecision.CANCEL,
+-            )
+-            if decision in self.available_decisions
+-        )
+-
+-    @staticmethod
+-    def _choice_prompt(index: int, decision: ApprovalDecision, *, highlighted: bool) -> str:
+-        pointer = "›" if highlighted else " "
+-        return f"{pointer} {index}  {ApprovalModal._DECISION_LABELS[decision]}"
+-
+-    def _sync_prompts(self, highlighted: int | None) -> None:
+-        choices = self.query_one(".approval-choices", OptionList)
+-        for index, decision in enumerate(self._ordered()):
+-            choices.replace_option_prompt_at_index(
+-                index,
+-                self._choice_prompt(index + 1, decision, highlighted=index == highlighted),
+-            )
+-
+-    def on_mount(self) -> None:
+-        choices = self.query_one(".approval-choices", OptionList)
+-        choices.highlighted = self._ordered().index(self._default())
+-        self._sync_prompts(choices.highlighted)
+-        choices.focus()
+-
+-    @on(OptionList.OptionHighlighted, ".approval-choices")
+-    def highlight_choice(self, event: OptionList.OptionHighlighted) -> None:
+-        self._sync_prompts(event.option_index)
+-
+-    @on(OptionList.OptionSelected, ".approval-choices")
+-    def choose(self, event: OptionList.OptionSelected) -> None:
+-        if event.option.id is not None:
+-            self.resolve(ApprovalDecision(event.option.id))
+-
+-    def resolve(self, decision: ApprovalDecision) -> None:
+-        if not self.decision.done():
+-            self.decision.set_result(decision)
+-
+-    def action_choose_index(self, index: int) -> None:
+-        decisions = self._ordered()
+-        if 0 <= index < len(decisions):
+-            self.resolve(decisions[index])
+-
+-    def action_cancel(self) -> None:
+-        self.resolve(ApprovalDecision.CANCEL)
+-
+-    def scroll_preview(self, key: str) -> None:
+-        """Scroll evidence without moving focus away from the decision choices."""
+-
+-        preview = self.query_one(".preview", ApprovalPreview)
+-        if key == "pageup":
+-            preview.scroll_page_up(animate=False)
+-        elif key == "pagedown":
+-            preview.scroll_page_down(animate=False)
+-        elif key == "home":
+-            preview.scroll_home(animate=False)
+-        else:
+-            preview.scroll_end(animate=False)
+-
+-
+-class MessageBlock(Vertical):
+-    """One safe transcript turn using Claude Code's asymmetric hierarchy."""
+-
+-    def __init__(self, role: str, content: str) -> None:
+-        css_class = "user" if role in {"You", "Task"} else "assistant"
+-        super().__init__(classes=f"message {css_class}")
+-        self.role = role
+-        self.content = content
+-
+-    def compose(self) -> ComposeResult:
+-        if self.has_class("user"):
+-            yield Static(self.content, classes="message-body", markup=False)
+-            return
+-        with Horizontal(classes="assistant-row"):
+-            yield Static("●", classes="assistant-glyph", markup=False)
+-            yield TranscriptMarkdown(self.content, classes="message-body", open_links=False)
+-
+-    def append_content(self, text: str) -> None:
+-        self.content += text
+-        if self.query(".message-body"):
+-            body = self.query_one(".message-body")
+-            body.update(self.content)
+-
+-
+-class InlineSelectorChoices(OptionList):
+-    """Option list whose Escape belongs to its inline selector, not the app."""
+-
+-    async def _on_key(self, event: events.Key) -> None:
+-        if event.key == "escape":
+-            event.stop()
+-            event.prevent_default()
+-            parent = self.parent
+-            if isinstance(parent, InlineSelectorBlock):
+-                parent.action_cancel()
+-            return
+-        await super()._on_key(event)
+-
+-
+-class InlineSelectorBlock(Vertical):
+-    """Claude-style keyboard selector rendered inside the transcript."""
+-
+-    class Selected(Message):
+-        def __init__(self, selector: InlineSelectorBlock, value: str) -> None:
+-            super().__init__()
+-            self.selector = selector
+-            self.value = value
+-
+-    class Cancelled(Message):
+-        def __init__(self, selector: InlineSelectorBlock) -> None:
+-            super().__init__()
+-            self.selector = selector
+-
+-    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True, show=False)]
+-    DEFAULT_CSS = """
+-    InlineSelectorBlock {
+-        height: auto; max-height: 18; margin: 0 0 1 0; padding: 1 1 0 1;
+-        border-top: solid $accent; background: transparent;
+-    }
+-    InlineSelectorBlock .selector-title {
+-        height: 1; color: $accent; text-style: bold;
+-    }
+-    InlineSelectorBlock .selector-description {
+-        height: auto; margin-bottom: 1; color: $text-muted;
+-    }
+-    InlineSelectorBlock OptionList {
+-        height: auto; max-height: 10; padding: 0;
+-        background: transparent; border: none; scrollbar-size: 1 0;
+-    }
+-    InlineSelectorBlock OptionList > .option-list--option { padding: 0 1; }
+-    InlineSelectorBlock OptionList > .option-list--option-highlighted,
+-    InlineSelectorBlock OptionList:focus > .option-list--option-highlighted {
+-        background: transparent; color: $accent; text-style: bold;
+-    }
+-    InlineSelectorBlock .selector-hint {
+-        height: 1; margin-top: 1; color: $text-muted;
+-    }
+-    """
+-
+-    def __init__(
+-        self,
+-        *,
+-        kind: str,
+-        title: str,
+-        description: str,
+-        options: tuple[InlineSelectorOption, ...],
+-        hint: str = "↑/↓ to move · Enter to select · Esc to cancel",
+-    ) -> None:
+-        super().__init__(classes=f"inline-selector {kind}")
+-        if not options:
+-            raise ValueError("inline selector requires at least one option")
+-        self.kind = kind
+-        self.title = title
+-        self.description = description
+-        self.options = options
+-        self.hint = hint
+-
+-    def compose(self) -> ComposeResult:
+-        yield Static(self.title, classes="selector-title", markup=False)
+-        yield Static(self.description, classes="selector-description", markup=False)
+-        yield InlineSelectorChoices(
+-            *(
+-                Option(self._prompt(index, highlighted=False), id=str(index))
+-                for index in range(len(self.options))
+-            ),
+-            classes="selector-options",
+-            compact=True,
+-        )
+-        yield Static(self.hint, classes="selector-hint", markup=False)
+-
+-    def _prompt(self, index: int, *, highlighted: bool) -> str:
+-        option = self.options[index]
+-        pointer = "›" if highlighted else " "
+-        selected = " ✓" if option.selected else ""
+-        suffix = f" · {option.description}" if option.description else ""
+-        return f"{pointer} {index + 1}. {option.label}{selected}{suffix}"
+-
+-    def on_mount(self) -> None:
+-        choices = self.query_one(".selector-options", OptionList)
+-        choices.highlighted = next(
+-            (index for index, option in enumerate(self.options) if option.selected),
+-            0,
+-        )
+-        self._sync_prompts(choices.highlighted)
+-        choices.focus()
+-
+-    def set_options(self, options: tuple[InlineSelectorOption, ...]) -> None:
+-        """Swap choices in place (e.g. a background model-catalog refresh landing)."""
+-
+-        if not options:
+-            raise ValueError("inline selector requires at least one option")
+-        choices = self.query_one(".selector-options", OptionList)
+-        highlighted = min(choices.highlighted or 0, len(options) - 1)
+-        self.options = options
+-        choices.clear_options()
+-        choices.add_options(
+-            [
+-                Option(self._prompt(index, highlighted=False), id=str(index))
+-                for index in range(len(options))
+-            ]
+-        )
+-        choices.highlighted = highlighted
+-        self._sync_prompts(highlighted)
+-
+-    def _sync_prompts(self, highlighted: int | None) -> None:
+-        choices = self.query_one(".selector-options", OptionList)
+-        for index in range(len(self.options)):
+-            choices.replace_option_prompt_at_index(
+-                index,
+-                self._prompt(index, highlighted=index == highlighted),
+-            )
+-
+-    @on(OptionList.OptionHighlighted, ".selector-options")
+-    def highlight_choice(self, event: OptionList.OptionHighlighted) -> None:
+-        self._sync_prompts(event.option_index)
+-
+-    @on(OptionList.OptionSelected, ".selector-options")
+-    def choose(self, event: OptionList.OptionSelected) -> None:
+-        if event.option.id is None:
+-            return
+-        index = int(event.option.id)
+-        self.post_message(self.Selected(self, self.options[index].value))
+-
+-    def action_cancel(self) -> None:
+-        self.post_message(self.Cancelled(self))
+-
+-
+-class TimelineEntry(Vertical):
+-    """One high-level agent activity or result in the main timeline."""
+-
+-    def __init__(
+-        self,
+-        title: str,
+-        detail: str | None = None,
+-        *,
+-        severity: str | None = None,
+-    ) -> None:
+-        classes = "timeline-entry" if severity is None else f"timeline-entry {severity}"
+-        super().__init__(classes=classes)
+-        self.title = title
+-        self.detail = detail
+-
+-    def compose(self) -> ComposeResult:
+-        yield Static(f"• {self.title}", classes="timeline-title", markup=False)
+-        if self.detail:
+-            yield Static(self.detail, classes="timeline-detail", markup=False)
+-
+-
+-class ToolActionBlock(Vertical):
+-    """One tool action whose lifecycle is updated in place."""
+-
+-    _COLLAPSED_DETAIL_LINES = 18
+-    _COLLAPSED_DETAIL_CHARS = 4_000
+-
+-    def __init__(
+-        self,
+-        action_id: str,
+-        title: str,
+-        *,
+-        detail: str | None = None,
+-        detail_kind: str = "plain",
+-        collapsed_detail: str | None = None,
+-    ) -> None:
+-        super().__init__(classes="tool-action queued")
+-        self.action_id = action_id
+-        self.title = title
+-        self.detail = detail or ""
+-        self.detail_kind = detail_kind
+-        self.collapsed_detail = collapsed_detail
+-        self.verbose = False
+-        self.status = "queued"
+-        self.group: ToolGroupBlock | None = None
+-
+-    def compose(self) -> ComposeResult:
+-        yield Static(self._glyph(self.status), classes="tool-glyph", markup=False)
+-        with Vertical(classes="tool-content"):
+-            yield Static(self.title, classes="tool-title", markup=False)
+-            yield Static(
+-                self._render_detail(self._visible_detail()),
+-                classes="tool-detail",
+-                markup=False,
+-            )
+-
+-    def set_state(
+-        self,
+-        status: str,
+-        *,
+-        detail: str | None = None,
+-        detail_kind: str | None = None,
+-        collapsed_detail: str | None = None,
+-    ) -> None:
+-        self.status = status
+-        classes = ["tool-action", status]
+-        if self.has_class("verbose"):
+-            classes.append("verbose")
+-        self.set_classes(" ".join(classes))
+-        if detail is not None:
+-            self.detail = detail
+-        if detail_kind is not None:
+-            self.detail_kind = detail_kind
+-        if collapsed_detail is not None:
+-            self.collapsed_detail = collapsed_detail
+-        if self.query(".tool-glyph"):
+-            self.query_one(".tool-glyph", Static).update(self._glyph(status))
+-        if (detail is not None or collapsed_detail is not None) and self.query(".tool-detail"):
+-            detail_widget = self.query_one(".tool-detail", Static)
+-            visible_detail = self._visible_detail()
+-            detail_widget.update(self._render_detail(visible_detail))
+-            detail_widget.display = bool(visible_detail)
+-        if self.group is not None:
+-            self.group.action_updated()
+-
+-    def set_title(self, title: str) -> None:
+-        self.title = title
+-        if self.query(".tool-title"):
+-            self.query_one(".tool-title", Static).update(title)
+-
+-    def set_verbose(self, verbose: bool) -> None:
+-        self.verbose = verbose
+-        self.set_class(verbose, "verbose")
+-        if self.query(".tool-detail"):
+-            visible_detail = self._visible_detail()
+-            detail_widget = self.query_one(".tool-detail", Static)
+-            detail_widget.update(self._render_detail(visible_detail))
+-            detail_widget.display = bool(visible_detail)
+-
+-    def _visible_detail(self) -> str:
+-        if self.verbose:
+-            return self.detail
+-        if self.collapsed_detail is not None:
+-            return self.collapsed_detail
+-        if self.detail_kind != "diff":
+-            return self.detail
+-        lines = self.detail.splitlines()
+-        preview = "\n".join(lines[: self._COLLAPSED_DETAIL_LINES])
+-        if len(preview) > self._COLLAPSED_DETAIL_CHARS:
+-            preview = preview[: self._COLLAPSED_DETAIL_CHARS]
+-        if preview != self.detail:
+-            preview = preview.rstrip() + "\n… Ctrl+O to expand"
+-        return preview
+-
+-    def _render_detail(self, detail: str) -> str | Syntax:
+-        if self.detail_kind == "diff" and detail:
+-            return Syntax(
+-                detail,
+-                "diff",
+-                theme="ansi_dark",
+-                word_wrap=True,
+-                background_color="default",
+-            )
+-        return detail
+-
+-    @staticmethod
+-    def _glyph(status: str) -> str:
+-        return {
+-            "queued": "○",
+-            "running": "●",
+-            "waiting": "?",
+-            "completed": "✓",
+-            "failed": "×",
+-            "denied": "−",
+-            "cancelled": "×",
+-        }.get(status, "•")
+-
+-
+-class ToolGroupBlock(Collapsible):
+-    """Keyboard-expandable group for consecutive read/search actions."""
+-
+-    def __init__(self, first_action: ToolActionBlock) -> None:
+-        super().__init__(
+-            first_action,
+-            title="Exploring 1 item",
+-            collapsed=False,
+-            classes="tool-group",
+-        )
+-        self.actions: list[ToolActionBlock] = [first_action]
+-        first_action.group = self
+-        self._user_toggled = False
+-
+-    @on(CollapsibleTitle.Toggle)
+-    def _record_user_toggle(self, event: CollapsibleTitle.Toggle) -> None:
+-        # Once the user toggles manually, auto-expand/collapse stops overriding
+-        # this group for its lifetime; streaming updates only refresh the title.
+-        # Decorated (not naming-convention) handler: Textual dispatches naming
+-        # handlers once per MRO class, which would double-toggle with an override.
+-        self._user_toggled = True
+-
+-    def add_action(self, action: ToolActionBlock) -> None:
+-        self.actions.append(action)
+-        action.group = self
+-        if not self._user_toggled:
+-            self.collapsed = False
+-        self._refresh_title()
+-        if self.query(Collapsible.Contents):
+-            self.query_one(Collapsible.Contents).mount(action)
+-        else:
+-            self._contents_list.append(action)
+-
+-    def set_verbose(self, verbose: bool) -> None:
+-        """Global verbose toggle: latch user intent and force the requested state."""
+-        self._user_toggled = True
+-        self.collapsed = not verbose
+-
+-    def action_updated(self) -> None:
+-        self._refresh_title()
+-        terminal = {"completed", "failed", "denied", "cancelled"}
+-        if (
+-            not self._user_toggled
+-            and not self.app._tool_verbose
+-            and self.actions
+-            and all(action.status in terminal for action in self.actions)
+-        ):
+-            self.collapsed = True
+-
+-    def _refresh_title(self) -> None:
+-        done = sum(action.status == "completed" for action in self.actions)
+-        noun = "item" if len(self.actions) == 1 else "items"
+-        verb = "Explored" if done == len(self.actions) and self.actions else "Exploring"
+-        self.title = f"{verb} {len(self.actions)} {noun}"
+-
+-
+-class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
+-    """Runtime/provider/credential/model setup, as one modal with four steps.
+-
+-    Normal use (``credential_only=False``) composes all four step containers up front
+-    and toggles which one is visible; this keeps the single ``push_screen_wait`` call
+-    site in ``looplaneApp`` unchanged (one await, one dismiss) instead of pushing several
+-    screens. ``credential_only=True`` composes just the credential step, replacing the
+-    old standalone ``ApiKeyModal`` for the "an active runtime switch is missing a
+-    credential" case (see ``looplaneApp._ensure_native_credentials``).
+-    """
+-
+-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+-    DEFAULT_CSS = """
+-    OnboardingModal { align: center middle; background: $background 70%; }
+-    OnboardingModal > Vertical {
+-        width: 72; max-width: 92%; height: auto; padding: 1 2;
+-        border: round $accent; background: $surface;
+-    }
+-    OnboardingModal .title { text-style: bold; color: $accent; }
+-    OnboardingModal .hint { color: $text-muted; margin-bottom: 1; }
+-    OnboardingModal Label.field { margin-top: 1; }
+-    OnboardingModal Horizontal { height: auto; margin-top: 1; align-horizontal: right; }
+-    OnboardingModal Button { margin-left: 1; }
+-    OnboardingModal #overview-list { height: auto; max-height: 12; margin-bottom: 1; }
+-    OnboardingModal .overview-entry { width: 100%; margin-bottom: 1; }
+-    OnboardingModal #credential-result { margin-top: 1; }
+-    OnboardingModal #credential-spinner { height: 1; margin-top: 1; }
+-    """
+-
+-    def __init__(
+-        self,
+-        *,
+-        current: CliConfig,
+-        runtimes: Iterable[RuntimeOption],
+-        providers: Iterable[ProviderOption],
+-        ollama_models: tuple[str, ...],
+-        runtime_models: Mapping[str, tuple[RuntimeModelOption, ...]] | None = None,
+-        locked_provider: str | None = None,
+-        defer_model: bool = False,
+-        verified_providers: Mapping[str, VerificationResult] | None = None,
+-        initial_step: str = "overview",
+-        focus_provider: str | None = None,
+-        credential_only: bool = False,
+-    ) -> None:
+-        super().__init__()
+-        self.current = current
+-        self.runtimes = tuple(runtimes)
+-        self.providers = tuple(providers)
+-        self.ollama_models = ollama_models
+-        self.runtime_models = runtime_models or {}
+-        self.locked_provider = locked_provider
+-        self.defer_model = defer_model
+-        self.verified_providers: dict[str, VerificationResult] = dict(verified_providers or {})
+-        self.credential_only = credential_only
+-        self._step = "credential" if credential_only else initial_step
+-        self._active_provider: str | None = focus_provider
+-        self._active_runtime: str = "looplane-agent"
+-        self._fetched_models: tuple[str, ...] = ()
+-
+-    def _initial_runtime(self) -> str:
+-        slugs = [slug for slug, _ in self.runtimes]
+-        if self.locked_provider:
+-            return "looplane-agent"
+-        if self.current.runtime in slugs:
+-            return self.current.runtime
+-        if self.current.provider or self.current.model:
+-            return "looplane-agent"
+-        return slugs[0] if slugs else "looplane-agent"
+-
+-    def _initial_provider(self) -> str:
+-        slugs = [slug for slug, _ in self.providers]
+-        if self.locked_provider:
+-            return self.locked_provider
+-        if self.current.provider in slugs:
+-            return self.current.provider
+-        return "ollama" if self.ollama_models else "openai-compatible"
+-
+-    @staticmethod
+-    def _provider_fields(provider: str) -> tuple[str, ...]:
+-        from looplane.native_credentials import NATIVE_CREDENTIAL_FIELDS
+-
+-        return NATIVE_CREDENTIAL_FIELDS.get(provider, ())
+-
+-    @staticmethod
+-    def _configured_native_providers() -> tuple[str, ...]:
+-        from looplane.native_credentials import NATIVE_CREDENTIAL_FIELDS, missing_native_fields
+-
+-        return tuple(
+-            provider
+-            for provider in sorted(NATIVE_CREDENTIAL_FIELDS)
+-            if not missing_native_fields(provider)
+-        )
+-
+-    def _provider_label(self, provider: str) -> str:
+-        return dict(self.providers).get(provider, provider)
+-
+-    def _status_icon(self, provider: str) -> str:
+-        result = self.verified_providers.get(provider)
+-        return "✓" if result is not None and result.ok else "⚠"
+-
+-    def compose(self) -> ComposeResult:
+-        if self.credential_only:
+-            yield from self._compose_credential_only()
+-            return
+-        runtime = self._initial_runtime()
+-        provider = self._initial_provider()
+-        provider_options = list(self.providers)
+-        if provider not in {slug for slug, _ in provider_options}:
+-            provider_options.append((provider, provider))
+-        model_options = tuple((name, name) for name in self.ollama_models)
+-        model_value: Any = (
+-            self.current.model
+-            if self.current.model in self.ollama_models
+-            else (self.ollama_models[0] if self.ollama_models else Select.NULL)
+-        )
+-        with Vertical():
+-            with Vertical(id="step-overview"):
+-                yield Label("Welcome to looplane", classes="title")
+-                yield Static(
+-                    "Providers already set up for the looplane-agent runtime.",
+-                    classes="hint",
+-                )
+-                with VerticalScroll(id="overview-list"):
+-                    for configured in self._configured_native_providers():
+-                        icon = self._status_icon(configured)
+-                        yield Button(
+-                            f"{icon} {self._provider_label(configured)}",
+-                            id=f"overview-{configured}",
+-                            classes="overview-entry",
+-                        )
+-                with Horizontal():
+-                    yield Button("Cancel", id="overview-cancel")
+-                    yield Button("+ New Provider", id="overview-add", variant="primary")
+-
+-            with Vertical(id="step-connection"):
+-                yield Label("Welcome to looplane", classes="title")
+-                yield Static(
+-                    "Choose who runs the coding loop. Credentials stay with the selected runtime.",
+-                    classes="hint",
+-                )
+-                yield Label("Runtime", classes="field")
+-                yield Select(
+-                    tuple((label, slug) for slug, label in self.runtimes),
+-                    value=runtime,
+-                    allow_blank=False,
+-                    disabled=self.locked_provider is not None,
+-                    id="runtime",
+-                )
+-                yield Static("", id="runtime-hint", markup=False, classes="hint")
+-                yield Label("Connection", classes="field", id="provider-label")
+-                yield Select(
+-                    tuple((label, slug) for slug, label in provider_options),
+-                    value=provider,
+-                    allow_blank=False,
+-                    disabled=self.locked_provider is not None,
+-                    id="provider",
+-                )
+-                yield Select(
+-                    (("Automatic", _AUTOMATIC_MODEL),),
+-                    value=_AUTOMATIC_MODEL,
+-                    allow_blank=False,
+-                    id="runtime-model",
+-                )
+-                yield Static("Automatic · managed by the selected runtime", id="automatic-model")
+-                with Horizontal():
+-                    yield Button("Cancel", id="connection-cancel")
+-                    yield Button("Use once", id="connection-use-once")
+-                    yield Button("Save & Continue", id="connection-save", variant="primary")
+-                    yield Button("Next", id="connection-next", variant="primary")
+-
+-            with Vertical(id="step-credential"):
+-                yield Label("Connect provider", id="credential-title", classes="title")
+-                yield Static(
+-                    "Stored locally for looplane-agent only (0600, never sent elsewhere).",
+-                    classes="hint",
+-                )
+-                yield Vertical(id="credential-fields")
+-                yield RuntimeLoadingIndicator(id="credential-spinner")
+-                yield Static("", id="credential-result", markup=False)
+-                with Horizontal():
+-                    yield Button("Cancel", id="credential-cancel")
+-                    yield Button("Set up later", id="credential-later")
+-                    yield Button("Skip verification & Save", id="credential-skip")
+-                    yield Button("Verify & Continue", id="credential-continue", variant="primary")
+-
+-            with Vertical(id="step-model"):
+-                yield Label("Model", classes="field", id="model-label")
+-                yield Select(
+-                    model_options,
+-                    value=model_value,
+-                    allow_blank=not bool(model_options),
+-                    id="ollama-model",
+-                )
+-                yield Input(
+-                    value=self.current.model or "",
+-                    placeholder="Provider model ID",
+-                    id="model-id",
+-                )
+-                yield Select((), allow_blank=True, id="fetched-model")
+-                yield Static(
+-                    "Automatic · managed by the selected runtime", id="model-automatic-hint"
+-                )
+-                yield Static("", id="model-fetch-status", markup=False)
+-                yield Button("Retry", id="model-retry")
+-                yield Static("", id="setup-error", markup=False)
+-                with Horizontal():
+-                    yield Button("Cancel", id="cancel")
+-                    yield Button("Use once", id="use-once")
+-                    yield Button("Save & Continue", id="save", variant="primary")
+-
+-    def _compose_credential_only(self) -> ComposeResult:
+-        provider = self._active_provider or ""
+-        with Vertical():
+-            yield Label(f"Connect {provider}", id="credential-title", classes="title")
+-            yield Static(
+-                "Stored locally for looplane-agent only (0600, never sent elsewhere).",
+-                classes="hint",
+-            )
+-            yield Vertical(id="credential-fields")
+-            yield RuntimeLoadingIndicator(id="credential-spinner")
+-            yield Static("", id="credential-result", markup=False)
+-            with Horizontal():
+-                yield Button("Cancel", id="cancel")
+-                yield Button("Skip verification & Save", id="skip-verify")
+-                yield Button("Save", id="save", variant="primary")
+-
+-    def on_mount(self) -> None:
+-        if self.credential_only:
+-            if self._active_provider:
+-                self._mount_credential_fields_worker(self._active_provider)
+-            return
+-        runtime = self._initial_runtime()
+-        provider = self._initial_provider()
+-        self._active_provider = provider
+-        self._active_runtime = runtime
+-        self._sync_connection_controls(runtime, provider)
+-        self._sync_model_controls()
+-        # ``self._step`` is always "overview" here (credential_only handled above; no
+-        # caller passes a different initial_step), so this never needs to await the
+-        # credential-field-mounting branch of ``_goto_step``.
+-        self.query_one("#step-overview", Vertical).display = True
+-        self.query_one("#step-connection", Vertical).display = False
+-        self.query_one("#step-credential", Vertical).display = False
+-        self.query_one("#step-model", Vertical).display = False
+-        self.query_one("#overview-add", Button).focus()
+-        self.query_one("#model-retry", Button).display = False
+-
+-    @work(exclusive=True, group="credential-mount")
+-    async def _mount_credential_fields_worker(self, provider: str) -> None:
+-        await self._mount_credential_fields(provider)
+-
+-    def _sync_connection_controls(self, runtime: str, provider: str) -> None:
+-        looplane_runtime = runtime == "looplane-agent"
+-        self.query_one("#provider-label", Label).display = looplane_runtime
+-        self.query_one("#provider", Select).display = looplane_runtime
+-        runtime_model = self.query_one("#runtime-model", Select)
+-        external_options = self.runtime_models.get(runtime, ())
+-        select_options = tuple(
+-            (label, value or _AUTOMATIC_MODEL) for label, value in external_options
+-        ) or (("Automatic", _AUTOMATIC_MODEL),)
+-        runtime_model.set_options(select_options)
+-        selected_runtime_model = (
+-            self.current.runtime_model
+-            if self.current.runtime == runtime and self.current.runtime_model is not None
+-            else _AUTOMATIC_MODEL
+-        )
+-        option_values = {value or _AUTOMATIC_MODEL for _, value in external_options}
+-        runtime_model.value = (
+-            selected_runtime_model if selected_runtime_model in option_values else _AUTOMATIC_MODEL
+-        )
+-        runtime_model.display = not looplane_runtime and bool(external_options)
+-        self.query_one("#automatic-model", Static).display = (
+-            not looplane_runtime and not external_options
+-        )
+-        adapter = runtime_registry.RUNTIME_REGISTRY.get(runtime)
+-        if adapter is None:
+-            hint = ""
+-        elif looplane_runtime:
+-            hint = "looplane owns the model loop; API keys remain in environment variables."
+-        elif adapter.native_session is not None:
+-            hint = (
+-                f"Uses the installed {adapter.label.split(' · ')[0]} and its local login. "
+-                "Local-only and experimental."
+-            )
+-        else:
+-            hint = (
+-                f"looplane drives the installed {adapter.executable} directly; "
+-                "your provider keys stay in its config."
+-            )
+-        self.query_one("#runtime-hint", Static).update(hint)
+-        self.query_one("#connection-next", Button).display = looplane_runtime
+-        self.query_one("#connection-use-once", Button).display = not looplane_runtime
+-        self.query_one("#connection-save", Button).display = not looplane_runtime
+-
+-    def _sync_model_controls(self) -> None:
+-        looplane_runtime = self._active_runtime == "looplane-agent"
+-        provider = self._active_provider
+-        use_list = (
+-            looplane_runtime
+-            and not self.defer_model
+-            and provider == "ollama"
+-            and bool(self.ollama_models)
+-        )
+-        use_fetched = (
+-            looplane_runtime
+-            and not self.defer_model
+-            and not use_list
+-            and bool(self._fetched_models)
+-        )
+-        use_input = looplane_runtime and not self.defer_model and not use_list and not use_fetched
+-        self.query_one("#ollama-model", Select).display = use_list
+-        self.query_one("#fetched-model", Select).display = use_fetched
+-        self.query_one("#model-id", Input).display = use_input
+-        self.query_one("#model-label", Label).display = looplane_runtime and not self.defer_model
+-        self.query_one("#model-automatic-hint", Static).display = (
+-            looplane_runtime and self.defer_model
+-        )
+-        if use_fetched:
+-            self._populate_fetched_model_select()
+-
+-    def _populate_fetched_model_select(self) -> None:
+-        select = self.query_one("#fetched-model", Select)
+-        select.set_options(tuple((model, model) for model in self._fetched_models))
+-        if self._fetched_models:
+-            select.value = self._fetched_models[0]
+-
+-    @on(Select.Changed, "#runtime")
+-    def runtime_changed(self, event: Select.Changed) -> None:
+-        if event.value is Select.NULL:
+-            return
+-        provider_value = self.query_one("#provider", Select).value
+-        provider = (
+-            self._initial_provider() if provider_value is Select.NULL else str(provider_value)
+-        )
+-        runtime = str(event.value)
+-        self._active_provider = provider
+-        self._active_runtime = runtime
+-        self._sync_connection_controls(runtime, provider)
+-        self._sync_model_controls()
+-
+-    @on(Select.Changed, "#provider")
+-    def provider_changed(self, event: Select.Changed) -> None:
+-        if event.value is Select.NULL:
+-            return
+-        provider = str(event.value)
+-        if self._active_provider is not None and provider != self._active_provider:
+-            self.query_one("#model-id", Input).value = ""
+-            ollama = self.query_one("#ollama-model", Select)
+-            ollama.value = self.ollama_models[0] if self.ollama_models else Select.NULL
+-            self._fetched_models = ()
+-        self._active_provider = provider
+-        runtime_value = self.query_one("#runtime", Select).value
+-        runtime = "looplane-agent" if runtime_value is Select.NULL else str(runtime_value)
+-        self._active_runtime = runtime
+-        self._sync_connection_controls(runtime, provider)
+-        self._sync_model_controls()
+-
+-    async def _goto_step(self, step: str) -> None:
+-        self._step = step
+-        self.query_one("#step-overview", Vertical).display = step == "overview"
+-        self.query_one("#step-connection", Vertical).display = step == "connection"
+-        self.query_one("#step-credential", Vertical).display = step == "credential"
+-        self.query_one("#step-model", Vertical).display = step == "model"
+-        if step == "overview":
+-            self.query_one("#overview-add", Button).focus()
+-        elif step == "credential" and self._active_provider:
+-            await self._mount_credential_fields(self._active_provider)
+-        elif step == "model":
+-            self._sync_model_controls()
+-            self._fetch_models_for_active_provider()
+-
+-    async def _mount_credential_fields(self, provider: str) -> None:
+-        container = self.query_one("#credential-fields", Vertical)
+-        await container.remove_children()
+-        fields = self._provider_fields(provider)
+-        for field in fields:
+-            await container.mount(Label(field.replace("_", " ").title(), classes="field"))
+-            await container.mount(Input(password=True, id=f"field-{field}"))
+-        if not self.credential_only:
+-            self.query_one("#credential-title", Label).update(f"Connect {provider}")
+-        self.query_one("#credential-result", Static).update("")
+-        self._set_credential_verifying(False)
+-        continue_id = "save" if self.credential_only else "credential-continue"
+-        self.query_one(f"#{continue_id}", Button).disabled = False
+-        if fields:
+-            self.query_one(f"#field-{fields[0]}", Input).focus()
+-
+-    def _set_credential_verifying(self, verifying: bool) -> None:
+-        spinner = self.query_one("#credential-spinner", RuntimeLoadingIndicator)
+-        spinner.set_phase(LoadingPhase.VERIFYING if verifying else None)
+-        continue_id = "save" if self.credential_only else "credential-continue"
+-        skip_id = "skip-verify" if self.credential_only else "credential-skip"
+-        self.query_one(f"#{continue_id}", Button).disabled = verifying
+-        self.query_one(f"#{skip_id}", Button).disabled = verifying
+-
+-    def _report_model_fetch_issue(self, message: str) -> None:
+-        """Make a failed/absent listing visible instead of silently degrading
+-        to the manual model-ID input."""
+-
+-        self.query_one("#model-fetch-status", Static).update(message)
+-        retry = self.query_one("#model-retry", Button)
+-        retry.display = True
+-
+-    def _clear_model_fetch_issue(self) -> None:
+-        self.query_one("#model-fetch-status", Static).update("")
+-        self.query_one("#model-retry", Button).display = False
+-
+-    def _model_fetch_view_available(self) -> bool:
+-        return (
+-            self.is_mounted
+-            and self.is_current
+-            and bool(self.query("#model-fetch-status"))
+-        )
+-
+-    @on(Button.Pressed, "#model-retry")
+-    def retry_model_fetch(self, _event: Button.Pressed) -> None:
+-        self._clear_model_fetch_issue()
+-        self._fetch_models_for_active_provider()
+-
+-    @work(exclusive=True, group="model-fetch")
+-    async def _fetch_models_for_active_provider(self) -> None:
+-        provider = self._active_provider
+-        if (
+-            provider is None
+-            or provider == "ollama"
+-            or self.defer_model
+-            or not self._model_fetch_view_available()
+-        ):
+-            return
+-        self._clear_model_fetch_issue()
+-        cached = self.verified_providers.get(provider)
+-        if cached is not None and cached.models:
+-            self._fetched_models = cached.models
+-            if self._step == "model":
+-                self._sync_model_controls()
+-            return
+-        # Disk-cached listing from an earlier session/wizard run: show instantly,
+-        # refresh in the background only once it ages past the TTL.
+-        import looplane.model_catalog as model_catalog
+-
+-        snapshot = model_catalog.snapshot(provider)
+-        if snapshot is not None and snapshot.models:
+-            self._fetched_models = snapshot.models
+-            if self._step == "model":
+-                self._sync_model_controls()
+-            if not model_catalog.is_stale(snapshot):
+-                return
+-
+-        from looplane.native_credentials import NATIVE_CREDENTIAL_FIELDS, resolve_native_field
+-        from looplane.provider_verification import fetch_models_result
+-
+-        fields_spec = NATIVE_CREDENTIAL_FIELDS.get(provider)
+-        if fields_spec is None:
+-            self._report_model_fetch_issue(
+-                f"{provider} does not support model discovery; enter the model ID manually."
+-            )
+-            return
+-        values: dict[str, str] = {}
+-        missing: list[str] = []
+-        for field in fields_spec:
+-            value = resolve_native_field(provider, field)
+-            if value is None:
+-                missing.append(field)
+-            else:
+-                values[field] = value
+-        if missing:
+-            self._report_model_fetch_issue(
+-                f"No credential found (missing: {', '.join(missing)}); "
+-                "reconnect the provider or enter the model ID manually."
+-            )
+-            return
+-
+-        result = await fetch_models_result(provider, values)
+-        if (
+-            not self._model_fetch_view_available()
+-            or self._active_provider != provider
+-            or self._step != "model"
+-        ):
+-            return  # user moved on while the request was in flight
+-        if result.ok and result.models:
+-            model_catalog.store_models(provider, result.models)
+-            self._fetched_models = result.models
+-            self._sync_model_controls()
+-            return
+-        if result.ok:
+-            # Connected, but the provider exposes no listing (degraded).
+-            self._report_model_fetch_issue(f"{result.message} Enter the model ID manually.")
+-        else:
+-            self._report_model_fetch_issue(
+-                f"{result.message} Retry, or enter the model ID manually."
+-            )
+-
+-    def _submit_credential(self, *, skip_verification: bool) -> None:
+-        provider = self._active_provider
+-        if provider is None:
+-            return
+-        fields = self._provider_fields(provider)
+-        values: dict[str, str] = {}
+-        for field in fields:
+-            value = self.query_one(f"#field-{field}", Input).value.strip()
+-            if not value:
+-                self.query_one("#credential-result", Static).update("All fields are required.")
+-                return
+-            values[field] = value
+-
+-        from looplane.native_credentials import save_native_credential
+-
+-        try:
+-            save_native_credential(provider, values)
+-        except (OSError, PermissionError, ValueError) as exc:
+-            self.query_one("#credential-result", Static).update(f"Could not save: {exc}")
+-            return
+-        self._verify_and_advance(provider, values, skip_verification=skip_verification)
+-
+-    @work(exclusive=True, group="verify")
+-    async def _verify_and_advance(
+-        self, provider: str, values: dict[str, str], *, skip_verification: bool
+-    ) -> None:
+-        if skip_verification:
+-            from looplane.provider_verification import VerificationResult
+-
+-            self.verified_providers[provider] = VerificationResult(
+-                ok=False, message="Verification skipped by user."
+-            )
+-        else:
+-            self._set_credential_verifying(True)
+-            from looplane.provider_verification import verify_native_credential
+-
+-            result = await verify_native_credential(provider, values)
+-            self._set_credential_verifying(False)
+-            self.verified_providers[provider] = result
+-            if not result.ok:
+-                self.query_one("#credential-result", Static).update(f"✗ {result.message}")
+-                continue_id = "save" if self.credential_only else "credential-continue"
+-                self.query_one(f"#{continue_id}", Button).disabled = True
+-                return
+-            self.query_one("#credential-result", Static).update(f"✓ {result.message}")
+-
+-        if self.credential_only:
+-            self.dismiss(TuiConfigurationSelection(config=self.current, persist=False))
+-            return
+-        await self._goto_step("model")
+-
+-    async def _advance_from_connection(self) -> None:
+-        provider_value = self.query_one("#provider", Select).value
+-        provider = (
+-            self._initial_provider() if provider_value is Select.NULL else str(provider_value)
+-        )
+-        self._active_provider = provider
+-        if provider == "ollama" or self.defer_model:
+-            await self._goto_step("model")
+-        else:
+-            await self._goto_step("credential")
+-
+-    def _dismiss_external_runtime(self, *, persist: bool) -> None:
+-        runtime_value = self.query_one("#runtime", Select).value
+-        runtime = "looplane-agent" if runtime_value is Select.NULL else str(runtime_value)
+-        selected = self.query_one("#runtime-model", Select).value
+-        runtime_model = (
+-            None if selected in {Select.NULL, _AUTOMATIC_MODEL} else str(selected).strip()
+-        )
+-        configured = self.current.model_copy(
+-            update={"runtime": runtime, "runtime_model": runtime_model}
+-        )
+-        self.dismiss(TuiConfigurationSelection(config=configured, persist=persist))
+-
+-    def _dismiss_native_runtime(self, *, persist: bool) -> None:
+-        provider = self._active_provider or self._initial_provider()
+-        if self.defer_model:
+-            model = (
+-                self.current.model
+-                if self.current.provider == provider
+-                else (
+-                    self.ollama_models[0] if provider == "ollama" and self.ollama_models else None
+-                )
+-            )
+-        elif provider == "ollama" and self.ollama_models:
+-            selected = self.query_one("#ollama-model", Select).value
+-            model = None if selected is Select.NULL else str(selected).strip()
+-        elif self._fetched_models:
+-            selected = self.query_one("#fetched-model", Select).value
+-            model = None if selected is Select.NULL else str(selected).strip()
+-        else:
+-            model = self.query_one("#model-id", Input).value.strip() or None
+-        if model is not None and (not model.isprintable() or "\x00" in model):
+-            self.query_one("#setup-error", Static).update("Enter a printable model ID.")
+-            return
+-        api_url = self.current.api_url if self.current.provider == provider else None
+-        self.dismiss(
+-            TuiConfigurationSelection(
+-                config=CliConfig(
+-                    runtime="looplane-agent",
+-                    runtime_model=None,
+-                    provider=provider,
+-                    model=model,
+-                    api_url=api_url,
+-                ),
+-                persist=persist,
+-            )
+-        )
+-
+-    @on(Button.Pressed)
+-    async def handle_button(self, event: Button.Pressed) -> None:
+-        button_id = event.button.id or ""
+-        if self.credential_only:
+-            if button_id == "cancel":
+-                self.dismiss(None)
+-            elif button_id in {"save", "skip-verify"}:
+-                self._submit_credential(skip_verification=button_id == "skip-verify")
+-            return
+-        if button_id in {"overview-cancel", "connection-cancel", "credential-cancel", "cancel"}:
+-            self.dismiss(None)
+-            return
+-        if button_id == "overview-add":
+-            await self._goto_step("connection")
+-            return
+-        if button_id.startswith("overview-"):
+-            self._active_provider = button_id.removeprefix("overview-")
+-            await self._goto_step("credential")
+-            return
+-        if button_id == "connection-next":
+-            await self._advance_from_connection()
+-            return
+-        if button_id in {"connection-use-once", "connection-save"}:
+-            self._dismiss_external_runtime(persist=button_id == "connection-save")
+-            return
+-        if button_id in {"credential-continue", "credential-skip"}:
+-            self._submit_credential(skip_verification=button_id == "credential-skip")
+-            return
+-        if button_id == "credential-later":
+-            await self._goto_step("model")
+-            return
+-        if button_id in {"use-once", "save"}:
+-            self._dismiss_native_runtime(persist=button_id == "save")
+-            return
+-
+-    def action_cancel(self) -> None:
+-        self.dismiss(None)
+-
+-
+ LOOPLANE_THEME = Theme(
+     name="looplane",
+     primary="#2DD4BF",
+@@ -2012,43 +395,6 @@ class looplaneApp(App[RunResult | None]):
+         width: 100%; height: auto;
+     }
+     #empty-state { height: auto; padding: 2 1; color: $text-muted; }
+-    MessageBlock { height: auto; margin-bottom: 1; padding: 0; }
+-    MessageBlock.user {
+-        background: $boost; padding: 0 1; border-left: thick $accent;
+-    }
+-    MessageBlock .message-body { width: 1fr; height: auto; }
+-    MessageBlock Markdown { padding: 0; background: transparent; }
+-    MessageBlock .assistant-row { width: 100%; height: auto; }
+-    MessageBlock .assistant-glyph {
+-        width: 2; height: 1; color: $success; text-style: bold;
+-    }
+-    TimelineEntry { height: auto; margin-bottom: 1; padding-left: 1; }
+-    TimelineEntry .timeline-title { height: 1; text-style: bold; }
+-    TimelineEntry.failure .timeline-title { color: $error; }
+-    TimelineEntry .timeline-detail {
+-        height: auto; margin: 1 0 0 2; color: $text-muted;
+-    }
+-    ToolActionBlock {
+-        layout: horizontal; height: auto; margin-bottom: 1; padding-left: 1;
+-    }
+-    ToolActionBlock .tool-glyph {
+-        width: 2; height: 1; color: $text-muted;
+-    }
+-    ToolActionBlock.running .tool-glyph,
+-    ToolActionBlock.waiting .tool-glyph { color: $warning; text-style: bold; }
+-    ToolActionBlock.completed .tool-glyph { color: $success; }
+-    ToolActionBlock.failed .tool-glyph,
+-    ToolActionBlock.cancelled .tool-glyph { color: $error; }
+-    ToolActionBlock .tool-content { width: 1fr; height: auto; }
+-    ToolActionBlock .tool-title { height: 1; text-style: bold; }
+-    ToolActionBlock .tool-detail {
+-        height: auto; max-height: 14; color: $text-muted; overflow-y: auto;
+-    }
+-    ToolActionBlock.verbose .tool-detail { max-height: 100vh; }
+-    ToolGroupBlock { height: auto; margin-bottom: 1; padding-left: 1; }
+-    ToolGroupBlock > CollapsibleTitle { color: $text-muted; }
+-    ToolGroupBlock > CollapsibleTitle:focus { color: $accent; text-style: bold; }
+-    ToolGroupBlock > Contents { padding-left: 1; }
+     #secondary { height: auto; }
+     #statusline { display: none; height: 1; padding: 0 2; color: $text-muted; }
+     #status-row { height: 1; padding: 0 2; }
+@@ -4477,7 +2823,9 @@ class looplaneApp(App[RunResult | None]):
+         messages = self.query_one("#messages", Vertical)
+         if detail_kind in {"read", "search"}:
+             if self._active_tool_group is None:
+-                self._active_tool_group = ToolGroupBlock(action)
++                self._active_tool_group = ToolGroupBlock(
++                    action, is_verbose=lambda: self._tool_verbose
++                )
+                 messages.mount(self._active_tool_group)
+             else:
+                 self._active_tool_group.add_action(action)
+diff --git a/src/looplane/tui_clipboard.py b/src/looplane/tui_clipboard.py
+index a44dd07..9f4ac56 100644
+--- a/src/looplane/tui_clipboard.py
++++ b/src/looplane/tui_clipboard.py
+@@ -1,78 +1,12 @@
+-"""Selection and native clipboard helpers for the Textual interface."""
+-
+-from __future__ import annotations
+-
+-import os
+-import shutil
+-import subprocess
+-import sys
+-from collections.abc import Mapping
+-from typing import Protocol
+-
+-from textual.widgets import TextArea
+-
+-
+-class SelectionScreen(Protocol):
+-    def get_selected_text(self) -> str | None: ...
+-
+-
+-def selected_text_for_copy(focused: object, screen: SelectionScreen) -> str:
+-    """Prefer an editor selection, then fall back to the rendered transcript."""
+-
+-    if isinstance(focused, TextArea) and focused.selected_text:
+-        return focused.selected_text
+-    return screen.get_selected_text() or ""
+-
+-
+-def copy_with_native_command(
+-    text: str,
+-    *,
+-    platform: str = sys.platform,
+-    environ: Mapping[str, str] = os.environ,
+-) -> bool:
+-    """Best-effort local clipboard copy for terminals that lack OSC 52 support."""
+-
+-    if any(environ.get(name) for name in ("SSH_TTY", "SSH_CONNECTION", "MOSH_CONNECTION")):
+-        # A native command would copy on the remote host. Textual's OSC 52 path
+-        # instead targets the clipboard owned by the user's local terminal.
+-        return False
+-
+-    commands: tuple[tuple[str, ...], ...]
+-    if platform == "darwin":
+-        commands = (("pbcopy",),)
+-    elif platform == "win32" or environ.get("WSL_DISTRO_NAME"):
+-        commands = (
+-            (
+-                "powershell.exe",
+-                "-NonInteractive",
+-                "-NoProfile",
+-                "-Command",
+-                "[Console]::InputEncoding = [Text.Encoding]::UTF8; "
+-                "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+-            ),
+-        )
+-    elif environ.get("WAYLAND_DISPLAY"):
+-        commands = (("wl-copy",), ("xclip", "-selection", "clipboard"))
+-    else:
+-        commands = (
+-            ("xclip", "-selection", "clipboard"),
+-            ("xsel", "--clipboard", "--input"),
+-        )
+-
+-    for command in commands:
+-        if shutil.which(command[0]) is None:
+-            continue
+-        try:
+-            completed = subprocess.run(
+-                command,
+-                input=text,
+-                text=True,
+-                capture_output=True,
+-                timeout=1,
+-                check=False,
+-            )
+-        except (OSError, subprocess.SubprocessError):
+-            continue
+-        if completed.returncode == 0:
+-            return True
+-    return False
++"""Compatibility exports for :mod:`looplane.terminal.clipboard`."""
++
++from looplane.terminal.clipboard import Mapping as Mapping
++from looplane.terminal.clipboard import Protocol as Protocol
++from looplane.terminal.clipboard import SelectionScreen as SelectionScreen
++from looplane.terminal.clipboard import TextArea as TextArea
++from looplane.terminal.clipboard import copy_with_native_command as copy_with_native_command
++from looplane.terminal.clipboard import os as os
++from looplane.terminal.clipboard import selected_text_for_copy as selected_text_for_copy
++from looplane.terminal.clipboard import shutil as shutil
++from looplane.terminal.clipboard import subprocess as subprocess
++from looplane.terminal.clipboard import sys as sys
+diff --git a/src/looplane/tui_links.py b/src/looplane/tui_links.py
+index b6413fb..5fcc823 100644
+--- a/src/looplane/tui_links.py
++++ b/src/looplane/tui_links.py
+@@ -1,91 +1,14 @@
+-"""Safe clickable links for the Textual transcript."""
+-
+-from __future__ import annotations
+-
+-import re
+-from contextlib import suppress
+-from dataclasses import dataclass
+-from pathlib import Path
+-from urllib.parse import unquote, urlsplit
+-
+-from textual.widgets import Markdown, Static
+-
+-
+-@dataclass(frozen=True)
+-class ResolvedTranscriptLink:
+-    """A URL approved for handoff to the terminal's system opener."""
+-
+-    url: str
+-    repository_path: Path | None = None
+-
+-
+-_LINE_SUFFIX = re.compile(r":\d+(?::\d+)?$")
+-
+-
+-def resolve_transcript_link(repository: Path, href: str) -> ResolvedTranscriptLink | None:
+-    """Allow complete HTTP(S) URLs and existing files contained by the repository."""
+-
+-    if any(ord(character) < 32 or ord(character) == 127 for character in href):
+-        return None
+-    try:
+-        parsed = urlsplit(href)
+-    except ValueError:
+-        return None
+-    if (
+-        parsed.scheme.lower() in {"http", "https"}
+-        and parsed.hostname is not None
+-        and parsed.username is None
+-        and parsed.password is None
+-    ):
+-        return ResolvedTranscriptLink(href)
+-
+-    reference = _LINE_SUFFIX.sub("", href)
+-    try:
+-        parsed = urlsplit(reference)
+-    except ValueError:
+-        return None
+-    if parsed.query:
+-        return None
+-    if parsed.scheme == "file":
+-        if parsed.hostname not in {None, "", "localhost"}:
+-            return None
+-        raw_path = unquote(parsed.path)
+-    elif not parsed.scheme:
+-        raw_path = unquote(parsed.path)
+-    else:
+-        return None
+-    if not raw_path:
+-        return None
+-    candidate = Path(raw_path)
+-    if not candidate.is_absolute():
+-        candidate = repository / candidate
+-    try:
+-        repository = repository.resolve(strict=True)
+-        candidate = candidate.resolve(strict=True)
+-        candidate.relative_to(repository)
+-    except (OSError, RuntimeError, ValueError):
+-        return None
+-    if not candidate.is_file():
+-        return None
+-    return ResolvedTranscriptLink(candidate.as_uri(), candidate)
+-
+-
+-class TranscriptMarkdown(Markdown):
+-    """Assistant Markdown with bounded web and repository-file links."""
+-
+-    def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
+-        event.stop()
+-        resolved = resolve_transcript_link(self.app.repository, event.href)
+-        if resolved is None:
+-            with suppress(Exception):
+-                self.app.query_one("#status", Static).update(
+-                    "Link blocked · open only HTTP(S) URLs or files in this repository"
+-                )
+-            return
+-        self.app.open_url(resolved.url)
+-        if resolved.repository_path is not None:
+-            with suppress(Exception):
+-                relative_file = resolved.repository_path.relative_to(
+-                    self.app.repository.resolve()
+-                )
+-                self.app.query_one("#status", Static).update(f"Opening {relative_file}")
++"""Compatibility exports for :mod:`looplane.terminal.links`."""
++
++from looplane.terminal.links import _LINE_SUFFIX as _LINE_SUFFIX
++from looplane.terminal.links import Markdown as Markdown
++from looplane.terminal.links import Path as Path
++from looplane.terminal.links import ResolvedTranscriptLink as ResolvedTranscriptLink
++from looplane.terminal.links import Static as Static
++from looplane.terminal.links import TranscriptMarkdown as TranscriptMarkdown
++from looplane.terminal.links import dataclass as dataclass
++from looplane.terminal.links import re as re
++from looplane.terminal.links import resolve_transcript_link as resolve_transcript_link
++from looplane.terminal.links import suppress as suppress
++from looplane.terminal.links import unquote as unquote
++from looplane.terminal.links import urlsplit as urlsplit
+diff --git a/tests/test_modularization_boundaries.py b/tests/test_modularization_boundaries.py
+index 5d0c801..bc2eb12 100644
+--- a/tests/test_modularization_boundaries.py
++++ b/tests/test_modularization_boundaries.py
+@@ -6,7 +6,10 @@ import ast
+ from pathlib import Path
+ 
+ ROOT = Path(__file__).resolve().parents[1] / "src" / "looplane"
+-FEATURES = ("looplane.terminal", "looplane.runtimes", "looplane.tooling")
++FEATURES = (
++    "looplane.terminal", "looplane.runtimes", "looplane.tooling", "looplane.commands",
++    "looplane.agent", "looplane.execution", "looplane.sandbox", "looplane.workspace",
++)
+ FACADES = {
+     "looplane.tui",
+     "looplane.cli",
+@@ -70,7 +73,9 @@ def test_feature_packages_do_not_import_facades_or_higher_layers() -> None:
+     for module, dependencies in _graph().items():
+         if not _within(module, FEATURES):
+             continue
+-        forbidden = set(FACADES) | {"looplane.commands"}
++        forbidden = set(FACADES)
++        if not _within(module, ("looplane.commands",)):
++            forbidden.add("looplane.commands")
+         if module.startswith("looplane.runtimes."):
+             forbidden.update({"looplane.terminal", "looplane.conversation_controller"})
+         if module.startswith("looplane.tooling."):
+@@ -83,6 +88,70 @@ def test_feature_packages_do_not_import_facades_or_higher_layers() -> None:
+     assert not violations, "\n".join(sorted(violations))
+ 
+ 
++def test_domain_and_policy_do_not_depend_on_product_or_vendor_layers() -> None:
++    graph = _graph()
++    owners = (
++        "looplane.contracts", "looplane.events", "looplane.approvals", "looplane.policy",
++        "looplane.runtime_semantics", "looplane.conversation_runtime", "looplane.external_agents",
++    )
++    forbidden = ("looplane.commands", "looplane.terminal", "looplane.runtimes")
++    violations = [
++        f"{owner} -> {dependency}"
++        for owner in owners
++        for dependency in graph.get(owner, ())
++        if _within(dependency, forbidden)
++    ]
++    assert not violations, "\n".join(sorted(violations))
++
++
++def test_canonical_events_have_one_definition_owner() -> None:
++    from looplane import conversation_runtime
++
++    names = {
++        name for name, value in vars(conversation_runtime).items()
++        if isinstance(value, type) and value.__module__ == conversation_runtime.__name__
++        and name.endswith("Event")
++    }
++    expected = {name: "conversation_runtime.py" for name in names}
++    expected.update(
++        {"ConversationRuntimeEvent": "conversation_runtime.py", "RunEvent": "events.py"}
++    )
++    found: dict[str, list[str]] = {name: [] for name in expected}
++    for path in ROOT.rglob("*.py"):
++        for node in ast.parse(path.read_text()).body:
++            declared = []
++            if isinstance(node, ast.ClassDef):
++                declared = [node.name]
++            elif isinstance(node, ast.Assign):
++                declared = [target.id for target in node.targets if isinstance(target, ast.Name)]
++            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
++                declared = [node.target.id]
++            for name in declared:
++                if name in found:
++                    found[name].append(path.relative_to(ROOT).as_posix())
++    assert found == {name: [owner] for name, owner in expected.items()}
++
++
++def test_production_import_graph_adds_no_cycles_to_baseline() -> None:
++    graph = _graph()
++    reachable = {}
++    for start in graph:
++        pending = list(graph[start])
++        seen = set()
++        while pending:
++            current = pending.pop()
++            if current not in seen:
++                seen.add(current)
++                pending.extend(graph.get(current, ()))
++        reachable[start] = seen
++    cycles = {
++        frozenset(other for other in reachable[start] if start in reachable.get(other, ()))
++        for start in graph if start in reachable[start]
++    }
++    # Existing literal importlib cycle; Slice 2.5 must remove this allowance.
++    assert cycles <= {frozenset({"looplane.loop", "looplane.subagents"})}, cycles
++
++
+ def test_extracted_packages_do_not_participate_in_import_cycles() -> None:
+     graph = _graph()
+     for start in graph:
+diff --git a/tests/test_tui_clipboard.py b/tests/test_tui_clipboard.py
+deleted file mode 100644
+index e132ae7..0000000
+--- a/tests/test_tui_clipboard.py
++++ /dev/null
+@@ -1,44 +0,0 @@
+-from __future__ import annotations
+-
+-import subprocess
+-
+-from looplane.tui_clipboard import copy_with_native_command
+-
+-
+-def test_copy_with_native_command_uses_pbcopy_on_macos(monkeypatch) -> None:
+-    calls: list[tuple[tuple[str, ...], str]] = []
+-
+-    monkeypatch.setattr("looplane.tui_clipboard.shutil.which", lambda command: command)
+-
+-    def run(command, *, input, **_kwargs):
+-        calls.append((command, input))
+-        return subprocess.CompletedProcess(command, 0)
+-
+-    monkeypatch.setattr("looplane.tui_clipboard.subprocess.run", run)
+-
+-    assert copy_with_native_command("selected text", platform="darwin") is True
+-    assert calls == [(('pbcopy',), "selected text")]
+-
+-
+-def test_copy_with_native_command_falls_back_when_no_tool_exists(monkeypatch) -> None:
+-    monkeypatch.setattr("looplane.tui_clipboard.shutil.which", lambda _command: None)
+-
+-    assert copy_with_native_command("selected text", platform="linux", environ={}) is False
+-
+-
+-def test_copy_with_native_command_skips_remote_host_clipboard(monkeypatch) -> None:
+-    commands: list[str] = []
+-    monkeypatch.setattr(
+-        "looplane.tui_clipboard.shutil.which",
+-        lambda command: commands.append(command) or command,
+-    )
+-
+-    assert (
+-        copy_with_native_command(
+-            "selected text",
+-            platform="linux",
+-            environ={"SSH_CONNECTION": "client server"},
+-        )
+-        is False
+-    )
+-    assert commands == []
+diff --git a/tests/test_tui_links.py b/tests/test_tui_links.py
+deleted file mode 100644
+index c8041f5..0000000
+--- a/tests/test_tui_links.py
++++ /dev/null
+@@ -1,56 +0,0 @@
+-from pathlib import Path
+-
+-from looplane.tui_links import resolve_transcript_link
+-
+-
+-def test_resolve_transcript_link_allows_complete_http_urls(tmp_path: Path) -> None:
+-    resolved = resolve_transcript_link(tmp_path, "https://example.com/docs?q=looplane")
+-
+-    assert resolved is not None
+-    assert resolved.url == "https://example.com/docs?q=looplane"
+-    assert resolved.repository_path is None
+-
+-
+-def test_resolve_transcript_link_allows_repository_files_with_line_suffix(
+-    tmp_path: Path,
+-) -> None:
+-    source = tmp_path / "src" / "example.py"
+-    source.parent.mkdir()
+-    source.write_text("print('ok')\n")
+-
+-    resolved = resolve_transcript_link(tmp_path, "src/example.py:12:3")
+-
+-    assert resolved is not None
+-    assert resolved.url == source.as_uri()
+-    assert resolved.repository_path == source
+-
+-
+-def test_resolve_transcript_link_allows_local_file_urls_inside_repository(
+-    tmp_path: Path,
+-) -> None:
+-    readme = tmp_path / "README.md"
+-    readme.write_text("# Example\n")
+-
+-    resolved = resolve_transcript_link(tmp_path, f"{readme.as_uri()}:7")
+-
+-    assert resolved is not None
+-    assert resolved.url == readme.as_uri()
+-
+-
+-def test_resolve_transcript_link_rejects_unsafe_or_external_targets(tmp_path: Path) -> None:
+-    outside = tmp_path.parent / f"{tmp_path.name}-outside-looplane-link.txt"
+-    outside.write_text("outside\n")
+-    try:
+-        rejected = (
+-            "javascript:alert(1)",
+-            "data:text/plain,hello",
+-            "https://user:password@example.com/private",
+-            "https://example.com/line\nbreak",
+-            "file://server/share/example.py",
+-            str(outside),
+-            "missing.py:12",
+-        )
+-
+-        assert all(resolve_transcript_link(tmp_path, href) is None for href in rejected)
+-    finally:
+-        outside.unlink()

@@ -1,0 +1,6 @@
+Building source distribution...
+Building wheel...
+Successfully built .research/authorized-final-gate/build-final/looplane-0.1.0.tar.gz
+Successfully built .research/authorized-final-gate/build-final/looplane-0.1.0-py3-none-any.whl
+looplane-0.1.0.tar.gz: 638074 bytes; 283 members; all 162 production modules present
+looplane-0.1.0-py3-none-any.whl: 442649 bytes; 166 members; all 162 production modules present

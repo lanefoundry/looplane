@@ -1,0 +1,134 @@
+{
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.11.14 (main, Jan 14 2026, 21:09:41) [Clang 21.1.4 ]",
+  "cases": [
+    {
+      "profile": "original",
+      "target": "sh",
+      "pid": 10839,
+      "argv": [
+        "/usr/bin/sandbox-exec",
+        "-f",
+        "/Users/xiaoxu/Projects/looplane/.research/macos-sandbox-evidence/original.sb",
+        "/bin/sh",
+        "-c",
+        "printf ready"
+      ],
+      "returncode": -6,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "profile": "original",
+      "target": "python",
+      "pid": 10842,
+      "argv": [
+        "/usr/bin/sandbox-exec",
+        "-f",
+        "/Users/xiaoxu/Projects/looplane/.research/macos-sandbox-evidence/original.sb",
+        "/Users/xiaoxu/Projects/looplane/.venv/bin/python3",
+        "-c",
+        "print(\"ready\")"
+      ],
+      "returncode": -6,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "profile": "root_metadata",
+      "target": "sh",
+      "pid": 10843,
+      "argv": [
+        "/usr/bin/sandbox-exec",
+        "-f",
+        "/Users/xiaoxu/Projects/looplane/.research/macos-sandbox-evidence/root_metadata.sb",
+        "/bin/sh",
+        "-c",
+        "printf ready"
+      ],
+      "returncode": -6,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "profile": "root_metadata",
+      "target": "python",
+      "pid": 10845,
+      "argv": [
+        "/usr/bin/sandbox-exec",
+        "-f",
+        "/Users/xiaoxu/Projects/looplane/.research/macos-sandbox-evidence/root_metadata.sb",
+        "/Users/xiaoxu/Projects/looplane/.venv/bin/python3",
+        "-c",
+        "print(\"ready\")"
+      ],
+      "returncode": -6,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "profile": "root_xattr",
+      "target": "sh",
+      "pid": 10846,
+      "argv": [
+        "/usr/bin/sandbox-exec",
+        "-f",
+        "/Users/xiaoxu/Projects/looplane/.research/macos-sandbox-evidence/root_xattr.sb",
+        "/bin/sh",
+        "-c",
+        "printf ready"
+      ],
+      "returncode": -6,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "profile": "root_xattr",
+      "target": "python",
+      "pid": 10849,
+      "argv": [
+        "/usr/bin/sandbox-exec",
+        "-f",
+        "/Users/xiaoxu/Projects/looplane/.research/macos-sandbox-evidence/root_xattr.sb",
+        "/Users/xiaoxu/Projects/looplane/.venv/bin/python3",
+        "-c",
+        "print(\"ready\")"
+      ],
+      "returncode": -6,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "profile": "root_data",
+      "target": "sh",
+      "pid": 10851,
+      "argv": [
+        "/usr/bin/sandbox-exec",
+        "-f",
+        "/Users/xiaoxu/Projects/looplane/.research/macos-sandbox-evidence/root_data.sb",
+        "/bin/sh",
+        "-c",
+        "printf ready"
+      ],
+      "returncode": 0,
+      "stdout": "ready",
+      "stderr": ""
+    },
+    {
+      "profile": "root_data",
+      "target": "python",
+      "pid": 10863,
+      "argv": [
+        "/usr/bin/sandbox-exec",
+        "-f",
+        "/Users/xiaoxu/Projects/looplane/.research/macos-sandbox-evidence/root_data.sb",
+        "/Users/xiaoxu/Projects/looplane/.venv/bin/python3",
+        "-c",
+        "print(\"ready\")"
+      ],
+      "returncode": 0,
+      "stdout": "ready\n",
+      "stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,675 @@
+E501 Line too long (120 > 100)
+   --> src/looplane/cli.py:188:101
+    |
+186 |     from looplane.commands import plugins
+187 |
+188 |     return plugins.plugin_install(manifest=manifest, repo=repo, name=name, overwrite=overwrite, json_output=json_output)
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (120 > 100)
+   --> src/looplane/cli.py:236:101
+    |
+234 |     from looplane.commands import onboarding
+235 |
+236 |     return onboarding._interactive_setup(current=current, locked_provider=locked_provider, services=_command_services())
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (572 > 100)
+   --> src/looplane/cli.py:366:101
+    |
+364 | …
+365 | …
+366 | …print_mode, plain=plain, no_alt_screen=no_alt_scr…andbox_checks, services=_command_services())
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^…^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (287 > 100)
+   --> src/looplane/cli.py:381:101
+    |
+379 | …
+380 | …
+381 | …lling=tool_calling, allow_custom_provider_endpoint=allow_custom_provider_endpoint, experimental_subscription=experimental_subscription, dialect_flag=dialect_flag, services=_command_services())
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (350 > 100)
+   --> src/looplane/cli.py:432:101
+    |
+430 | …
+431 | …
+432 | …repository, check=check, allowed_path=allowed_path, run_root=run_root, task_id=task_id, timeout_seconds=timeout_seconds, experimental_subscription=experimental_subscription, allow_external_modify=allow_external_modify, unsafe_local_exec=unsafe_local_exec)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (348 > 100)
+   --> src/looplane/cli.py:483:101
+    |
+481 | …
+482 | …
+483 | …pository, check=check, allowed_path=allowed_path, run_root=run_root, task_id=task_id, timeout_seconds=timeout_seconds, experimental_subscription=experimental_subscription, allow_external_modify=allow_external_modify, unsafe_local_exec=unsafe_local_exec)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (308 > 100)
+   --> src/looplane/cli.py:521:101
+    |
+519 | …
+520 | …
+521 | …pository, check=check, allowed_path=allowed_path, model=model, run_root=run_root, task_id=task_id, timeout_seconds=timeout_seconds, allow_external_modify=allow_external_modify, unsafe_local_exec=unsafe_local_exec)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (302 > 100)
+   --> src/looplane/cli.py:559:101
+    |
+557 | …
+558 | …
+559 | …ry, check=check, allowed_path=allowed_path, model=model, run_root=run_root, task_id=task_id, timeout_seconds=timeout_seconds, allow_external_modify=allow_external_modify, unsafe_local_exec=unsafe_local_exec)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (303 > 100)
+   --> src/looplane/cli.py:597:101
+    |
+595 | …
+596 | …
+597 | …ory, check=check, allowed_path=allowed_path, model=model, run_root=run_root, task_id=task_id, timeout_seconds=timeout_seconds, allow_external_modify=allow_external_modify, unsafe_local_exec=unsafe_local_exec)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (105 > 100)
+   --> src/looplane/cli.py:622:101
+    |
+620 |     from looplane.commands import auth
+621 |
+622 |     return auth.login_codex(timeout_seconds=timeout_seconds, manual=manual, services=_command_services())
+    |                                                                                                     ^^^^^
+
+E501 Line too long (337 > 100)
+   --> src/looplane/cli.py:723:101
+    |
+721 | …
+722 | …
+723 | …--verify this only reads local state (env vars / the credential store) and\nnever touches the network, so it stays fast. --verify calls each already-configured\nprovider's API once, the same connection check `auth set-key` runs after saving."
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+724 | …
+725 | …
+    |
+
+E501 Line too long (207 > 100)
+   --> src/looplane/cli.py:770:101
+    |
+768 | …
+769 | …
+770 | …cloudflare_dir=cloudflare_dir, wrangler_env=wrangler_env, dry_run=dry_run, allow_custom_endpoint=allow_custom_endpoint)
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (225 > 100)
+   --> src/looplane/cli.py:790:101
+    |
+788 | …
+789 | …
+790 | …bscription=experimental_subscription, allow_custom_provider_endpoint=allow_custom_provider_endpoint, services=_command_services())
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (213 > 100)
+   --> src/looplane/cli.py:849:101
+    |
+847 | …
+848 | …
+849 | …ay_json=replay_json, fork_from_event=fork_from_event, analyze_subagents=analyze_subagents, sequence=sequence, query=query)
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (103 > 100)
+   --> src/looplane/cli.py:871:101
+    |
+869 |     from looplane.commands import policy
+870 |
+871 |     return policy.policy_inspect(repository=repository, org_policy=org_policy, json_output=json_output)
+    |                                                                                                     ^^^
+
+E501 Line too long (164 > 100)
+   --> src/looplane/cli.py:896:101
+    |
+894 | …
+895 | …
+896 | …i_url=api_url, clear_api_url=clear_api_url, interactive=interactive, services=_command_services())
+    |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (274 > 100)
+   --> src/looplane/cli.py:925:101
+    |
+923 | …
+924 | …
+925 | …=port, bearer_token=bearer_token, experimental_subscription=experimental_subscription, allow_custom_provider_endpoint=allow_custom_provider_endpoint, services=_command_services())
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (128 > 100)
+   --> src/looplane/cli.py:947:101
+    |
+945 |     from looplane.commands import serve
+946 |
+947 |     return serve.serve_conversation_server(repository=repository, runtime=runtime, model=model, host=host, port=port, path=path)
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (527 > 100)
+    --> src/looplane/cli.py:1033:101
+     |
+1031 | …
+1032 | …
+1033 | … check=check, provider=provider, allowed_path=all…alect=dialect, services=_command_services())
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^…^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (2162 > 100)
+    --> src/looplane/cli.py:1051:101
+     |
+1051 | …nds.common', '_show_result': 'looplane.commands.c…vider_catalog': 'looplane.provider_catalog'}
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^…^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+1052 | …
+1053 | …
+     |
+
+E501 Line too long (104 > 100)
+  --> src/looplane/commands/auth.py:21:101
+   |
+21 | def login_codex(timeout_seconds: float=300.0, manual: bool=False, *, services: CommandServices) -> None:
+   |                                                                                                     ^^^^
+22 |     """Create this application's own experimental ChatGPT/Codex OAuth grant."""
+   |
+
+E501 Line too long (297 > 100)
+  --> src/looplane/commands/bootstrap.py:68:101
+   |
+68 | …one, str | None], *, adapter: runtime_registry.RuntimeAdapter, repository: Path, model: str | None, backend_limiter: BackendTurnLimiter | None=None, services: CommandServices) -> ConversationController:
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+69 | …
+   |
+
+E501 Line too long (239 > 100)
+   --> src/looplane/commands/bootstrap.py:171:101
+    |
+171 | …ow_custom_provider_endpoint: bool, experimental_subscription: bool=False, dialect_flag: str='auto', services: CommandServices) -> ModelProvider:
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+172 | …
+173 | …
+    |
+
+E501 Line too long (161 > 100)
+   --> src/looplane/commands/bootstrap.py:308:101
+    |
+308 | …*, approval_policy: TTYApprovalPolicy, event_sink: ConsoleEventSink, services: CommandServices):
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+309 | …
+310 | …
+    |
+
+E501 Line too long (113 > 100)
+   --> src/looplane/commands/bootstrap.py:342:101
+    |
+342 | def build_conversation_session(adapter: runtime_registry.RuntimeAdapter, *, repository: Path, model: str | None):
+    |                                                                                                     ^^^^^^^^^^^^^
+343 |     assert adapter.native_session is not None
+344 |     constructor = runtime_registry._resolve_class(adapter.native_session)
+    |
+
+E501 Line too long (111 > 100)
+   --> src/looplane/commands/bootstrap.py:366:101
+    |
+364 |         if not self.fallback_cache:
+365 |             for spec in self.fallback_specs:
+366 |                 parsed_candidates = _settings._resolve_model_role_alias(spec) if spec.startswith('@') else None
+    |                                                                                                     ^^^^^^^^^^^
+367 |                 if parsed_candidates is None:
+368 |                     parsed = _settings._parse_provider_model_spec(spec)
+    |
+
+E501 Line too long (119 > 100)
+   --> src/looplane/commands/bootstrap.py:370:101
+    |
+368 |                     parsed = _settings._parse_provider_model_spec(spec)
+369 |                     if parsed is None:
+370 |                         raise typer.BadParameter(f'--fallback-model requires provider/model or @role format: {spec!r}')
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^
+371 |                     parsed_candidates = (parsed,)
+372 |                 if not parsed_candidates:
+    |
+
+E501 Line too long (104 > 100)
+   --> src/looplane/commands/bootstrap.py:373:101
+    |
+371 | …         parsed_candidates = (parsed,)
+372 | …     if not parsed_candidates:
+373 | …         raise typer.BadParameter(f'--fallback-model role alias has no candidates: {spec!r}')
+    |                                                                                           ^^^^
+374 | …     for fb_provider, fb_model in parsed_candidates:
+375 | …         self.fallback_cache.append(self.services.model_factory(provider=fb_provider, model=fb_model, base_url=None, tool_calling=Tr…
+    |
+
+E501 Line too long (273 > 100)
+   --> src/looplane/commands/bootstrap.py:375:101
+    |
+373 | …spec!r}')
+374 | …
+375 | …, model=fb_model, base_url=None, tool_calling=True, allow_custom_provider_endpoint=self.allow_custom_provider_endpoint, experimental_subscription=self.experimental_subscription))
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+376 | …
+    |
+
+E501 Line too long (116 > 100)
+   --> src/looplane/commands/bootstrap.py:386:101
+    |
+384 | …     candidates = _settings._resolve_model_role_alias('@reviewer', provider=selected_provider)
+385 | …     if not candidates:
+386 | …         raise typer.BadParameter(f'--auto-review has no @reviewer candidate for provider {selected_provider!r}')
+    |                                                                                                   ^^^^^^^^^^^^^^^^
+387 | …     review_provider, review_model = candidates[0]
+388 | …     self.review_model_cache.append(self.services.model_factory(provider=review_provider, model=review_model, base_url=None, tool_ca…
+    |
+
+E501 Line too long (274 > 100)
+   --> src/looplane/commands/bootstrap.py:388:101
+    |
+386 | …elected_provider!r}')
+387 | …
+388 | …del=review_model, base_url=None, tool_calling=False, allow_custom_provider_endpoint=self.allow_custom_provider_endpoint, experimental_subscription=self.experimental_subscription))
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+389 | …
+    |
+
+E501 Line too long (162 > 100)
+   --> src/looplane/commands/bootstrap.py:413:101
+    |
+411 | …ctory=_new_turn_limiter)
+412 | …
+413 | …: ApprovalPolicy | None, event_sink: EventSink | None) -> tuple[RunHandle, AsyncResource | None]:
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+414 | …me_approval
+415 | …
+    |
+
+E501 Line too long (105 > 100)
+   --> src/looplane/commands/bootstrap.py:422:101
+    |
+420 | …         raise ValueError(f'Unknown runtime: {request.runtime}')
+421 | …     if adapter.native_session is not None:
+422 | …         identity = (request.runtime, request.repository.resolve(), request.model, request.context_id)
+    |                                                                                                   ^^^^^
+423 | …         controller = _acquire_native_controller(self.native_controllers, identity, adapter=adapter, repository=request.repository, …
+424 | …         return (controller.turn(request.instruction, event_sink=event_sink, approval_callback=lambda event: decide_runtime_approval…
+    |
+
+E501 Line too long (224 > 100)
+   --> src/looplane/commands/bootstrap.py:423:101
+    |
+421 | …
+422 | …ontext_id)
+423 | …adapter, repository=request.repository, model=request.model, backend_limiter=self.native_backend_limiter, services=self.services)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+424 | …ck=lambda event: decide_runtime_approval(approval_policy, event)), controller)
+425 | …
+    |
+
+E501 Line too long (173 > 100)
+   --> src/looplane/commands/bootstrap.py:424:101
+    |
+422 | …request.model, request.context_id)
+423 | …lers, identity, adapter=adapter, repository=request.repository, model=request.model, backend_limiter=self.native_backend_limiter, se…
+424 | …nt_sink, approval_callback=lambda event: decide_runtime_approval(approval_policy, event)), controller)
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+425 | …
+426 | …e runtime')
+    |
+
+E501 Line too long (266 > 100)
+   --> src/looplane/commands/bootstrap.py:427:101
+    |
+425 | …
+426 | …
+427 | …owed_paths=('**',), verification=_common._commands(self.check), limits=Limits(wall_time_seconds=300.0 if adapter.kind is runtime_registry.RuntimeKind.EXTERNAL else 900.0))
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+428 | …e:
+429 | …nds=300.0)
+    |
+
+E501 Line too long (105 > 100)
+   --> src/looplane/commands/bootstrap.py:429:101
+    |
+427 | …     task = TaskContract(repository=request.repository, instruction=request.instruction, allowed_paths=('**',), verification=_common…
+428 | …     if adapter.kind is runtime_registry.RuntimeKind.EXTERNAL and adapter.backend is not None:
+429 | …         backend = build_external_backend(request.runtime, model=request.model, timeout_seconds=300.0)
+    |                                                                                                   ^^^^^
+430 | …         return (ExternalCodingRunner(task, backend, self.run_root, allow_external_modify=False, allow_unsafe_local_exec=self.unsafe…
+431 | …     if request.provider is None or request.model is None:
+    |
+
+E501 Line too long (210 > 100)
+   --> src/looplane/commands/bootstrap.py:430:101
+    |
+428 | …ot None:
+429 | …t_seconds=300.0)
+430 | …ify=False, allow_unsafe_local_exec=self.unsafe_local_exec, approval_policy=approval_policy, event_sink=event_sink), None)
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+431 | …
+432 | …
+    |
+
+E501 Line too long (271 > 100)
+   --> src/looplane/commands/bootstrap.py:435:101
+    |
+433 | …
+434 | …
+435 | …odel, base_url=request.api_url, tool_calling=True, allow_custom_provider_endpoint=self.allow_custom_provider_endpoint, experimental_subscription=self.experimental_subscription)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+436 | …
+437 | …
+    |
+
+E501 Line too long (840 > 100)
+   --> src/looplane/commands/bootstrap.py:444:101
+    |
+442 | …
+443 | …
+444 | …_id=run_id_for_call, continuation=continuation, a…ction.build_review_model(request.provider)))
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^…^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+445 | …
+446 | …
+    |
+
+E501 Line too long (213 > 100)
+   --> src/looplane/commands/bootstrap.py:454:101
+    |
+452 | …
+453 | …
+454 | …ter=adapter, repository=self.repository, model=model, backend_limiter=self.native_backend_limiter, services=self.services)
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+455 | …
+456 | …
+    |
+
+E501 Line too long (639 > 100)
+  --> src/looplane/commands/chat.py:34:101
+   |
+34 | …rint_mode: bool=False, plain: bool=False, no_alt_s…=True, *, services: CommandServices) -> None:
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^…^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+35 | …
+   |
+
+E501 Line too long (123 > 100)
+  --> src/looplane/commands/chat.py:60:101
+   |
+58 |         dangerous=dangerous,
+59 |      services=services)
+60 |     _policy._confirm_direct_edit_with_dangerous_mode(edit_real_repo=edit_real_repo, dangerous=dangerous, services=services)
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^
+61 |
+62 |     def guarded(policy):
+   |
+
+SIM105 Use `contextlib.suppress(BaseException)` instead of `try`-`except`-`pass`
+   --> src/looplane/commands/chat.py:152:13
+    |
+150 |           async def _warmup_native_controller() -> None:
+151 |               # The root adapts the temporary app context API to a typed callback.
+152 | /             try:
+153 | |                 await runtime_factory.warmup(services.runtime.terminal_context_id(tui_app))
+154 | |             except BaseException:
+155 | |                 pass
+    | |____________________^
+156 |
+157 |           runtimes = runtime_registry.runtime_options()
+    |
+help: Replace `try`-`except`-`pass` with `with contextlib.suppress(BaseException): ...`
+
+E501 Line too long (580 > 100)
+   --> src/looplane/commands/chat.py:281:101
+    |
+281 | …del: str | None=None, check: list[str] | None=Non…uto', *, services: CommandServices) -> None:
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^…^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+282 | …
+    |
+
+E501 Line too long (396 > 100)
+  --> src/looplane/commands/external.py:21:101
+   |
+21 | …Path | None=None, check: list[str] | None=None, al…alse, unsafe_local_exec: bool=False) -> None:
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^…^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+22 | …
+   |
+
+E501 Line too long (392 > 100)
+  --> src/looplane/commands/external.py:71:101
+   |
+71 | …th | None=None, check: list[str] | None=None, allo…alse, unsafe_local_exec: bool=False) -> None:
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^…^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+72 | …
+   |
+
+E501 Line too long (328 > 100)
+   --> src/looplane/commands/external.py:120:101
+    |
+120 | …e, check: list[str] | None, allowed_path: list[str] | None, run_root: Path, task_id: str, timeout_seconds: float, allow_external_modify: bool, unsafe_local_exec: bool, backend: object, require_model: bool, model: str | None) -> None:
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+121 | …
+    |
+
+E501 Line too long (376 > 100)
+   --> src/looplane/commands/external.py:166:101
+    |
+166 | …th | None=None, check: list[str] | None=None, all…lse, unsafe_local_exec: bool=False) -> None:
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^…^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+167 | …."""
+    |
+
+E501 Line too long (128 > 100)
+   --> src/looplane/commands/external.py:170:101
+    |
+170 |     backend = _bootstrap.build_external_backend('opencode', executable="opencode", model=model, timeout_seconds=timeout_seconds)
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+171 |     _run_external_coding(
+172 |         require_model=True,
+    |
+
+E501 Line too long (364 > 100)
+   --> src/looplane/commands/external.py:188:101
+    |
+188 | …one=None, check: list[str] | None=None, allowed_path: list[str] | None=None, model: str | None=None, run_root: Path=_paths.DEFAULT_RUN_ROOT, task_id: str='pi-task', timeout_seconds: float=300.0, allow_external_modify: bool=False, unsafe_local_exec: bool=False) -> None:
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+189 | …
+190 | …
+    |
+
+E501 Line too long (116 > 100)
+   --> src/looplane/commands/external.py:193:101
+    |
+193 |     backend = _bootstrap.build_external_backend('pi', executable="pi", model=model, timeout_seconds=timeout_seconds)
+    |                                                                                                     ^^^^^^^^^^^^^^^^
+194 |     _run_external_coding(
+195 |         require_model=True,
+    |
+
+E501 Line too long (366 > 100)
+   --> src/looplane/commands/external.py:211:101
+    |
+211 | …None=None, check: list[str] | None=None, allowed_path: list[str] | None=None, model: str | None=None, run_root: Path=_paths.DEFAULT_RUN_ROOT, task_id: str='omp-task', timeout_seconds: float=300.0, allow_external_modify: bool=False, unsafe_local_exec: bool=False) -> None:
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+212 | …"
+    |
+
+E501 Line too long (118 > 100)
+   --> src/looplane/commands/external.py:215:101
+    |
+215 |     backend = _bootstrap.build_external_backend('omp', executable="omp", model=model, timeout_seconds=timeout_seconds)
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^
+216 |     _run_external_coding(
+217 |         require_model=True,
+    |
+
+E501 Line too long (132 > 100)
+   --> src/looplane/commands/onboarding.py:148:101
+    |
+148 | def _interactive_setup(*, current: CliConfig | None=None, locked_provider: str | None=None, services: CommandServices) -> CliConfig:
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+149 |     """Run provider-aware setup and persist no credential material."""
+    |
+
+E501 Line too long (181 > 100)
+   --> src/looplane/commands/onboarding.py:191:101
+    |
+191 | …tr | None=None, clear_api_url: bool=False, interactive: bool=False, *, services: CommandServices) -> None:
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+192 | …
+    |
+
+F821 Undefined name `_default_run_root`
+  --> src/looplane/commands/paths.py:14:20
+   |
+14 | DEFAULT_RUN_ROOT = _default_run_root()
+   |                    ^^^^^^^^^^^^^^^^^
+
+E501 Line too long (138 > 100)
+  --> src/looplane/commands/plugins.py:69:101
+   |
+69 | …None, name: str | None=None, overwrite: bool=False, json_output: bool=False) -> None:
+   |                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+70 | … skills into `.looplane/plugins`."""
+   |
+
+E501 Line too long (122 > 100)
+  --> src/looplane/commands/policy.py:69:101
+   |
+69 | def _confirm_direct_edit_with_dangerous_mode(*, edit_real_repo: bool, dangerous: bool, services: CommandServices) -> None:
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^
+70 |     """Require one extra acknowledgment when --edit-real-repo and --dangerous combine.
+   |
+
+E501 Line too long (158 > 100)
+   --> src/looplane/commands/policy.py:104:101
+    |
+104 | …ory: Path, deny_tool: list[str] | None=None, dangerous: bool=False, services: CommandServices):
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+105 | …ard
+106 | …
+    |
+
+E501 Line too long (112 > 100)
+   --> src/looplane/commands/policy.py:137:101
+    |
+137 | def policy_inspect(repository: Path | None=None, org_policy: Path | None=None, json_output: bool=False) -> None:
+    |                                                                                                     ^^^^^^^^^^^^
+138 |     """Show user/org/project policy sources and effective precedence."""
+    |
+
+E501 Line too long (214 > 100)
+  --> src/looplane/commands/serve.py:20:101
+   |
+20 | …r: Path=Path('cloudflare'), wrangler_env: str | None=None, dry_run: bool=False, allow_custom_endpoint: bool=False) -> None:
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+21 | …
+   |
+
+E501 Line too long (286 > 100)
+  --> src/looplane/commands/serve.py:44:101
+   |
+44 | …host: str='127.0.0.1', port: int=8787, bearer_token: str | None=None, experimental_subscription: bool=False, allow_custom_provider_endpoint: bool=False, *, services: CommandServices) -> None:
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 | …
+   |
+
+E501 Line too long (194 > 100)
+  --> src/looplane/commands/serve.py:74:101
+   |
+74 | …li', model: str | None=None, host: str='127.0.0.1', port: int=8788, path: str='/v1/conversation/attach') -> None:
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+75 | …."""
+   |
+
+E501 Line too long (178 > 100)
+  --> src/looplane/commands/session_index.py:31:101
+   |
+30 | …
+31 | … ('\\' not in path.name) and (path.name not in {'.', '..'}) and (not path.is_symlink()) and path.is_dir()
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+32 | …
+33 | …
+   |
+
+E501 Line too long (129 > 100)
+  --> src/looplane/commands/session_index.py:95:101
+   |
+93 |         if self._safe_session_dir(exact):
+94 |             return exact
+95 |         matches = [path for path in self.run_root.iterdir() if self._safe_session_dir(path) and path.name.startswith(identifier)]
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+96 |         if len(matches) == 1:
+97 |             return matches[0]
+   |
+
+E501 Line too long (120 > 100)
+   --> src/looplane/commands/session_index.py:113:101
+    |
+111 |         except (OSError, UnicodeError, ValueError):
+112 |             return []
+113 |         return sorted(events, key=lambda value: value.get('sequence') if isinstance(value.get('sequence'), int) else -1)
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^
+114 |
+115 |     def _event_detail(self, event: dict[str, object]) -> str:
+    |
+
+E501 Line too long (109 > 100)
+   --> src/looplane/commands/session_index.py:118:101
+    |
+116 |         data = event.get('data')
+117 |         data = data if isinstance(data, dict) else {}
+118 |         for key in ('summary', 'terminal_reason', 'reason', 'tool', 'name', 'model', 'provider', 'base_sha'):
+    |                                                                                                     ^^^^^^^^^
+119 |             value = data.get(key)
+120 |             if isinstance(value, str) and value:
+    |
+
+E501 Line too long (219 > 100)
+  --> src/looplane/commands/sessions.py:48:101
+   |
+48 | …one, experimental_subscription: bool=False, allow_custom_provider_endpoint: bool=False, *, services: CommandServices) -> None:
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+49 | …
+   |
+
+E501 Line too long (275 > 100)
+  --> src/looplane/commands/sessions.py:91:101
+   |
+91 | …ay: str | None=None, replay_json: str | None=None, fork_from_event: str | None=None, analyze_subagents: str | None=None, sequence: int | None=None, query: str | None=None) -> None:
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+92 | …
+   |
+
+F821 Undefined name `_conversationindex`
+   --> src/looplane/commands/sessions.py:309:41
+    |
+307 |                     snapshot = None
+308 |                 if snapshot is not None:
+309 |                     search_parts.extend(_conversationindex._event_search_parts(snapshot.events))
+    |                                         ^^^^^^^^^^^^^^^^^^
+310 |             if not index._matches(search_parts):
+311 |                 continue
+    |
+
+E501 Line too long (103 > 100)
+   --> src/looplane/commands/sessions.py:338:101
+    |
+338 | def export_otel(run_id: str, run_root: Path=_paths.DEFAULT_RUN_ROOT, output: Path | None=None) -> None:
+    |                                                                                                     ^^^
+339 |     """Export a run as OpenTelemetry GenAI OTLP-JSON."""
+    |
+
+E501 Line too long (109 > 100)
+  --> src/looplane/commands/settings.py:33:101
+   |
+33 | def _resolve_model_role_alias(spec: str, *, provider: str | None=None) -> tuple[tuple[str, str], ...] | None:
+   |                                                                                                     ^^^^^^^^^
+34 |     """Resolve ``@role`` aliases to static looplane-agent provider/model candidates."""
+   |
+
+E501 Line too long (192 > 100)
+  --> src/looplane/commands/settings.py:55:101
+   |
+55 | …tr | None, allow_model_role_alias: bool=False, services: CommandServices) -> tuple[str, str | None, str | None]:
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+56 | …
+57 | …
+   |
+
+Found 507 errors (433 fixed, 74 remaining).
+No fixes available (1 hidden fix can be enabled with the `--unsafe-fixes` option).

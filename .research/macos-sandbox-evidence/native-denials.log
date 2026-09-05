@@ -1,0 +1,22 @@
+Timestamp               Ty Process[PID:TID]
+2026-09-05 18:44:08.924 E  kernel[0:343cecc] (Sandbox) Sandbox: sh(10839) deny(1) file-read-data /
+2026-09-05 18:44:08.934 E  kernel[0:343ced2] (Sandbox) Sandbox: python3.11(10842) deny(1) file-read-data /
+2026-09-05 18:44:08.944 E  kernel[0:343ceeb] (Sandbox) Sandbox: sh(10843) deny(1) file-read-data /
+2026-09-05 18:44:08.954 E  kernel[0:343cef8] (Sandbox) Sandbox: python3.11(10845) deny(1) file-read-data /
+2026-09-05 18:44:08.966 E  kernel[0:343ceff] (Sandbox) Sandbox: sh(10846) deny(1) file-read-data /
+2026-09-05 18:44:08.976 E  kernel[0:343cf20] (Sandbox) Sandbox: python3.11(10849) deny(1) file-read-data /
+2026-09-05 18:44:08.987 E  kernel[0:343cf2d] (Sandbox) Sandbox: sh(10851) deny(1) file-read-data /dev/dtracehelper
+2026-09-05 18:44:09.008 E  kernel[0:343cf58] (Sandbox) Sandbox: python3.11(10863) deny(1) file-read-data /dev/dtracehelper
+2026-09-05 18:44:09.010 E  kernel[0:342f88c] (Sandbox) Sandbox: python3.11(10863) deny(1) mach-lookup com.apple.system.notification_center
+2026-09-05 18:44:09.010 E  kernel[0:342f88c] (Sandbox) Sandbox: python3.11(10863) deny(1) mach-lookup com.apple.system.opendirectoryd.libinfo
+2026-09-05 18:44:09.010 E  kernel[0:343cf58] (Sandbox) Sandbox: python3.11(10863) deny(1) file-read-data /private/etc/passwd
+2026-09-05 18:44:09.010 E  kernel[0:342209f] (Sandbox) Sandbox: python3.11(10863) deny(1) mach-lookup com.apple.system.opendirectoryd.libinfo
+2026-09-05 18:44:09.010 E  kernel[0:343cf58] (Sandbox) Sandbox: python3.11(10863) deny(1) file-read-data /private/etc/passwd
+2026-09-05 18:44:09.014 E  kernel[0:343cf58] (Sandbox) Sandbox: python3.11(10863) deny(1) file-read-data /private/var/db/timezone/tz/2026c.1.0/zoneinfo/UTC
+2026-09-05 18:44:09.014 E  kernel[0:343cf58] (Sandbox) Sandbox: python3.11(10863) deny(1) file-read-data /private/var/db/timezone/tz/2026c.1.0/zoneinfo/posixrules
+2026-09-05 18:44:09.014 E  kernel[0:343cf58] (Sandbox) Sandbox: python3.11(10863) deny(1) file-read-data /private/var/db/timezone/tz/2026c.1.0/zoneinfo/UTC
+2026-09-05 18:44:09.014 E  kernel[0:343cf58] (Sandbox) Sandbox: python3.11(10863) deny(1) file-read-data /private/var/db/timezone/tz/2026c.1.0/zoneinfo/posixrules
+2026-09-05 18:44:09.018 E  kernel[0:342f88c] (Sandbox) Sandbox: python3.11(10863) deny(1) mach-lookup com.apple.system.opendirectoryd.libinfo
+2026-09-05 18:44:09.018 E  kernel[0:343cf58] (Sandbox) Sandbox: python3.11(10863) deny(1) file-read-data /private/etc/passwd
+2026-09-05 18:44:09.018 E  kernel[0:343cf58] (Sandbox) Sandbox: python3.11(10863) deny(1) file-read-data /Users/xiaoxu/Projects/looplane/src
+2026-09-05 18:44:38.023 Df log[14854:34440eb] [com.apple.log:] log run noninteractively, parent: 14714 (zsh), args: '/usr/bin/log' 'show' '--last' '6m' '--style' 'compact' '--predicate' 'eventMessage CONTAINS "Sandbox: sh(108" OR eventMessage CONTAINS "Sandbox: python3.11(108" OR eventMessage CONTAINS "failed to open

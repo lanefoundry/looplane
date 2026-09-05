@@ -1,0 +1,368 @@
+........................................................................ [  4%]
+........................................................................ [  9%]
+..................................................s..................... [ 14%]
+........................................................................ [ 19%]
+..............................................F......................... [ 24%]
+........................................................................ [ 29%]
+........................................................................ [ 34%]
+........................................................................ [ 38%]
+........................................................................ [ 43%]
+........................................................................ [ 48%]
+........................................................................ [ 53%]
+........................................................................ [ 58%]
+........................................................................ [ 63%]
+........................................................................ [ 68%]
+.....................................................................s.. [ 73%]
+........................................................................ [ 77%]
+........................................................................ [ 82%]
+........................................................................ [ 87%]
+.......................F................................................ [ 92%]
+...................................................F.................... [ 97%]
+.....................................                                    [100%]
+=================================== FAILURES ===================================
+____ test_claude_backend_emits_message_before_exit_and_deduplicates_result _____
+
+fut = <Task cancelled name='Task-1254' coro=<Event.wait() done, defined at /Users/xiaoxu/.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/lib/python3.11/asyncio/locks.py:200>>
+timeout = 1
+
+    async def wait_for(fut, timeout):
+        """Wait for the single Future or coroutine to complete, with timeout.
+    
+        Coroutine will be wrapped in Task.
+    
+        Returns result of the Future or coroutine.  When a timeout occurs,
+        it cancels the task and raises TimeoutError.  To avoid the task
+        cancellation, wrap it in shield().
+    
+        If the wait is cancelled, the task is also cancelled.
+    
+        This function is a coroutine.
+        """
+        loop = events.get_running_loop()
+    
+        if timeout is None:
+            return await fut
+    
+        if timeout <= 0:
+            fut = ensure_future(fut, loop=loop)
+    
+            if fut.done():
+                return fut.result()
+    
+            await _cancel_and_wait(fut, loop=loop)
+            try:
+                return fut.result()
+            except exceptions.CancelledError as exc:
+                raise exceptions.TimeoutError() from exc
+    
+        waiter = loop.create_future()
+        timeout_handle = loop.call_later(timeout, _release_waiter, waiter)
+        cb = functools.partial(_release_waiter, waiter)
+    
+        fut = ensure_future(fut, loop=loop)
+        fut.add_done_callback(cb)
+    
+        try:
+            # wait until the future completes or the timeout
+            try:
+                await waiter
+            except exceptions.CancelledError:
+                if fut.done():
+                    return fut.result()
+                else:
+                    fut.remove_done_callback(cb)
+                    # We must ensure that the task is not running
+                    # after wait_for() returns.
+                    # See https://bugs.python.org/issue32751
+                    await _cancel_and_wait(fut, loop=loop)
+                    raise
+    
+            if fut.done():
+                return fut.result()
+            else:
+                fut.remove_done_callback(cb)
+                # We must ensure that the task is not running
+                # after wait_for() returns.
+                # See https://bugs.python.org/issue32751
+                await _cancel_and_wait(fut, loop=loop)
+                # In case task cancellation failed with some
+                # exception, we should re-raise it
+                # See https://bugs.python.org/issue40607
+                try:
+>                   return fut.result()
+                           ^^^^^^^^^^^^
+
+../../.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/lib/python3.11/asyncio/tasks.py:500: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <asyncio.locks.Event object at 0x10ee79590 [unset]>
+
+    async def wait(self):
+        """Block until the internal flag is true.
+    
+        If the internal flag is true on entry, return True
+        immediately.  Otherwise, block until another coroutine calls
+        set() to set the flag to true, then return True.
+        """
+        if self._value:
+            return True
+    
+        fut = self._get_loop().create_future()
+        self._waiters.append(fut)
+        try:
+>           await fut
+E           asyncio.exceptions.CancelledError
+
+../../.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/lib/python3.11/asyncio/locks.py:213: CancelledError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/private/var/folders/tj/7wzf4jxn13lf9lv36y_54slh0000gn/T/pytest-of-xiaoxu/pytest-827/test_claude_backend_emits_mess0')
+
+    @pytest.mark.asyncio
+    async def test_claude_backend_emits_message_before_exit_and_deduplicates_result(
+        tmp_path: Path,
+    ) -> None:
+        finished = tmp_path / "finished"
+        executable = _fake_claude(
+            tmp_path,
+            f"""
+    import json, pathlib, time
+    print(json.dumps({{"type": "system", "subtype": "init", "session_id": "private"}}), flush=True)
+    print(json.dumps({{"type": "assistant", "message": {{"content": [
+        {{"type": "text", "text": "hello"}}
+    ]}}}}), flush=True)
+    time.sleep(0.4)
+    pathlib.Path({str(finished)!r}).write_text("done")
+    print(json.dumps({{"type": "result", "subtype": "success", "is_error": False,
+                      "result": "hello"}}), flush=True)
+    """,
+        )
+        received: list[ExternalAgentEvent] = []
+        message_received = asyncio.Event()
+    
+        class Sink:
+            async def emit(self, event: ExternalAgentEvent) -> None:
+                received.append(event)
+                if event.event_type == "message":
+                    message_received.set()
+    
+        run_task = asyncio.create_task(
+            ClaudeCodeBackend(executable=executable).run(
+                ExternalAgentTask(task_id="streaming", instruction="say hello"),
+                event_sink=Sink(),
+            )
+        )
+    
+>       await asyncio.wait_for(message_received.wait(), timeout=1)
+
+tests/test_claude_backend.py:57: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+fut = <Task cancelled name='Task-1254' coro=<Event.wait() done, defined at /Users/xiaoxu/.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/lib/python3.11/asyncio/locks.py:200>>
+timeout = 1
+
+    async def wait_for(fut, timeout):
+        """Wait for the single Future or coroutine to complete, with timeout.
+    
+        Coroutine will be wrapped in Task.
+    
+        Returns result of the Future or coroutine.  When a timeout occurs,
+        it cancels the task and raises TimeoutError.  To avoid the task
+        cancellation, wrap it in shield().
+    
+        If the wait is cancelled, the task is also cancelled.
+    
+        This function is a coroutine.
+        """
+        loop = events.get_running_loop()
+    
+        if timeout is None:
+            return await fut
+    
+        if timeout <= 0:
+            fut = ensure_future(fut, loop=loop)
+    
+            if fut.done():
+                return fut.result()
+    
+            await _cancel_and_wait(fut, loop=loop)
+            try:
+                return fut.result()
+            except exceptions.CancelledError as exc:
+                raise exceptions.TimeoutError() from exc
+    
+        waiter = loop.create_future()
+        timeout_handle = loop.call_later(timeout, _release_waiter, waiter)
+        cb = functools.partial(_release_waiter, waiter)
+    
+        fut = ensure_future(fut, loop=loop)
+        fut.add_done_callback(cb)
+    
+        try:
+            # wait until the future completes or the timeout
+            try:
+                await waiter
+            except exceptions.CancelledError:
+                if fut.done():
+                    return fut.result()
+                else:
+                    fut.remove_done_callback(cb)
+                    # We must ensure that the task is not running
+                    # after wait_for() returns.
+                    # See https://bugs.python.org/issue32751
+                    await _cancel_and_wait(fut, loop=loop)
+                    raise
+    
+            if fut.done():
+                return fut.result()
+            else:
+                fut.remove_done_callback(cb)
+                # We must ensure that the task is not running
+                # after wait_for() returns.
+                # See https://bugs.python.org/issue32751
+                await _cancel_and_wait(fut, loop=loop)
+                # In case task cancellation failed with some
+                # exception, we should re-raise it
+                # See https://bugs.python.org/issue40607
+                try:
+                    return fut.result()
+                except exceptions.CancelledError as exc:
+>                   raise exceptions.TimeoutError() from exc
+E                   TimeoutError
+
+../../.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/lib/python3.11/asyncio/tasks.py:502: TimeoutError
+________ test_run_check_approval_displays_exact_command_in_action_title ________
+
+tmp_path = PosixPath('/private/var/folders/tj/7wzf4jxn13lf9lv36y_54slh0000gn/T/pytest-of-xiaoxu/pytest-827/test_run_check_approval_displa0')
+
+    async def test_run_check_approval_displays_exact_command_in_action_title(tmp_path: Path) -> None:
+        decision: dict[str, ApprovalDecision] = {}
+    
+        class ApprovalRunner(FakeRunner):
+            async def run(self) -> RunResult:
+                request = ApprovalRequest(
+                    run_id="approval-run",
+                    action_id="check-call",
+                    effect=ToolEffect.EXECUTE,
+                    reason=ApprovalReason.MODEL_TOOL,
+                    preview="$ git diff --check",
+                    tool_call=ToolCall(name="run_check", arguments={"name": "check-1"}),
+                )
+                decision["value"] = await self.approval_policy.decide(request)
+                return await super().run()
+    
+        def factory(_request, approval_policy, event_sink):
+            return ApprovalRunner(approval_policy=approval_policy, event_sink=event_sink), FakeModel()
+    
+        app = looplaneApp(
+            repository=tmp_path,
+            config=CliConfig(provider="ollama", model="qwen3:4b"),
+            runner_factory=factory,
+            providers=(("ollama", "Ollama local"),),
+            initial_prompt="Inspect the repository.",
+        )
+    
+        async with app.run_test(size=(100, 30)):
+            await _wait_until(lambda: bool(app.query(InlineApprovalBlock)))
+            action = app.query_one(ToolActionBlock)
+            approval = app.query_one(InlineApprovalBlock)
+            assert action.title == "Run git diff --check"
+>           assert str(approval.query_one(".preview", ApprovalPreview).content) == "$ git diff --check"
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_tui.py:1741: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = InlineApprovalBlock(classes='inline-approval'), selector = '.preview'
+expect_type = <class 'looplane.terminal.approvals.ApprovalPreview'>
+
+    def query_one(
+        self,
+        selector: str | type[QueryType],
+        expect_type: type[QueryType] | None = None,
+    ) -> QueryType | Widget:
+        """Get a widget from this widget's children that matches a selector or widget type.
+    
+        Args:
+            selector: A selector or widget type.
+            expect_type: Require the object be of the supplied type, or None for any type.
+    
+        Raises:
+            WrongType: If the wrong type was found.
+            NoMatches: If no node matches the query.
+    
+        Returns:
+            A widget matching the selector.
+        """
+        _rich_traceback_omit = True
+    
+        base_node = self._get_dom_base()
+    
+        if isinstance(selector, str):
+            query_selector = selector
+        else:
+            query_selector = selector.__name__
+    
+        if is_id_selector(query_selector):
+            cache_key = (base_node._nodes._updates, query_selector, expect_type)
+            cached_result = base_node._query_one_cache.get(cache_key)
+            if cached_result is not None:
+                return cached_result
+            if (
+                node := walk_breadth_search_id(
+                    base_node, query_selector[1:], with_root=False
+                )
+            ) is not None:
+                if expect_type is not None and not isinstance(node, expect_type):
+                    raise WrongType(
+                        f"Node matching {query_selector!r} is the wrong type; expected type {expect_type.__name__!r}, found {node}"
+                    )
+                base_node._query_one_cache[cache_key] = node
+                return node
+            raise NoMatches(f"No nodes match {query_selector!r} on {base_node!r}")
+    
+        try:
+            selector_set = parse_selectors(query_selector)
+        except TokenError:
+            raise InvalidQueryFormat(
+                f"Unable to parse {query_selector!r} as a query; check for syntax errors"
+            ) from None
+    
+        if all(selectors.is_simple for selectors in selector_set):
+            cache_key = (base_node._nodes._updates, query_selector, expect_type)
+            cached_result = base_node._query_one_cache.get(cache_key)
+            if cached_result is not None:
+                return cached_result
+        else:
+            cache_key = None
+    
+        for node in walk_breadth_first(base_node, with_root=False):
+            if not match(selector_set, node):
+                continue
+            if expect_type is not None and not isinstance(node, expect_type):
+                raise WrongType(
+                    f"Node matching {query_selector!r} is the wrong type; expected type {expect_type.__name__!r}, found {node}"
+                )
+            if cache_key is not None:
+                base_node._query_one_cache[cache_key] = node
+            return node
+    
+>       raise NoMatches(f"No nodes match {query_selector!r} on {base_node!r}")
+E       textual.css.query.NoMatches: No nodes match '.preview' on InlineApprovalBlock(classes='inline-approval')
+
+.venv/lib/python3.11/site-packages/textual/dom.py:1533: NoMatches
+__________________ test_old_factory_is_the_canonical_function __________________
+
+    def test_old_factory_is_the_canonical_function() -> None:
+>       assert tools.ToolExecutor._tool_definitions is tool_definitions
+E       AssertionError: assert <function ToolExecutor._tool_definitions at 0x10d862ac0> is tool_definitions
+E        +  where <function ToolExecutor._tool_definitions at 0x10d862ac0> = <class 'looplane.tools.ToolExecutor'>._tool_definitions
+E        +    where <class 'looplane.tools.ToolExecutor'> = tools.ToolExecutor
+
+tests/tooling/test_leaf_contracts.py:30: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_claude_backend.py::test_claude_backend_emits_message_before_exit_and_deduplicates_result
+FAILED tests/test_tui.py::test_run_check_approval_displays_exact_command_in_action_title
+FAILED tests/tooling/test_leaf_contracts.py::test_old_factory_is_the_canonical_function
+3 failed, 1472 passed, 2 skipped in 217.39s (0:03:37)

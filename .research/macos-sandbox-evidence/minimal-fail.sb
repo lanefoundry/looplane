@@ -1,0 +1,6 @@
+(version 1)
+(deny default)
+(allow process*)
+(allow sysctl-read)
+(allow file-read-metadata)
+(allow file-read* (subpath "/System") (subpath "/Library") (subpath "/usr") (subpath "/bin"))

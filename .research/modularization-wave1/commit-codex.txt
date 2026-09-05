@@ -1,0 +1,14 @@
+refactor(codex): 拆分 session 協定與映射責任
+
+## Why is this necessary?
+
+- Codex session 同時持有 RPC、ID 關聯、事件映射與 approval 狀態
+- 後續 runtime 擴充需要各自可測試的狀態 owner
+- 舊 import 與測試 patch 位置需要持續相容
+
+## How does it address?
+
+- 抽出 correlation、event mapper 與 approval mapper 並以型別化 callback 組合
+- 保留 canonical session 的 subprocess、RPC、讀取與關閉責任
+- 將 workspace 與 patch audit 留在獨立 conversation host
+- 以相容 facade 維持 constructor、UUID 與 session factory 的既有行為

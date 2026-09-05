@@ -1,0 +1,36 @@
+....F....                                                                [100%]
+=================================== FAILURES ===================================
+_____________ test_invalid_fallback_does_not_construct_a_provider ______________
+
+services = CommandServices(startup=<looplane.startup_trace._StartupTracer object at 0x109de7310>, model_factory=<function service...es.<locals>.unexpected at 0x10a5b56c0>, start_controller=<function services.<locals>.start_controller at 0x10a5b5620>))
+
+    def test_invalid_fallback_does_not_construct_a_provider(services) -> None:
+        selection = bootstrap.ModelSelection(services, ("unqualified",), False, False, False)
+        with pytest.raises(ValueError, match="provider/model or @role"):
+>           selection.build_fallback_models()
+
+tests/commands/test_composition.py:159: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = ModelSelection(services=CommandServices(startup=<looplane.startup_trace._StartupTracer object at 0x109de7310>, model_f...False, allow_custom_provider_endpoint=False, experimental_subscription=False, fallback_cache=[], review_model_cache=[])
+
+    def build_fallback_models(self) -> tuple[ModelProvider, ...]:
+        """Construct --fallback-model candidates lazily (credentials resolve at call time)."""
+        if not self.fallback_specs:
+            return ()
+        if not self.fallback_cache:
+            for spec in self.fallback_specs:
+                parsed_candidates = (
+                    _settings._resolve_model_role_alias(spec) if spec.startswith("@") else None
+                )
+                if parsed_candidates is None:
+                    parsed = _settings._parse_provider_model_spec(spec)
+                    if parsed is None:
+>                       raise typer.BadParameter(
+                            f"--fallback-model requires provider/model or @role format: {spec!r}"
+                        )
+E                       typer._click.exceptions.BadParameter: --fallback-model requires provider/model or @role format: 'unqualified'
+
+src/looplane/commands/bootstrap.py:415: BadParameter
+=========================== short test summary info ============================
+FAILED tests/commands/test_composition.py::test_invalid_fallback_does_not_construct_a_provider

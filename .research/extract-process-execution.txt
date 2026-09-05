@@ -1,0 +1,284 @@
+"""One-time AST-bounded extraction preserving original implementation bodies."""
+import ast
+from pathlib import Path
+
+root = Path('src/looplane')
+source = (root / 'runtime.py').read_text()
+lines = source.splitlines(keepends=True)
+nodes = ast.parse(source).body
+blocks = {}
+for node in nodes:
+    if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+        start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        blocks[node.name] = ''.join(lines[start - 1:node.end_lineno])
+    elif isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                blocks[target.id] = ''.join(lines[node.lineno - 1:node.end_lineno])
+
+def write(path, imports, names, replacements=()):
+    body = '\n\n\n'.join(blocks[name].rstrip() for name in names)
+    for old, new in replacements:
+        assert old in body, (path, old)
+        body = body.replace(old, new)
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('from __future__ import annotations\n\n' + imports + '\n\n\n' + body + '\n')
+
+for package in ('execution', 'sandbox', 'workspace'):
+    directory = root / package
+    directory.mkdir(exist_ok=True)
+    init = directory / '__init__.py'
+    if not init.exists():
+        init.write_text(f'"""Local {package} capabilities."""\n')
+
+write('execution/types.py', 'from dataclasses import dataclass', ['CommandResult'])
+write('execution/environment.py',
+      'import os\nfrom pathlib import Path',
+      ['_SAFE_ENV_KEYS', '_SENSITIVE_ENV_MARKERS', 'sanitized_subprocess_env'])
+write('execution/capture.py',
+      'import os\nfrom collections.abc import Callable\nfrom contextlib import suppress',
+      ['bounded_text', '_BoundedCapture', '_drain_pipe', '_drain_stdout_lines', '_write_stdin'])
+write('sandbox/policy.py',
+      'import sys\nfrom collections.abc import Callable, Sequence\nfrom dataclasses import dataclass\nfrom pathlib import Path',
+      ['CommandSandbox', 'python_runtime_read_roots', '_normalize_sandbox_roots', 'resolve_command_sandbox'],
+      [('    extra_read_roots: Sequence[Path] = (),\n',
+        '    extra_read_roots: Sequence[Path] = (),\n    _runtime_read_roots: Callable[[], tuple[Path, ...]] | None = None,\n'),
+       ('*python_runtime_read_roots()', '*(_runtime_read_roots or python_runtime_read_roots)()')])
+write('sandbox/macos.py',
+      'from collections.abc import Sequence\nfrom pathlib import Path\n\nfrom looplane.sandbox.policy import _normalize_sandbox_roots',
+      ['_sandbox_path_literal', '_macos_sandbox_profile'])
+write('sandbox/linux.py',
+      'import json\nimport sys\nfrom collections.abc import Sequence\nfrom pathlib import Path\n\nfrom looplane.sandbox.policy import _normalize_sandbox_roots',
+      ['_linux_bwrap_argv', '_linux_landlock_argv'])
+write('sandbox/launcher.py',
+      'import shutil\nimport sys\nfrom collections.abc import Callable, Sequence\nfrom pathlib import Path\n\nfrom looplane.sandbox.landlock_run import landlock_available\nfrom looplane.sandbox.linux import _linux_bwrap_argv, _linux_landlock_argv\nfrom looplane.sandbox.macos import _macos_sandbox_profile\nfrom looplane.sandbox.policy import CommandSandbox',
+      ['sandboxed_command_argv'],
+      [('    sandbox: CommandSandbox | None,\n',
+        '    sandbox: CommandSandbox | None,\n    _landlock_probe: Callable[[], bool] | None = None,\n'),
+       ('not landlock_available()', 'not (_landlock_probe or landlock_available)()')])
+write('execution/local_process.py',
+      '''import os
+import signal
+import subprocess
+import threading
+import time
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
+from pathlib import Path
+
+from looplane.execution.capture import (
+    _BoundedCapture, _drain_pipe, _drain_stdout_lines, _write_stdin,
+)
+from looplane.execution.environment import sanitized_subprocess_env
+from looplane.execution.types import CommandResult
+from looplane.sandbox.launcher import sandboxed_command_argv
+from looplane.sandbox.policy import CommandSandbox''',
+      ['_signal_process_group', '_stop_process_tree', 'run_bounded_command'],
+      [('def run_bounded_command(', 'def run_local_process('),
+       ('def _stop_process_tree(process: subprocess.Popen[bytes]) -> None:',
+        'def _stop_process_tree(\n    process: subprocess.Popen[bytes],\n    *,\n    _signal_group: Callable[[subprocess.Popen[bytes], int], None] | None = None,\n) -> None:'),
+       ('    _signal_process_group(process,', '    (_signal_group or _signal_process_group)(process,'),
+       ('    sandbox: CommandSandbox | None = None,\n',
+        '    sandbox: CommandSandbox | None = None,\n    _sandbox_launcher: Callable[..., tuple[str, ...] | str] | None = None,\n    _stop_process: Callable[[subprocess.Popen[bytes]], None] | None = None,\n    _env_factory: Callable[[], dict[str, str]] | None = None,\n'),
+       ('sandboxed_argv = sandboxed_command_argv(', 'sandboxed_argv = (_sandbox_launcher or sandboxed_command_argv)('),
+       ('else sanitized_subprocess_env()', 'else (_env_factory or sanitized_subprocess_env)()'),
+       ('            _stop_process_tree(process)', '            (_stop_process or _stop_process_tree)(process)'),
+       ('        _stop_process_tree(process)', '        (_stop_process or _stop_process_tree)(process)')])
+write('workspace/local_git.py',
+      '''import re
+import time
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from looplane.execution.environment import sanitized_subprocess_env
+from looplane.execution.local_process import run_local_process
+from looplane.execution.types import CommandResult''',
+      ['_FULL_SHA', 'WorkspacePreparationError', 'LocalGitWorkspace'],
+      [('    def _git(\n',
+        '    @staticmethod\n    def _run_command(*args, **kwargs) -> CommandResult:\n        return run_local_process(*args, **kwargs)\n\n    def _git(\n'),
+       ('return run_bounded_command(', 'return self._run_command(')])
+
+landlock_path = root / 'landlock_run.py'
+landlock = landlock_path.read_text()
+(root / 'sandbox/landlock_run.py').write_text(landlock)
+# Keep ABI probe patching on the legacy module without importing it from canonical code.
+landlock_names = []
+for node in ast.parse(landlock).body:
+    if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+        landlock_names.append(node.name)
+    elif isinstance(node, ast.Assign):
+        landlock_names.extend(t.id for t in node.targets if isinstance(t, ast.Name))
+exports = '\n'.join(f'    {name} as {name},' for name in landlock_names if name != 'landlock_available')
+landlock_path.write_text('''"""Compatibility entry point; platform enforcement lives in sandbox.landlock_run."""
+
+from looplane.sandbox.landlock_run import (
+''' + exports + '''
+)
+
+
+def landlock_available() -> bool:
+    """Preserve the historical ABI-probe monkeypatch surface."""
+    try:
+        _landlock_abi()
+    except OSError:
+        return False
+    return True
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+''')
+
+facade = '''"""Compatibility facade for local processes, sandbox requests and Git workspaces.
+
+Canonical modules never import this facade. Explicit call forwarding keeps the
+legacy sandbox probe, environment and process termination monkeypatch surfaces.
+"""
+from __future__ import annotations
+
+import os as os
+import shutil as shutil
+import signal as signal
+import subprocess
+import sys as sys
+import threading
+import time as time
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+
+from looplane.execution import local_process as _process
+from looplane.execution.capture import (
+    _BoundedCapture as _BoundedCapture,
+    _drain_pipe as _drain_pipe,
+    _drain_stdout_lines as _drain_stdout_lines,
+    _write_stdin as _write_stdin,
+    bounded_text as bounded_text,
+)
+from looplane.execution.environment import (
+    _SAFE_ENV_KEYS as _SAFE_ENV_KEYS,
+    _SENSITIVE_ENV_MARKERS as _SENSITIVE_ENV_MARKERS,
+    sanitized_subprocess_env as sanitized_subprocess_env,
+)
+from looplane.execution.local_process import _signal_process_group as _signal_process_group
+from looplane.execution.types import CommandResult as CommandResult
+from looplane.landlock_run import landlock_available as landlock_available
+from looplane.sandbox import launcher as _launcher
+from looplane.sandbox import policy as _policy
+from looplane.sandbox.linux import (
+    _linux_bwrap_argv as _linux_bwrap_argv,
+    _linux_landlock_argv as _linux_landlock_argv,
+)
+from looplane.sandbox.macos import (
+    _macos_sandbox_profile as _macos_sandbox_profile,
+    _sandbox_path_literal as _sandbox_path_literal,
+)
+from looplane.sandbox.policy import (
+    CommandSandbox as CommandSandbox,
+    _normalize_sandbox_roots as _normalize_sandbox_roots,
+    python_runtime_read_roots as python_runtime_read_roots,
+)
+from looplane.workspace.local_git import (
+    _FULL_SHA as _FULL_SHA,
+    LocalGitWorkspace as _LocalGitWorkspace,
+    WorkspacePreparationError as WorkspacePreparationError,
+)
+
+
+def _stop_process_tree(process: subprocess.Popen[bytes]) -> None:
+    _process._stop_process_tree(process, _signal_group=_signal_process_group)
+
+
+def sandboxed_command_argv(
+    argv: Sequence[str], *, cwd: Path, sandbox: CommandSandbox | None,
+) -> tuple[str, ...] | str:
+    return _launcher.sandboxed_command_argv(
+        argv, cwd=cwd, sandbox=sandbox, _landlock_probe=landlock_available,
+    )
+
+
+def resolve_command_sandbox(
+    *, profile: str | None = "verification", backend: str | None = "auto",
+    cwd: Path, task_home: Path, extra_read_roots: Sequence[Path] = (),
+) -> CommandSandbox:
+    return _policy.resolve_command_sandbox(
+        profile=profile, backend=backend, cwd=cwd, task_home=task_home,
+        extra_read_roots=extra_read_roots, _runtime_read_roots=python_runtime_read_roots,
+    )
+
+
+'''
+signature = blocks['run_bounded_command'].split('    if not argv', 1)[0]
+facade += signature + '''    return _process.run_local_process(
+        argv, cwd=cwd, timeout_seconds=timeout_seconds, max_output_chars=max_output_chars,
+        env=env, stdin=stdin, cancel_event=cancel_event,
+        stdout_line_callback=stdout_line_callback, max_stdout_line_bytes=max_stdout_line_bytes,
+        sandbox=sandbox, _sandbox_launcher=sandboxed_command_argv,
+        _stop_process=_stop_process_tree, _env_factory=sanitized_subprocess_env,
+    )
+
+
+run_local_process = _process.run_local_process
+
+
+class LocalGitWorkspace(_LocalGitWorkspace):
+    """Legacy workspace path retaining run_bounded_command interception."""
+
+    @staticmethod
+    def _run_command(*args, **kwargs) -> CommandResult:
+        return run_bounded_command(*args, **kwargs)
+'''
+(root / 'runtime.py').write_text(facade)
+
+# Move characterized tests to their owners; retain runtime monkeypatch tests there.
+test_path = Path('tests/test_runtime.py')
+tests = test_path.read_text()
+test_lines = tests.splitlines(keepends=True)
+parts = {'runtime': [], 'execution': [], 'sandbox': [], 'workspace': []}
+for node in ast.parse(tests).body:
+    if not isinstance(node, ast.FunctionDef):
+        continue
+    start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+    text = ''.join(test_lines[start - 1:node.end_lineno])
+    if 'import looplane.runtime as runtime' in text:
+        owner = 'runtime'
+    elif 'workspace' in node.name:
+        owner = 'workspace'
+    elif node.name.startswith('test_bounded_command'):
+        owner = 'execution'
+    else:
+        owner = 'sandbox'
+    parts[owner].append(text)
+headers = {
+    'runtime': '''import json
+import sys
+from pathlib import Path
+import pytest
+from looplane import landlock_run
+from looplane.runtime import CommandSandbox, run_bounded_command, sandboxed_command_argv
+''',
+    'execution': '''import sys
+import time
+from pathlib import Path
+from looplane.execution.local_process import run_local_process as run_bounded_command
+''',
+    'sandbox': '''import sys
+from pathlib import Path
+import pytest
+from looplane.sandbox import landlock_run
+from looplane.execution.local_process import run_local_process as run_bounded_command
+from looplane.sandbox.launcher import sandboxed_command_argv
+from looplane.sandbox.policy import CommandSandbox, python_runtime_read_roots, resolve_command_sandbox
+''',
+    'workspace': '''from pathlib import Path
+import pytest
+from conftest import run_git
+from looplane.workspace.local_git import LocalGitWorkspace, WorkspacePreparationError
+''',
+}
+for owner, functions in parts.items():
+    path = test_path if owner == 'runtime' else Path(f'tests/{owner}/test_runtime_contracts.py')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(headers[owner] + '\n\n' + '\n\n\n'.join(functions) + '\n')
+print('Extracted process, policy, platform launchers, Landlock and Git workspace owners.')

@@ -1,0 +1,16 @@
+[
+  {
+    "profile": "minimal-fail",
+    "pid": 25844,
+    "returncode": -6,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "profile": "minimal-root-only",
+    "pid": 25846,
+    "returncode": 0,
+    "stdout": "ready",
+    "stderr": ""
+  }
+]

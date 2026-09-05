@@ -1,0 +1,14 @@
+refactor(terminal): 按功能拆分互動介面元件
+
+## Why is this necessary?
+
+- TUI App 模組同時實作 approval、輸入、狀態、onboarding 與 transcript widgets
+- 元件直接依賴 App 私有狀態會妨礙後續 controller 拆分
+- Focus、鍵盤路由與卸載行為需要保留可回歸證據
+
+## How does it address?
+
+- 將完整功能群移至 terminal canonical 模組並保留舊入口
+- 透過明確 permission、formatter 與 verbose callback 解除 App 私有欄位依賴
+- 一起移動 onboarding worker lifecycle、widget CSS 與 clipboard/link 測試
+- 加入元件隔離、相容性、鍵盤與 Unmount 行為測試
