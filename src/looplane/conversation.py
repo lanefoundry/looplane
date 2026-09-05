@@ -650,6 +650,37 @@ class ConversationStore:
         reason: str | None = None,
         error: str | None = None,
     ) -> ConversationEvent:
+        """Append one complete event without exposing a half-committed cancellation point."""
+
+        operation = asyncio.create_task(
+            self._append_event(
+                lease,
+                event_type,
+                turn_id=turn_id,
+                text=text,
+                reason=reason,
+                error=error,
+            )
+        )
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            # `to_thread` cannot stop an in-flight file write. Wait for the
+            # event log and manifest to agree before propagating cancellation
+            # so callers can safely append a terminal event.
+            await operation
+            raise
+
+    async def _append_event(
+        self,
+        lease: ConversationWriterLease,
+        event_type: ConversationEventKind,
+        *,
+        turn_id: str | None = None,
+        text: str | None = None,
+        reason: str | None = None,
+        error: str | None = None,
+    ) -> ConversationEvent:
         self._require_lease(lease)
         snapshot = await self.load(lease.conversation_dir.name)
         if snapshot.manifest.active_writer_token != lease.token:
@@ -832,7 +863,9 @@ class ConversationStore:
                     reason="resume_after_incomplete_turn",
                 )
                 snapshot = await self.load(conversation_id)
-        except Exception:
+        except BaseException:
+            # Cancellation is not an Exception on supported Python versions,
+            # but it must release the advisory writer lock just like failures.
             lease.release()
             raise
         return snapshot, lease

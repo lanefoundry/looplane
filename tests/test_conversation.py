@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
@@ -52,6 +53,74 @@ async def _completed_turn(
     finally:
         lease.release()
     return turn_id
+
+
+@pytest.mark.asyncio
+async def test_cancelled_resume_releases_writer_lease(tmp_path: Path, monkeypatch) -> None:
+    store = ConversationStore(tmp_path / "conversations", durable=False)
+    created = await store.create(runtime="codex-cli", title="cancel resume")
+    entered = asyncio.Event()
+
+    async def blocked_write(_manifest) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(store, "_write_manifest", blocked_write)
+    task = asyncio.create_task(store.resume(created.manifest.conversation_id))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # A leaked advisory lease would make this acquisition fail as busy.
+    lease = store.acquire_writer(created.manifest.conversation_id)
+    lease.release()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_append_finishes_manifest_before_propagating(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = ConversationStore(tmp_path / "conversations", durable=False)
+    created = await store.create(runtime="codex-cli", title="cancel append")
+    _, lease = await store.resume(created.manifest.conversation_id)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_write = store._write_manifest
+
+    async def blocked_write(manifest) -> None:
+        entered.set()
+        await release.wait()
+        await original_write(manifest)
+
+    monkeypatch.setattr(store, "_write_manifest", blocked_write)
+    turn_id = uuid4().hex
+    task = asyncio.create_task(
+        store.append(
+            lease,
+            ConversationEventKind.USER_MESSAGE,
+            turn_id=turn_id,
+            text="keep storage consistent",
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    snapshot = await store.load(created.manifest.conversation_id)
+    assert snapshot.manifest.active_turn_id == turn_id
+    await store.append(
+        lease,
+        ConversationEventKind.TURN_INTERRUPTED,
+        turn_id=turn_id,
+        reason="cancelled_by_test",
+    )
+    lease.release()
 
 
 def test_default_root_has_an_independent_state_contract(tmp_path: Path, monkeypatch) -> None:

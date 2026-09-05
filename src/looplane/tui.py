@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -111,6 +112,18 @@ RuntimeOption = tuple[str, str]
 RuntimeModelOption = tuple[str, str | None]
 _AUTOMATIC_MODEL = "__automatic__"
 _IDLE_CONFIRM_WINDOW_S = 0.8
+_INTERRUPT_ESCALATION_S = 5.0
+
+
+class InteractionState(StrEnum):
+    """The UI surface that currently owns keyboard input."""
+
+    APPROVAL = "approval"
+    SELECTOR = "selector"
+    COMMAND_MENU = "command-menu"
+    RUNNING = "running"
+    COMPOSER = "composer"
+    TRANSCRIPT = "transcript"
 
 
 def _rewindable_prompts_from_events(
@@ -753,10 +766,28 @@ class ApprovalModal(ModalScreen[ApprovalDecision]):
         self.dismiss(ApprovalDecision.CANCEL)
 
 
+class ApprovalPreview(VerticalScroll):
+    """Bounded evidence pane controlled from the adjacent approval choices."""
+
+    def __init__(self, content: str) -> None:
+        super().__init__(classes="preview")
+        self.content = content
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.content, markup=False)
+
+
 class InlineApprovalChoices(OptionList):
     """Approval list that keeps numeric shortcuts local to the inline prompt."""
 
     async def _on_key(self, event: events.Key) -> None:
+        if event.key in {"pageup", "pagedown", "home", "end"}:
+            event.stop()
+            event.prevent_default()
+            parent = self.parent
+            if isinstance(parent, InlineApprovalBlock):
+                parent.scroll_preview(event.key)
+            return
         if event.key in {"1", "2", "3", "4"}:
             event.stop()
             event.prevent_default()
@@ -815,7 +846,7 @@ class InlineApprovalBlock(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Label(self._question(), classes="title")
-        yield Static(ApprovalModal._preview_text(self.request), classes="preview", markup=False)
+        yield ApprovalPreview(ApprovalModal._preview_text(self.request))
         yield InlineApprovalChoices(
             *(
                 Option(
@@ -904,6 +935,19 @@ class InlineApprovalBlock(Vertical):
 
     def action_cancel(self) -> None:
         self.resolve(ApprovalDecision.CANCEL)
+
+    def scroll_preview(self, key: str) -> None:
+        """Scroll evidence without moving focus away from the decision choices."""
+
+        preview = self.query_one(".preview", ApprovalPreview)
+        if key == "pageup":
+            preview.scroll_page_up(animate=False)
+        elif key == "pagedown":
+            preview.scroll_page_down(animate=False)
+        elif key == "home":
+            preview.scroll_home(animate=False)
+        else:
+            preview.scroll_end(animate=False)
 
 
 class MessageBlock(Vertical):
@@ -1110,6 +1154,7 @@ class ToolActionBlock(Vertical):
         self.detail = detail or ""
         self.detail_kind = detail_kind
         self.status = "queued"
+        self.group: ToolGroupBlock | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(self._glyph(self.status), classes="tool-glyph", markup=False)
@@ -1143,6 +1188,8 @@ class ToolActionBlock(Vertical):
             detail_widget = self.query_one(".tool-detail", Static)
             detail_widget.update(self._render_detail(detail))
             detail_widget.display = bool(detail)
+        if self.group is not None:
+            self.group.action_updated()
 
     def set_title(self, title: str) -> None:
         self.title = title
@@ -1184,6 +1231,7 @@ class ToolGroupBlock(Collapsible):
             classes="tool-group",
         )
         self.actions: list[ToolActionBlock] = [first_action]
+        first_action.group = self
         self._user_toggled = False
 
     @on(CollapsibleTitle.Toggle)
@@ -1196,6 +1244,7 @@ class ToolGroupBlock(Collapsible):
 
     def add_action(self, action: ToolActionBlock) -> None:
         self.actions.append(action)
+        action.group = self
         if not self._user_toggled:
             self.collapsed = False
         self._refresh_title()
@@ -1210,6 +1259,7 @@ class ToolGroupBlock(Collapsible):
         self.collapsed = not verbose
 
     def action_updated(self) -> None:
+        self._refresh_title()
         terminal = {"completed", "failed", "denied", "cancelled"}
         if (
             not self._user_toggled
@@ -1908,7 +1958,26 @@ class looplaneApp(App[RunResult | None]):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action in {"approval_choice", "approval_move", "approval_confirm"}:
             return bool(self.query(InlineApprovalBlock))
+        if action == "quit_when_idle":
+            # Printable input belongs to the focused composer/menu. `q` only
+            # quits from an explicitly transcript-owned state.
+            return self._interaction_state() is InteractionState.TRANSCRIPT
         return True
+
+    def _interaction_state(self) -> InteractionState:
+        """Resolve input ownership in one documented priority order."""
+
+        if self.query(InlineApprovalBlock) or isinstance(self.screen, ApprovalModal):
+            return InteractionState.APPROVAL
+        if self._active_selector is not None:
+            return InteractionState.SELECTOR
+        if self._command_menu_visible():
+            return InteractionState.COMMAND_MENU
+        if self._agent_running:
+            return InteractionState.RUNNING
+        if self.query("#task") and self.focused is self.query_one("#task", MessageComposer):
+            return InteractionState.COMPOSER
+        return InteractionState.TRANSCRIPT
 
     def action_approval_move(self, delta: int) -> None:
         for approval in self.query(InlineApprovalBlock):
@@ -2044,7 +2113,7 @@ class looplaneApp(App[RunResult | None]):
         background: $boost; color: $accent; text-style: bold;
     }
     #task {
-        width: 100%; height: 4; min-height: 3; max-height: 7;
+        width: 100%; height: auto; min-height: 3; max-height: 7;
         border: none; background: $boost; padding: 0 1;
     }
     #task:focus { border: none; }
@@ -2060,11 +2129,21 @@ class looplaneApp(App[RunResult | None]):
     #configure, #send { display: none; }
     .narrow #brand { width: 8; }
     .narrow #metrics { display: none; }
-    .narrow #context { content-align: left middle; }
+    .narrow #context { content-align: left middle; padding-left: 1; }
     .narrow #transcript { padding: 0 1; }
     .narrow #composer { padding: 0 1 1 1; }
     .narrow #composer-hint { display: none; }
+    .narrow #configure, .narrow #send {
+        display: block; height: 1; min-height: 1; border: none; padding: 0 1;
+    }
     .narrow #configure { width: 1fr; }
+    .tiny #topbar, .tiny #brand, .tiny #context { height: 1; }
+    .tiny #topbar { padding: 0 1; }
+    .tiny #transcript { min-height: 1; padding: 0 1; }
+    .tiny #empty-state { padding: 0 1; }
+    .tiny #composer { padding: 0 1; }
+    .tiny #task { height: 3; min-height: 2; }
+    .tiny #composer-actions { display: none; }
     """
 
     def __init__(
@@ -2112,6 +2191,7 @@ class looplaneApp(App[RunResult | None]):
         self._ask_history: list[tuple[str, str]] = []
         self._external_message_generations: set[int] = set()
         self._tool_actions: dict[str, ToolActionBlock] = {}
+        self._active_tool_group: ToolGroupBlock | None = None
         self._approval_actions: dict[str, str] = {}
         self._runtime_text_blocks: dict[str, MessageBlock] = {}
         self._runtime_stream_text: dict[str, str] = {}
@@ -2148,10 +2228,14 @@ class looplaneApp(App[RunResult | None]):
         self._auto_follow = True
         self._permission_mode = PermissionMode.ASK
         self._stop_requested = False
+        self._interrupt_requested_at: float | None = None
+        self._force_stop_requested = False
         self._exit_after_stop = False
         self._escape_idle_armed_at: float | None = None
         self._exit_confirm_key: str | None = None
         self._exit_confirm_at: float | None = None
+        self._draft_clear_key: str | None = None
+        self._draft_clear_armed_at: float | None = None
         self._reducer = TranscriptReducer()
         self._final_transcript_cache: str | None = None
         # Connection checks run once per provider per process; not persisted to disk, so a
@@ -2195,7 +2279,8 @@ class looplaneApp(App[RunResult | None]):
                         id="mode",
                     )
                     yield Static(
-                        "Enter send · Shift+Enter newline · / commands · Ctrl+L model",
+                        "Enter send · Shift+Enter newline · / commands · "
+                        "Ctrl+C stop · Ctrl+L model",
                         id="composer-hint",
                         markup=False,
                     )
@@ -2236,6 +2321,7 @@ class looplaneApp(App[RunResult | None]):
 
     def on_resize(self, event: Resize) -> None:
         self.set_class(event.size.width < 70, "narrow")
+        self.set_class(event.size.height < 12, "tiny")
 
     async def on_unmount(self) -> None:
         self._release_conversation()
@@ -2492,6 +2578,8 @@ class looplaneApp(App[RunResult | None]):
         self._tool_verbose = not self._tool_verbose
         for action in self.query(ToolActionBlock):
             action.set_class(self._tool_verbose, "verbose")
+        for group in self.query(ToolGroupBlock):
+            group.set_verbose(self._tool_verbose)
 
     def action_configure_runtime(self) -> None:
         if not self._agent_running and not isinstance(self.screen, OnboardingModal):
@@ -2528,6 +2616,8 @@ class looplaneApp(App[RunResult | None]):
     def composer_changed(self, event: TextArea.Changed) -> None:
         text = event.text_area.text
         self._history_index = None
+        if not self.query("#command-menu"):
+            return
         if text == self._command_menu_suppressed_text:
             self._command_menu_suppressed_text = None
             self._command_matches = ()
@@ -2660,6 +2750,35 @@ class looplaneApp(App[RunResult | None]):
         self.query_one("#task", MessageComposer).set_text(choice.replacement)
         self._hide_command_menu()
 
+    @on(OptionList.OptionSelected, "#command-menu")
+    def select_command_menu(self, event: OptionList.OptionSelected) -> None:
+        """Give mouse selection and focused-list Enter the composer semantics."""
+
+        if not self._command_matches:
+            return
+        composer = self.query_one("#task", MessageComposer)
+        typed = composer.text.strip()
+        if (
+            typed.startswith("/")
+            and not any(character.isspace() for character in typed)
+            and DEFAULT_SLASH_COMMAND_REGISTRY.resolve(typed) is not None
+        ):
+            self._hide_command_menu()
+            composer.focus()
+            self._submit_current_task()
+            return
+        try:
+            index = int(event.option.id) if event.option.id is not None else event.option_index
+            choice = self._command_matches[index]
+        except (ValueError, IndexError):
+            return
+        self._command_menu_suppressed_text = choice.replacement
+        composer.set_text(choice.replacement)
+        self._hide_command_menu()
+        composer.focus()
+        if choice.execute:
+            self.call_after_refresh(self._submit_current_task)
+
     def _show_inline_selector(
         self,
         *,
@@ -2750,7 +2869,7 @@ class looplaneApp(App[RunResult | None]):
             title="Select model",
             description=description,
             options=options,
-            hint="↑/↓ to move · Enter to use this session · Esc to cancel",
+            hint="↑/↓ to move · Enter to use this model · Esc to cancel",
         )
         # Stale-while-revalidate: the selector above already shows whatever was
         # cached; a background refresh swaps fresh options into the open picker.
@@ -2968,6 +3087,8 @@ class looplaneApp(App[RunResult | None]):
             self._apply_permission_command(value)
         elif kind == "rewind":
             self._apply_rewind(value)
+        elif kind == "history":
+            self._resume_conversation(value)
 
     @on(MessageComposer.HistoryNavigation)
     def navigate_prompt_history(self, event: MessageComposer.HistoryNavigation) -> None:
@@ -3013,6 +3134,12 @@ class looplaneApp(App[RunResult | None]):
         transcript.anchor()
         transcript.scroll_end(animate=False)
         self._clear_unseen_items()
+        composer = self.query_one("#task", MessageComposer)
+        # Clicking a Button removes TextArea's cursor ownership before this
+        # handler runs. Re-loading through the composer's public helper restores
+        # both the exact draft and its natural editing edge.
+        composer.focus()
+        composer.set_text(composer.text)
 
     @on(TranscriptScroll.PositionChanged)
     def transcript_position_changed(self, _event: TranscriptScroll.PositionChanged) -> None:
@@ -3154,8 +3281,13 @@ class looplaneApp(App[RunResult | None]):
                 for metadata in DEFAULT_SLASH_COMMAND_REGISTRY.commands
             )
             self._write_timeline(
-                "Commands",
-                commands,
+                "Commands and shortcuts",
+                commands
+                + "\n\nShortcuts\n"
+                + "Enter send · Shift+Enter newline · Ctrl+P/N prompt history\n"
+                + "PageUp/PageDown transcript (or approval preview) · Ctrl+O tool detail\n"
+                + "Esc close/interrupt · Ctrl+C stop; repeat to force stop\n"
+                + "Messages sent during a turn are queued FIFO; Ctrl+C restores them to the draft.",
             )
         elif command is SlashCommand.COMPACT:
             self._compact_context(argument)
@@ -3556,6 +3688,12 @@ class looplaneApp(App[RunResult | None]):
 
     @work(exclusive=True, group="conversation")
     async def _new_conversation(self) -> None:
+        try:
+            await self.aclose_resources()
+        except Exception as exc:
+            self.last_error = f"Previous runtime cleanup failed: {exc}"
+            self.query_one("#status", Static).update(self.last_error)
+            return
         self._release_conversation()
         self._ask_history.clear()
         self._reset_transcript()
@@ -3569,15 +3707,37 @@ class looplaneApp(App[RunResult | None]):
         if self.conversation_store is None:
             self.query_one("#status", Static).update("Conversation persistence is not configured.")
             return
-        self._release_conversation()
+        if conversation_id == self._conversation_id:
+            self.query_one("#status", Static).update("This conversation is already active.")
+            self.query_one("#task", MessageComposer).focus()
+            return
+        lease: ConversationWriterLease | None = None
         try:
             snapshot, lease = await self.conversation_store.resume(conversation_id)
             messages = await self.conversation_store.completed_turns(
                 snapshot.manifest.conversation_id
             )
+        except asyncio.CancelledError:
+            if lease is not None:
+                lease.release()
+            raise
         except Exception as exc:
+            if lease is not None:
+                lease.release()
             self.query_one("#status", Static).update(f"Could not resume conversation: {exc}")
             return
+        try:
+            await self.aclose_resources()
+        except asyncio.CancelledError:
+            lease.release()
+            raise
+        except Exception as exc:
+            lease.release()
+            self.query_one("#status", Static).update(
+                f"Could not resume conversation without closing the current runtime: {exc}"
+            )
+            return
+        self._release_conversation()
         self._conversation_id = snapshot.manifest.conversation_id
         self._conversation_lease = lease
         self.config = self.config.model_copy(
@@ -3683,15 +3843,29 @@ class looplaneApp(App[RunResult | None]):
         if not manifests:
             self._write_timeline("History", "No saved conversations.")
             return
-        lines = [
-            f"{item.conversation_id} · {item.runtime} · {item.title or 'Untitled'}"
-            for item in manifests[:8]
-        ]
-        self._write_timeline("Recent conversations", "\n".join(lines))
+        self._show_inline_selector(
+            command="history",
+            title="Resume conversation",
+            description="Choose a recent conversation; /resume <id> remains available.",
+            options=tuple(
+                InlineSelectorOption(
+                    value=item.conversation_id,
+                    label=item.title or item.conversation_id[:12],
+                    description=f"{item.runtime} · {item.conversation_id}",
+                    selected=item.conversation_id == self._conversation_id,
+                )
+                for item in manifests[:20]
+            ),
+        )
 
     @work(exclusive=True, group="conversation")
     async def _clear_conversation(self) -> None:
         conversation_id = self._conversation_id
+        try:
+            await self.aclose_resources()
+        except Exception as exc:
+            self.query_one("#status", Static).update(f"Could not close current runtime: {exc}")
+            return
         self._release_conversation()
         if conversation_id is not None and self.conversation_store is not None:
             try:
@@ -3725,7 +3899,52 @@ class looplaneApp(App[RunResult | None]):
         )
         original_instruction = instruction
         if self._mode == "ask":
-            await self._begin_conversation_turn(original_instruction)
+            try:
+                await self._begin_conversation_turn(original_instruction)
+            except asyncio.CancelledError:
+                # Force-stop can arrive while the store is creating/resuming or
+                # appending the first user event, before the main runner
+                # try/finally exists. Restore the UI and draft here explicitly.
+                try:
+                    await asyncio.shield(
+                        self._fail_conversation_turn("force_stopped_during_startup")
+                    )
+                except Exception as exc:
+                    self.last_error = f"Could not close cancelled conversation turn: {exc}"
+                    self._conversation_turn_id = None
+                    self._conversation_has_chunk = False
+                self._result = RunResult(
+                    run_id=f"cancelled-{uuid4().hex}",
+                    task_id=f"cancelled-{uuid4().hex}",
+                    status=RunStatus.CANCELLED,
+                    summary="Force-stopped during conversation startup.",
+                    terminal_reason="user_cancelled",
+                )
+                self.query_one("#status", Static).update(
+                    "Force-stopped during conversation startup · draft restored"
+                )
+                self._set_running(False)
+                composer = self.query_one("#task", MessageComposer)
+                composer.set_text(original_instruction)
+                composer.focus()
+                return
+            except Exception as exc:
+                try:
+                    await self._fail_conversation_turn("conversation_store_failed")
+                except Exception:
+                    # The primary persistence error is the useful one; a second
+                    # failure while recording it must not escape the UI worker.
+                    self._conversation_turn_id = None
+                    self._conversation_has_chunk = False
+                self.last_error = f"Could not start conversation turn: {exc}"
+                self.query_one("#status", Static).update(self.last_error)
+                self._set_activity_visible(True)
+                self.query_one("#activity", RichLog).write(self.last_error)
+                self._set_running(False)
+                composer = self.query_one("#task", MessageComposer)
+                composer.set_text(original_instruction)
+                composer.focus()
+                return
             if self._stop_requested:
                 self._result = RunResult(
                     run_id=f"cancelled-{uuid4().hex}",
@@ -3798,6 +4017,18 @@ class looplaneApp(App[RunResult | None]):
                 except asyncio.CancelledError:
                     if run_task.done():
                         raise
+                    if self._force_stop_requested:
+                        run_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await run_task
+                        self._result = RunResult(
+                            run_id=f"cancelled-{uuid4().hex}",
+                            task_id=f"cancelled-{uuid4().hex}",
+                            status=RunStatus.CANCELLED,
+                            summary="Force-stopped after cooperative cancellation did not finish.",
+                            terminal_reason="user_cancelled",
+                        )
+                        break
                     runner.request_cancel()
             if self._result.status == RunStatus.CANCELLED:
                 self._reducer.add_notice(
@@ -3900,12 +4131,14 @@ class looplaneApp(App[RunResult | None]):
         """Close long-lived runtime sessions after the Textual loop exits."""
 
         errors: list[str] = []
+        failed_resources: list[TuiResource] = []
         for resource in reversed(self._persistent_resources):
             try:
                 await resource.aclose()
             except Exception as exc:
                 errors.append(str(exc))
-        self._persistent_resources.clear()
+                failed_resources.append(resource)
+        self._persistent_resources[:] = reversed(failed_resources)
         if errors:
             raise RuntimeError("; ".join(errors))
 
@@ -4077,6 +4310,7 @@ class looplaneApp(App[RunResult | None]):
         for child in tuple(messages.children):
             child.remove()
         self._tool_actions.clear()
+        self._active_tool_group = None
         self._approval_actions.clear()
         self._runtime_text_blocks.clear()
         self._runtime_stream_text.clear()
@@ -4132,6 +4366,7 @@ class looplaneApp(App[RunResult | None]):
     def _write_turn(self, role: str, content: str) -> MessageBlock | None:
         if not self.query("#messages"):
             return None
+        self._active_tool_group = None
         if content.strip():
             if role in {"You", "Task"}:
                 self._reducer.add_user(content)
@@ -4158,6 +4393,7 @@ class looplaneApp(App[RunResult | None]):
     ) -> None:
         if not self.query("#messages"):
             return
+        self._active_tool_group = None
         self._reducer.add_notice(title, detail or "")
         for empty_state in self.query("#empty-state"):
             empty_state.remove()
@@ -4206,6 +4442,8 @@ class looplaneApp(App[RunResult | None]):
         return "\n".join(lines)
 
     def _result_status(self, result: RunResult) -> str:
+        if self._force_stop_requested and result.status == RunStatus.CANCELLED:
+            return "Force-stopped unresponsive runtime · ready"
         usage_suffix = ""
         if result.usage.total_tokens:
             usage_suffix = f" · {format_token_count(result.usage.total_tokens)} tokens"
@@ -4240,7 +4478,16 @@ class looplaneApp(App[RunResult | None]):
         action.set_class(self._tool_verbose, "verbose")
         self._tool_actions[action_id] = action
         self._track_transcript_item(f"tool:{action_id}")
-        self.query_one("#messages", Vertical).mount(action)
+        messages = self.query_one("#messages", Vertical)
+        if detail_kind in {"read", "search"}:
+            if self._active_tool_group is None:
+                self._active_tool_group = ToolGroupBlock(action)
+                messages.mount(self._active_tool_group)
+            else:
+                self._active_tool_group.add_action(action)
+        else:
+            self._active_tool_group = None
+            messages.mount(action)
         return action
 
     @staticmethod
@@ -4276,6 +4523,9 @@ class looplaneApp(App[RunResult | None]):
 
     def _set_running(self, running: bool) -> None:
         self._agent_running = running
+        if running:
+            self._interrupt_requested_at = None
+            self._force_stop_requested = False
         self._reset_idle_detectors()
         if not running:
             self._set_loading(None)
@@ -4435,8 +4685,9 @@ class looplaneApp(App[RunResult | None]):
                     f"Working · {label}",
                     phase=LoadingPhase.TOOL_USE,
                 )
-                self._write_notice(f"Working · {label}")
-                self._write_timeline("Working", label)
+                # Activity is ephemeral phase state. Keeping it out of both the
+                # durable transcript and hidden activity log avoids triplicate
+                # status for a single runtime event.
                 return
         if event.event_type == "result":
             self._set_loading(None)
@@ -4475,7 +4726,7 @@ class looplaneApp(App[RunResult | None]):
             if self._stream_char_count % 256 < len(event.text):
                 self._update_metrics()
             self._external_message_generations.add(message.generation)
-            if self.animation_level != "none" and self._flush_runtime_stream_preview(event.turn_id):
+            if self._flush_runtime_stream_preview(event.turn_id):
                 self._set_loading(
                     "Responding…",
                     phase=LoadingPhase.RESPONDING,
@@ -4662,23 +4913,60 @@ class looplaneApp(App[RunResult | None]):
     def _request_interrupt(self) -> None:
         """Cooperatively interrupt the active turn. This never exits looplane."""
 
+        now = monotonic()
+        if (
+            self._interrupt_requested_at is not None
+            and now - self._interrupt_requested_at <= _INTERRUPT_ESCALATION_S
+        ):
+            self._force_interrupt(self._interrupt_requested_at)
+            return
         self._stop_requested = True
-        queued = len(self._queued_prompts)
+        self._interrupt_requested_at = now
+        self.set_timer(
+            _INTERRUPT_ESCALATION_S,
+            lambda requested_at=now: self._force_interrupt(requested_at),
+        )
+        queued_prompts = tuple(self._queued_prompts)
         self._queued_prompts.clear()
+        if queued_prompts:
+            composer = self.query_one("#task", MessageComposer)
+            draft_parts = (*queued_prompts, composer.text) if composer.text else queued_prompts
+            composer.set_text("\n\n".join(draft_parts))
         if self._runner is not None:
             self._runner.request_cancel()
-        suffix = f" · cancelled {queued} queued follow-up(s)" if queued else ""
+        suffix = (
+            f" · restored {len(queued_prompts)} queued follow-up(s) to draft"
+            if queued_prompts
+            else ""
+        )
         status = (
             "Stopping safely after the current action…"
             if self._runner is not None
             else "Cancelling runtime startup…"
         )
-        self.query_one("#status", Static).update(status + suffix)
+        self.query_one("#status", Static).update(
+            status + suffix + " · press Ctrl+C again to force stop"
+        )
+
+    def _force_interrupt(self, requested_at: float) -> None:
+        """Escalate a still-active cooperative stop after one bounded grace period."""
+
+        if (
+            not self._agent_running
+            or self._interrupt_requested_at != requested_at
+            or self._force_stop_requested
+        ):
+            return
+        self._force_stop_requested = True
+        self.workers.cancel_group(self, "agent-run")
+        self.query_one("#status", Static).update("Force-stopping unresponsive runtime…")
 
     def _reset_idle_detectors(self) -> None:
         self._escape_idle_armed_at = None
         self._exit_confirm_key = None
         self._exit_confirm_at = None
+        self._draft_clear_key = None
+        self._draft_clear_armed_at = None
 
     def _begin_rewind_selection(self) -> None:
         """Open the rewind selector for the current persisted conversation."""
@@ -4745,9 +5033,29 @@ class looplaneApp(App[RunResult | None]):
         )
         label = f"Ctrl-{key.removeprefix('ctrl+').upper()}"
         if composer.text.strip():
-            self._reset_idle_detectors()
+            draft_clear_confirmed = (
+                self._draft_clear_key == key
+                and self._draft_clear_armed_at is not None
+                and now - self._draft_clear_armed_at <= _IDLE_CONFIRM_WINDOW_S
+            )
+            self._escape_idle_armed_at = None
+            self._exit_confirm_key = None
+            self._exit_confirm_at = None
+            if not draft_clear_confirmed:
+                self._draft_clear_key = key
+                self._draft_clear_armed_at = now
+                self.query_one("#status", Static).update(
+                    f"Draft kept · press {label} again to clear"
+                )
+                return
             composer.load_text("")
-            self.query_one("#status", Static).update(f"Draft cleared · press {label} again to exit")
+            self._draft_clear_key = None
+            self._draft_clear_armed_at = None
+            self._exit_confirm_key = None
+            self._exit_confirm_at = None
+            self.query_one("#status", Static).update(
+                f"Draft cleared · press {label} twice to exit"
+            )
             return
         if confirmed:
             self.exit(self._result)
@@ -4757,7 +5065,10 @@ class looplaneApp(App[RunResult | None]):
         self.query_one("#status", Static).update(f"Press {label} again to exit")
 
     def action_quit_when_idle(self) -> None:
-        if not self._agent_running:
+        composer_has_input = bool(
+            self.query("#task") and self.query_one("#task", MessageComposer).text
+        )
+        if not self._agent_running and not composer_has_input:
             self.exit(self._result)
 
     def exit(self, result=None, *args, **kwargs) -> None:

@@ -68,6 +68,7 @@ from looplane.runtime_semantics import (
 )
 from looplane.tui import (
     ApprovalModal,
+    ApprovalPreview,
     ConversationRuntimeEventMessage,
     InlineApprovalBlock,
     InlineSelectorBlock,
@@ -940,7 +941,81 @@ async def test_conversation_layout_uses_full_timeline_and_reflows_without_draft_
         assert app.has_class("narrow")
         assert task.text == "draft survives resize"
         assert app.focused is task
+        assert app.query_one("#composer-hint").display is False
+        assert app.query_one("#configure", Button).display is True
+        assert app.query_one("#send", Button).display is True
         assert_bottom_stack()
+
+
+async def test_tiny_terminal_keeps_composer_visible_and_interactable(tmp_path: Path) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+    )
+
+    async with app.run_test(size=(40, 8)) as pilot:
+        await pilot.pause()
+        screen = app.screen.region
+        composer = app.query_one("#task", MessageComposer)
+        composer.focus()
+        await pilot.press("h", "i")
+
+        assert composer.text == "hi"
+        assert composer.has_focus
+        assert composer.region.height >= 1
+        assert composer.region.y < screen.bottom
+        assert composer.region.bottom <= screen.bottom
+
+
+async def test_multiline_composer_grows_until_its_maximum_height(tmp_path: Path) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+    )
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.set_text("一\n二\n三\n四\n五\n六\n七\n八")
+        await pilot.pause()
+
+        assert composer.region.height == 7
+        assert composer.max_scroll_y == 1
+
+
+async def test_new_items_click_restores_composer_focus_and_q_edits_draft(
+    tmp_path: Path,
+) -> None:
+    exits: list[RunResult | None] = []
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+    )
+
+    async with app.run_test(size=(80, 20)) as pilot:
+        app.exit = lambda result=None, *args, **kwargs: exits.append(result)  # type: ignore[method-assign]
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("unsent draft")
+        button = app.query_one("#new-items", Button)
+        button.display = True
+        await pilot.pause()
+
+        await pilot.click("#new-items")
+        await pilot.pause()
+        assert composer.has_focus
+        assert button.display is False
+
+        await pilot.press("q")
+        assert exits == []
+        assert composer.text == "unsent draftq"
 
 
 async def test_sparse_conversation_is_anchored_above_composer(tmp_path: Path) -> None:
@@ -1132,6 +1207,206 @@ async def test_pca_owned_conversation_resumes_after_tui_restart(tmp_path: Path) 
         await _wait_until(lambda: len(requests) == 2 and not second._agent_running)
         assert "User: remember this" in requests[-1].instruction
         assert "Assistant: Finished in the full-screen UI." in requests[-1].instruction
+
+
+async def test_conversation_create_failure_restores_interactive_controls(tmp_path: Path) -> None:
+    class FailingCreateStore:
+        async def create(self, **_kwargs):
+            raise RuntimeError("disk unavailable")
+
+    factory_called = False
+
+    def factory(*_args):
+        nonlocal factory_called
+        factory_called = True
+        return FakeRunner(), None
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=factory,
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+        conversation_store=FailingCreateStore(),  # type: ignore[arg-type]
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("persist this")
+        app._submit_current_task()
+
+        await _wait_until(lambda: app.last_error is not None and not app._agent_running)
+        await pilot.pause()
+        assert factory_called is False
+        assert app.last_error is not None
+        assert "disk unavailable" in app.last_error
+        assert composer.disabled is False
+        assert app.query_one("#configure", Button).disabled is False
+        assert app.query_one("#send", Button).disabled is False
+        assert composer.has_focus
+        assert composer.text == "persist this"
+
+
+async def test_force_stop_during_conversation_startup_restores_ui_and_draft(
+    tmp_path: Path,
+) -> None:
+    started = asyncio.Event()
+
+    class BlockingCreateStore:
+        async def create(self, **_kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+        conversation_store=BlockingCreateStore(),  # type: ignore[arg-type]
+        initial_prompt="do not lose this",
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await pilot.press("ctrl+c", "ctrl+c")
+        await _wait_until(lambda: not app._agent_running)
+
+        composer = app.query_one("#task", MessageComposer)
+        assert composer.disabled is False
+        assert composer.text == "do not lose this"
+        assert composer.has_focus
+        assert app._result is not None
+        assert app._result.status == RunStatus.CANCELLED
+
+
+async def test_failed_resume_preserves_current_conversation_and_lease(tmp_path: Path) -> None:
+    class Lease:
+        active = True
+
+        def __init__(self) -> None:
+            self.released = False
+
+        def release(self) -> None:
+            self.released = True
+            self.active = False
+
+    class FailingResumeStore:
+        async def resume(self, _conversation_id: str):
+            raise RuntimeError("corrupt target")
+
+    current_lease = Lease()
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+        conversation_store=FailingResumeStore(),  # type: ignore[arg-type]
+    )
+
+    async with app.run_test(size=(100, 30)):
+        app._conversation_id = "current"
+        app._conversation_lease = current_lease  # type: ignore[assignment]
+        app._write_turn("You", "current transcript")
+
+        app._resume_conversation("broken")
+        await _wait_until(
+            lambda: "Could not resume conversation"
+            in str(app.query_one("#status", Static).content)
+        )
+
+        assert app._conversation_id == "current"
+        assert app._conversation_lease is current_lease
+        assert current_lease.released is False
+        assert [(block.role, block.content) for block in app.query(MessageBlock)] == [
+            ("You", "current transcript")
+        ]
+
+
+async def test_resuming_active_conversation_is_a_safe_noop(tmp_path: Path) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+        conversation_store=ConversationStore(tmp_path / "conversations", durable=False),
+    )
+
+    async with app.run_test(size=(100, 30)):
+        app._conversation_id = "a" * 32
+        app._resume_conversation("a" * 32)
+        await _wait_until(
+            lambda: "already active" in str(app.query_one("#status", Static).content)
+        )
+        assert app._conversation_id == "a" * 32
+
+
+@pytest.mark.parametrize("command", ["new", "resume"])
+async def test_conversation_rotation_closes_superseded_native_resources(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    store = ConversationStore(tmp_path / "conversations", durable=False)
+    target = await store.create(runtime="codex-cli", title="target")
+    resource = LoopBoundPersistentResource()
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+        conversation_store=store,
+    )
+
+    async with app.run_test(size=(100, 30)):
+        app._persistent_resources.append(resource)
+        if command == "new":
+            app._new_conversation()
+        else:
+            app._resume_conversation(target.manifest.conversation_id)
+
+        await _wait_until(lambda: resource.closed)
+        assert resource not in app._persistent_resources
+        if command == "resume":
+            await _wait_until(
+                lambda: app._conversation_id == target.manifest.conversation_id
+            )
+        else:
+            assert app._conversation_id is None
+
+
+async def test_new_conversation_does_not_rotate_when_runtime_cleanup_fails(
+    tmp_path: Path,
+) -> None:
+    class FailingPersistentResource:
+        persistent = True
+
+        async def aclose(self) -> None:
+            raise RuntimeError("controller still busy")
+
+    resource = FailingPersistentResource()
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+    )
+
+    async with app.run_test(size=(100, 30)):
+        app._conversation_id = "b" * 32
+        app._persistent_resources.append(resource)  # type: ignore[arg-type]
+        app._new_conversation()
+        await _wait_until(lambda: app.last_error is not None)
+
+        assert app._conversation_id == "b" * 32
+        assert app._persistent_resources == [resource]
+        assert "controller still busy" in str(app.query_one("#status", Static).content)
+
+        # Keep the intentional close failure out of App teardown.
+        app._persistent_resources.clear()
 
 
 async def test_native_model_switch_retains_conversation_and_replays_completed_turns(
@@ -1402,7 +1677,7 @@ async def test_tui_approval_is_attached_inline_and_maps_once_decision(tmp_path: 
         await _wait_until(lambda: bool(app.query(InlineApprovalBlock)))
         approval = app.query_one(InlineApprovalBlock)
         await _wait_until(lambda: bool(approval.query(".preview")))
-        preview = approval.query_one(".preview", Static)
+        preview = approval.query_one(".preview", ApprovalPreview)
         assert str(preview.content) == "replace src/[example].py x[/bold]"
         choices = approval.query_one(".approval-choices", OptionList)
         assert [str(option.prompt) for option in choices.options] == [
@@ -1460,7 +1735,7 @@ async def test_run_check_approval_displays_exact_command_in_action_title(tmp_pat
         action = app.query_one(ToolActionBlock)
         approval = app.query_one(InlineApprovalBlock)
         assert action.title == "Run git diff --check"
-        assert str(approval.query_one(".preview", Static).content) == "$ git diff --check"
+        assert str(approval.query_one(".preview", ApprovalPreview).content) == "$ git diff --check"
         app.action_approval_choice(2)
         await _wait_until(lambda: app._result is not None)
         assert decision["value"] == ApprovalDecision.DENY
@@ -1528,6 +1803,50 @@ async def test_final_verification_keyboard_works_without_option_list_focus(
         assert decision["value"] == ApprovalDecision.ALLOW_SESSION
 
 
+async def test_approval_preview_scroll_keys_work_while_choices_keep_focus(
+    tmp_path: Path,
+) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+    )
+    request = ApprovalRequest(
+        run_id="approval-scroll-run",
+        action_id="edit-scroll",
+        effect=ToolEffect.MODIFY,
+        reason=ApprovalReason.MODEL_TOOL,
+        preview="\n".join(f"diff line {index}" for index in range(50)),
+        tool_call=ToolCall(name="apply_patch"),
+    )
+
+    async with app.run_test(size=(60, 18)) as pilot:
+        approval = InlineApprovalBlock(request)
+        await app.query_one("#messages").mount(approval)
+        await pilot.pause()
+        choices = approval.query_one(".approval-choices", OptionList)
+        preview = approval.query_one(".preview", ApprovalPreview)
+        choices.focus()
+        assert choices.has_focus
+        assert preview.max_scroll_y > 0
+
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert preview.scroll_y > 0
+        assert choices.has_focus
+
+        await pilot.press("end")
+        await pilot.pause()
+        assert preview.scroll_y == preview.max_scroll_y
+
+        await pilot.press("home")
+        await pilot.pause()
+        assert preview.scroll_y == 0
+        assert choices.has_focus
+
+
 async def test_blank_approval_preview_is_actionable_and_defaults_to_deny(
     tmp_path: Path,
 ) -> None:
@@ -1569,7 +1888,7 @@ async def test_blank_approval_preview_is_actionable_and_defaults_to_deny(
         await _wait_until(lambda: bool(app.query(InlineApprovalBlock)))
         approval = app.query_one(InlineApprovalBlock)
         await pilot.pause()
-        rendered = str(approval.query_one(".preview", Static).content)
+        rendered = str(approval.query_one(".preview", ApprovalPreview).content)
         assert "Action: file change" in rendered
         assert "Effect: modify" in rendered
         assert "runtime did not provide" in rendered
@@ -1853,6 +2172,102 @@ async def test_keyboard_shortcuts_request_cooperative_stop(tmp_path: Path, short
         assert app._result.status == RunStatus.CANCELLED
 
 
+async def test_second_interrupt_force_stops_runner_that_ignores_cooperative_request(
+    tmp_path: Path,
+) -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class UncooperativeRunner(FakeRunner):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.cancel_calls = 0
+
+        def request_cancel(self) -> None:
+            self.cancel_calls += 1
+
+        async def run(self) -> RunResult:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    holder: dict[str, UncooperativeRunner] = {}
+
+    def factory(_request, approval_policy, event_sink):
+        runner = UncooperativeRunner(
+            approval_policy=approval_policy,
+            event_sink=event_sink,
+        )
+        holder["runner"] = runner
+        return runner, None
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=factory,
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+        initial_prompt="Never finish cooperatively.",
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await pilot.press("ctrl+c")
+        await _wait_until(lambda: holder["runner"].cancel_calls == 1)
+        assert app._agent_running is True
+
+        await pilot.press("ctrl+c")
+        await asyncio.wait_for(cancelled.wait(), timeout=1)
+        await _wait_until(lambda: not app._agent_running)
+
+        assert holder["runner"].cancel_calls == 1
+        assert "force" in str(app.query_one("#status", Static).content).casefold()
+
+
+async def test_interrupt_restores_queued_follow_ups_to_composer(tmp_path: Path) -> None:
+    started = asyncio.Event()
+    cancel_requested = asyncio.Event()
+
+    class BlockingRunner(FakeRunner):
+        def request_cancel(self) -> None:
+            cancel_requested.set()
+
+        async def run(self) -> RunResult:
+            started.set()
+            await cancel_requested.wait()
+            return RunResult(
+                run_id="queue-cancelled",
+                task_id="queue-cancelled",
+                status=RunStatus.CANCELLED,
+                summary="stopped",
+                terminal_reason="user_cancelled",
+            )
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (BlockingRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+        initial_prompt="first",
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        composer = app.query_one("#task", MessageComposer)
+        composer.set_text("second")
+        app._submit_current_task()
+        composer.set_text("unfinished draft")
+
+        await pilot.press("ctrl+c")
+        await _wait_until(lambda: not app._agent_running)
+
+        assert list(app._queued_prompts) == []
+        assert composer.text == "second\n\nunfinished draft"
+
+
 @pytest.mark.parametrize("shortcut", ["ctrl+c", "ctrl+d"])
 async def test_idle_exit_requires_confirmed_second_press(tmp_path: Path, shortcut: str) -> None:
     exits: list[RunResult | None] = []
@@ -1894,7 +2309,7 @@ async def test_mixed_exit_keys_do_not_confirm(tmp_path: Path) -> None:
         assert exits == []
 
 
-async def test_ctrl_c_with_draft_clears_draft_before_exiting(tmp_path: Path) -> None:
+async def test_ctrl_c_with_draft_requires_confirmation_before_clearing(tmp_path: Path) -> None:
     exits: list[RunResult | None] = []
     app = looplaneApp(
         repository=tmp_path,
@@ -1910,6 +2325,11 @@ async def test_ctrl_c_with_draft_clears_draft_before_exiting(tmp_path: Path) -> 
         composer.set_text("precious draft")
         await pilot.press("ctrl+c")
         await pilot.pause()
+        assert exits == []
+        assert composer.text == "precious draft"
+        assert "Draft kept" in str(app.query_one("#status", Static).render())
+
+        await pilot.press("ctrl+c")
         assert exits == []
         assert composer.text == ""
         assert "Draft cleared" in str(app.query_one("#status", Static).render())
@@ -2466,6 +2886,34 @@ async def test_multiline_composer_and_slash_palette_are_keyboard_driven(tmp_path
         assert composer.text == "/compact\tkeep build failures"
 
 
+async def test_slash_palette_mouse_selection_dispatches_and_restores_focus(
+    tmp_path: Path,
+) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_args: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        runtime_models={"codex-cli": (("Automatic", None), ("Sonnet", "sonnet"))},
+        providers=(("ollama", "Ollama"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.focus()
+        composer.load_text("/model")
+        await pilot.pause()
+        menu = app.query_one("#command-menu", OptionList)
+        assert menu.display is True
+        assert menu.option_count == 1
+
+        await pilot.click("#command-menu", offset=(2, 0))
+        await _wait_until(lambda: bool(app.query(InlineSelectorBlock)))
+
+        assert menu.display is False
+        assert app.query_one(InlineSelectorBlock).query_one(OptionList).has_focus
+
+
 async def test_inline_selector_escape_is_non_mutating_and_restores_focus(tmp_path: Path) -> None:
     app = looplaneApp(
         repository=tmp_path,
@@ -2776,7 +3224,7 @@ async def test_escape_cancels_native_startup_before_runner_exists(tmp_path: Path
         assert factory_calls == 0
 
 
-async def test_read_search_actions_mount_individually(tmp_path: Path) -> None:
+async def test_consecutive_read_search_actions_collapse_into_one_group(tmp_path: Path) -> None:
     app = looplaneApp(
         repository=tmp_path,
         config=CliConfig(provider="ollama", model="qwen3:4b"),
@@ -2791,9 +3239,10 @@ async def test_read_search_actions_mount_individually(tmp_path: Path) -> None:
         second.set_state("completed", detail="6 matches")
         await pilot.pause()
 
-        # Each tool action is mounted directly in #messages — no ToolGroupBlock.
         groups = list(app.query(ToolGroupBlock))
-        assert len(groups) == 0
+        assert len(groups) == 1
+        assert groups[0].collapsed is True
+        assert groups[0].title == "Explored 2 items"
         actions = list(app.query(ToolActionBlock))
         assert len(actions) == 2
         assert actions[0].title == "Read src/app.py"
@@ -3077,8 +3526,10 @@ async def test_runtime_loading_respects_reduced_motion(tmp_path: Path) -> None:
                 generation=1,
             )
         )
-        assert indicator.display is True
-        assert list(app.query(MessageBlock)) == []
+        assert indicator.display is False
+        streamed = list(app.query(MessageBlock))
+        assert len(streamed) == 1
+        assert streamed[0].content == "Complete line\n"
 
         app.conversation_runtime_event_received(
             ConversationRuntimeEventMessage(

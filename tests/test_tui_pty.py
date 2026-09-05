@@ -71,7 +71,12 @@ _DRIVER_TEMPLATE = textwrap.dedent(
 _LEAVE_ALTERNATE_SCREEN = b"\x1b[?1049l"
 
 
-def _run_driver_in_pty(driver_path: Path, *, timeout_s: float = 60.0) -> bytes:
+def _run_driver_in_pty(
+    driver_path: Path,
+    *,
+    timeout_s: float = 60.0,
+    initial_input: bytes | None = None,
+) -> bytes:
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
@@ -88,6 +93,7 @@ def _run_driver_in_pty(driver_path: Path, *, timeout_s: float = 60.0) -> bytes:
     chunks: list[bytes] = []
     deadline = time.monotonic() + timeout_s
     exit_sent = False
+    input_sent = initial_input is None
     try:
         while time.monotonic() < deadline:
             if process.poll() is not None:
@@ -101,6 +107,10 @@ def _run_driver_in_pty(driver_path: Path, *, timeout_s: float = 60.0) -> bytes:
                 if data:
                     chunks.append(data)
             output_so_far = b"".join(chunks)
+            if not input_sent and b"\x1b[?1049h" in output_so_far:
+                input_sent = True
+                time.sleep(0.3)
+                os.write(master, initial_input)
             # Once the seeded prompt has completed, confirm-exit via the new
             # idle double Ctrl+C contract through the real terminal.
             if not exit_sent and b"verified" in output_so_far:
@@ -210,3 +220,33 @@ def test_transcript_survives_when_conversation_was_never_persisted(
     assert "You › no store prompt" in primary_tail
     assert "Assistant › No store summary." in primary_tail
     assert "looplane session" in primary_tail
+
+
+def test_inline_mode_keeps_the_normal_buffer_and_exports_transcript(tmp_path: Path) -> None:
+    driver = tmp_path / "pty_driver_inline.py"
+    source = _DRIVER_TEMPLATE.format(store=str(tmp_path / "conversations"))
+    driver.write_text(source.replace("result = app.run()", "result = app.run(inline=True)"))
+
+    output = _run_driver_in_pty(driver)
+    decoded = output.decode(errors="replace")
+
+    assert b"\x1b[?1049h" not in output
+    assert _LEAVE_ALTERNATE_SCREEN not in output
+    assert "You › hello from pty" in decoded
+    assert "Assistant › Pty summary line." in decoded
+
+
+def test_bracketed_paste_commits_cjk_text_in_real_terminal(tmp_path: Path) -> None:
+    driver = tmp_path / "pty_driver_cjk_paste.py"
+    source = _DRIVER_TEMPLATE.format(store=str(tmp_path / "conversations"))
+    driver.write_text(source.replace('initial_prompt="hello from pty"', "initial_prompt=None"))
+
+    pasted = "修復滑動問題".encode()
+    output = _run_driver_in_pty(
+        driver,
+        initial_input=b"\x1b[200~" + pasted + b"\x1b[201~\r",
+    )
+    primary_tail = output.rsplit(_LEAVE_ALTERNATE_SCREEN, 1)[-1].decode(errors="replace")
+
+    assert "You › 修復滑動問題" in primary_tail
+    assert "Assistant › Pty summary line." in primary_tail

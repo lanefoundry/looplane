@@ -98,6 +98,12 @@ looplane exec "Fix the bounded bug and keep existing behavior." \
 # 給受限 terminal 或 SSH troubleshooting 使用的 plain mode。
 looplane --plain
 
+# Keep the interactive UI in the normal terminal buffer so native scrollback
+# remains available. The default remains the alternate-screen UI.
+# 把互動 UI 留在 terminal 的 normal buffer，保留原生 scrollback；預設仍是
+# alternate-screen UI。
+looplane --no-alt-screen
+
 # Edit this repository's real working tree directly instead of a disposable
 # clone (native `looplane-agent` runtime only; see Safety Boundary below).
 # 直接編輯這個 repo 的真實 working tree，而不是 disposable clone（只影響

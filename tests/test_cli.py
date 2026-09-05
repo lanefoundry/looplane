@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import json
+import os
 import runpy
 import stat
 import subprocess
@@ -92,6 +93,7 @@ def test_cli_help_exposes_interactive_options_headless_run_and_resume() -> None:
     assert "config" in result.output
     assert "run" in result.output
     assert "plugin" in result.output
+    assert "--no-alt-screen" in plain_cli_output(result)
 
 
 def test_plugin_install_and_list_commands_install_local_package(tmp_path: Path) -> None:
@@ -2277,6 +2279,60 @@ def test_real_tty_routes_bare_prompt_to_full_screen_tui(
     assert captured["initial_prompt"] == "Fix the failing test."
     assert captured["repository"] == tiny_bug_repo
     assert captured["ollama_models"] == ("qwen3:4b",)
+
+
+def test_no_alt_screen_runs_tui_inline(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from looplane import tui
+
+    captured: dict[str, object] = {}
+
+    class FakeApp:
+        final_transcript_text = ""
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.last_error = None
+
+        def run(self, **kwargs: object) -> None:
+            captured["run_kwargs"] = kwargs
+
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
+    monkeypatch.setattr(cli, "_terminal_size", lambda: os.terminal_size((100, 30)))
+    monkeypatch.setattr(tui, "looplaneApp", FakeApp)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["--no-alt-screen", "-C", str(tiny_bug_repo)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["run_kwargs"] == {"inline": True}
+
+
+def test_tiny_terminal_refuses_unusable_full_screen_ui(
+    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from looplane import tui
+
+    monkeypatch.setenv("LOOPLANE_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.setattr(cli, "_terminal_supports_tui", lambda: True)
+    monkeypatch.setattr(cli, "_terminal_size", lambda: os.terminal_size((40, 8)))
+    monkeypatch.setattr(
+        tui,
+        "looplaneApp",
+        lambda **_: (_ for _ in ()).throw(AssertionError("TUI must not launch")),
+    )
+
+    result = CliRunner().invoke(cli.app, ["-C", str(tiny_bug_repo)])
+
+    assert result.exit_code == 2
+    output = plain_cli_output(result)
+    assert "40x8" in output
+    assert "at least" in output
+    assert "16 rows" in output
+    assert "--plain" in output
 
 
 @pytest.mark.parametrize(

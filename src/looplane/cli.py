@@ -216,7 +216,8 @@ app = typer.Typer(
     epilog=(
         "Daily use: looplane [PROMPT] | looplane -p [PROMPT] | looplane exec [PROMPT] | "
         "looplane resume. Primary options: -C/--cd/--repo, -m/--model, --provider, "
-        "--api-url, --check, --plain. Save non-secret defaults with looplane config."
+        "--api-url, --check, --plain, --no-alt-screen. Save non-secret defaults with "
+        "looplane config."
     ),
 )
 auth_app = typer.Typer(help="Manage provider credentials owned by this application.")
@@ -385,6 +386,30 @@ def _terminal_supports_tui() -> bool:
         and os.environ.get("TERM", "").lower() != "dumb"
         and (os.environ.get("LOOPLANE_NO_TUI") or os.environ.get("PCA_NO_TUI")) != "1"
     )
+
+
+MIN_TUI_TERMINAL_HEIGHT = 16
+
+
+def _terminal_size() -> os.terminal_size | None:
+    """Return the active output terminal size when it can be queried."""
+
+    try:
+        return os.get_terminal_size(sys.stdout.fileno())
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _validate_tui_terminal_size() -> None:
+    """Keep a fixed-height full-screen layout out of unusably short terminals."""
+
+    size = _terminal_size()
+    if size is not None and size.lines < MIN_TUI_TERMINAL_HEIGHT:
+        raise typer.BadParameter(
+            "terminal is too short for the interactive UI "
+            f"({size.columns}x{size.lines}; at least {MIN_TUI_TERMINAL_HEIGHT} rows required). "
+            "Resize the terminal or use --plain."
+        )
 
 
 def _prompt_or_task(prompt: str | None, task: str | None) -> str | None:
@@ -794,6 +819,16 @@ def chat(
             help="Use the line-oriented terminal UI instead of the full-screen application.",
         ),
     ] = False,
+    no_alt_screen: Annotated[
+        bool,
+        typer.Option(
+            "--no-alt-screen",
+            help=(
+                "Run the interactive UI inline in the normal terminal buffer; "
+                "useful for scrollback and terminal accessibility."
+            ),
+        ),
+    ] = False,
     provider: Annotated[
         str | None,
         typer.Option("--provider", envvar=["LOOPLANE_PROVIDER", "PCA_PROVIDER"]),
@@ -1003,6 +1038,7 @@ def chat(
         allow_model_role_alias=True,
     )
     if not print_mode and not plain and _terminal_supports_tui():
+        _validate_tui_terminal_size()
         current = current_config
         explicit_looplane_runtime = any(
             value is not None for value in (requested_provider, requested_model, requested_api_url)
@@ -1204,7 +1240,7 @@ def chat(
             runner_warmup=_warmup_native_controller,
         )
         _STARTUP.mark("tui_constructed")
-        result = tui_app.run()
+        result = tui_app.run(**({"inline": True} if no_alt_screen else {}))
         final_transcript = tui_app.final_transcript_text
         if final_transcript:
             typer.echo(final_transcript)
