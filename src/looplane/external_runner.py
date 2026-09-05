@@ -25,10 +25,10 @@ from looplane.approvals import (
     ApprovalRequest,
     ToolEffect,
 )
-from looplane.backends import (
-    ExternalAgentBackend,
+from looplane.external_agents import (
     ExternalAgentEvent,
     ExternalAgentResult,
+    ExternalAgentRunner,
     ExternalAgentTask,
     ExternalEventSink,
 )
@@ -99,7 +99,7 @@ def _bounded_policy_text(value: object, *, field: str) -> str:
     return value
 
 
-def native_instruction_suppression_policy(backend: ExternalAgentBackend) -> dict[str, object]:
+def native_instruction_suppression_policy(backend: ExternalAgentRunner) -> dict[str, object]:
     """Return the backend-declared native duplicate-discovery suppression contract.
 
     External CLI wrappers may hard-code flags that suppress their own project/user instruction
@@ -175,7 +175,7 @@ class ExternalCodingRunner:
     def __init__(
         self,
         task: TaskContract,
-        backend: ExternalAgentBackend,
+        backend: ExternalAgentRunner,
         run_root: str | Path,
         *,
         run_id: str | None = None,
