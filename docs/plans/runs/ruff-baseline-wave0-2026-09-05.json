@@ -1,0 +1,202 @@
+[
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 184,
+      "row": 149
+    },
+    "filename": "/Users/xiaoxu/Projects/looplane/src/looplane/dialect.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 149
+    },
+    "message": "Line too long (183 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 160,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 2,
+      "row": 32
+    },
+    "filename": "/Users/xiaoxu/Projects/looplane/src/looplane/models.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from __future__ import annotations\n\nimport json\nfrom collections import deque\nfrom collections.abc import Iterable, Mapping, Sequence\nfrom enum import StrEnum\nfrom typing import Any, Protocol, runtime_checkable\nfrom urllib.parse import urlsplit\n\nimport httpx\nfrom openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI\n\nfrom looplane.cache_strategy import (\n    ProviderCacheTrace,\n    apply_provider_cache_defaults,\n    provider_cache_trace,\n)\nfrom looplane.contracts import (\n    ConversationItem,\n    InjectedContext,\n    Message,\n    ModelCapabilities,\n    ModelProtocol,\n    ModelTurn,\n    ToolCall,\n    ToolDefinition,\n    ToolObservation,\n    Usage,\n)\nfrom looplane.dialect import Dialect, encode_inband_history\n\n\n",
+          "end_location": {
+            "column": 1,
+            "row": 35
+          },
+          "location": {
+            "column": 1,
+            "row": 3
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 1,
+      "row": 3
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "name": "unsorted-imports",
+    "noqa_row": 3,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 2,
+      "row": 12
+    },
+    "filename": "/Users/xiaoxu/Projects/looplane/tests/test_dialect.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from __future__ import annotations\n\nimport pytest\n\nfrom looplane.contracts import Message, ToolCall, ToolDefinition, ToolObservation\nfrom looplane.dialect import (\n    XmlDialect,\n    encode_inband_history,\n    resolve_dialect,\n)\n\n",
+          "end_location": {
+            "column": 1,
+            "row": 15
+          },
+          "location": {
+            "column": 1,
+            "row": 3
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 1,
+      "row": 3
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "name": "unsorted-imports",
+    "noqa_row": 3,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 130,
+      "row": 210
+    },
+    "filename": "/Users/xiaoxu/Projects/looplane/tests/test_dialect.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 210
+    },
+    "message": "Line too long (129 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 210,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 127,
+      "row": 367
+    },
+    "filename": "/Users/xiaoxu/Projects/looplane/tests/test_runtime.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 367
+    },
+    "message": "Line too long (126 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 367,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 127,
+      "row": 389
+    },
+    "filename": "/Users/xiaoxu/Projects/looplane/tests/test_runtime.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 389
+    },
+    "message": "Line too long (126 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 389,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "F841",
+    "end_location": {
+      "column": 11,
+      "row": 415
+    },
+    "filename": "/Users/xiaoxu/Projects/looplane/tests/test_runtime.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 14,
+            "row": 415
+          },
+          "location": {
+            "column": 5,
+            "row": 415
+          }
+        }
+      ],
+      "message": "Remove assignment to unused variable `result`"
+    },
+    "location": {
+      "column": 5,
+      "row": 415
+    },
+    "message": "Local variable `result` is assigned to but never used",
+    "name": "unused-variable",
+    "noqa_row": 415,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-variable"
+  },
+  {
+    "cell": null,
+    "code": "B023",
+    "end_location": {
+      "column": 61,
+      "row": 166
+    },
+    "filename": "/Users/xiaoxu/Projects/looplane/tests/test_startup_cache.py",
+    "fix": null,
+    "location": {
+      "column": 60,
+      "row": 166
+    },
+    "message": "Function definition does not bind loop variable `i`",
+    "name": "function-uses-loop-variable",
+    "noqa_row": 166,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/function-uses-loop-variable"
+  }
+]
