@@ -1,12 +1,15 @@
 # Repository modularization plan
 
 Date: 2026-09-05
-Status: in progress; Wave 1 Slice 1.1 complete, next Slice 1.2
+Status: in progress; Slices 1.1, 1.2 and 1.4 complete; see execution tracker
 Scope: decompose `tui.py`, `cli.py`, `loop.py`, `tools.py`, and
 `codex_app_server.py` without changing the M11 unified-conversation product model or
 the native/external runtime trust boundary.
 
 ## Decision
+
+Current implementation and gate status:
+[execution tracker](repository-modularization-progress.md).
 
 Looplane should move from a flat collection of large modules to feature packages with
 explicit ports. The objective is change locality and testability, not a cosmetic line
