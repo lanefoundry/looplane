@@ -328,5 +328,118 @@
     },
     "read_only": false,
     "concurrency_safe": false
+  },
+  {
+    "name": "web_fetch",
+    "description": "Fetch a web page and extract its text content as markdown. Use this to read online documentation, API references, changelogs, or any public URL. Returns cleaned text; use selector to extract a specific part of the page. Cannot access localhost or private networks.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target URL."
+        },
+        "selector": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "CSS selector to extract a specific section."
+        },
+        "max_chars": {
+          "type": "integer",
+          "default": 16000,
+          "minimum": 1000,
+          "maximum": 32000,
+          "description": "Max characters to return."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "read_only": true,
+    "concurrency_safe": true
+  },
+  {
+    "name": "web_search",
+    "description": "Search the web and return structured results. Use this when you need to find documentation, examples, or answers but do not know the exact URL.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_results": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "read_only": true,
+    "concurrency_safe": true
+  },
+  {
+    "name": "http_request",
+    "description": "Send an HTTP request and return the response. Use this to call REST APIs, webhooks, or GraphQL endpoints. Supports GET, POST, PUT, PATCH, DELETE. Cannot access localhost or private networks.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "headers": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Custom request headers."
+        },
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Request body."
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 60,
+          "description": "Request timeout in seconds."
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "read_only": false,
+    "concurrency_safe": false
   }
 ]

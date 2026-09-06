@@ -1,11 +1,13 @@
-"""Managed LSP process supervision for IDE diagnostics."""
+"""Managed LSP process supervision with request/response and IDE diagnostics."""
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator
 
@@ -74,6 +76,9 @@ class ManagedLspServer:
         self._diagnostics_event = asyncio.Event()
         self.last_diagnostics: IdeDiagnosticsSnapshot | None = None
         self.last_error: str | None = None
+        self._request_id_counter = itertools.count(1)
+        self._pending_responses: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        self._initialized = False
 
     @property
     def running(self) -> bool:
@@ -98,12 +103,99 @@ class ManagedLspServer:
         self._reader_task = asyncio.create_task(self._read_stdout(self._process.stdout))
         self._stderr_task = asyncio.create_task(self._drain_stderr(self._process.stderr))
 
+    def _send_message(self, msg: dict[str, Any]) -> None:
+        if self._process is None or self._process.stdin is None:
+            raise LspSupervisorError("LSP server is not running")
+        payload = json.dumps(msg).encode("utf-8")
+        header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+        self._process.stdin.write(header + payload)
+
+    async def initialize(self) -> dict[str, Any]:
+        if self._initialized:
+            return {}
+        result = await self.request(
+            "initialize",
+            {
+                "processId": None,
+                "rootUri": self.project_root.as_uri(),
+                "capabilities": {
+                    "textDocument": {
+                        "definition": {"dynamicRegistration": False},
+                        "references": {"dynamicRegistration": False},
+                        "documentSymbol": {"dynamicRegistration": False},
+                        "publishDiagnostics": {"relatedInformation": True},
+                    },
+                    "workspace": {
+                        "symbol": {"dynamicRegistration": False},
+                    },
+                },
+            },
+        )
+        self._send_message({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+        self._initialized = True
+        return result
+
+    async def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        if not self.running:
+            raise LspSupervisorError("LSP server is not running")
+        request_id = next(self._request_id_counter)
+        msg: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+        }
+        if params is not None:
+            msg["params"] = params
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
+        self._pending_responses[request_id] = future
+        try:
+            self._send_message(msg)
+            return await asyncio.wait_for(future, timeout=timeout_seconds)
+        except TimeoutError as exc:
+            raise LspSupervisorError(
+                f"LSP request {method!r} timed out after {timeout_seconds}s"
+            ) from exc
+        finally:
+            self._pending_responses.pop(request_id, None)
+
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        self._send_message(msg)
+
+    async def open_document(self, path: Path) -> None:
+        uri = path.resolve().as_uri()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        self.notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": _language_id(path),
+                    "version": 1,
+                    "text": text,
+                },
+            },
+        )
+
     async def wait_for_diagnostics(self, timeout_seconds: float = 30.0) -> IdeDiagnosticsSnapshot:
         await asyncio.wait_for(self._diagnostics_event.wait(), timeout=timeout_seconds)
         assert self.last_diagnostics is not None
         return self.last_diagnostics
 
     async def aclose(self) -> None:
+        for future in self._pending_responses.values():
+            if not future.done():
+                future.cancel()
+        self._pending_responses.clear()
+        self._initialized = False
         process = self._process
         tasks = (self._reader_task, self._stderr_task)
         for task in tasks:
@@ -134,6 +226,16 @@ class ManagedLspServer:
             await self._handle_message(message)
 
     async def _handle_message(self, message: dict[str, object]) -> None:
+        msg_id = message.get("id")
+        if msg_id is not None and isinstance(msg_id, int) and msg_id in self._pending_responses:
+            future = self._pending_responses.pop(msg_id)
+            error = message.get("error")
+            if error:
+                future.set_exception(LspSupervisorError(f"LSP error: {error}"))
+            else:
+                future.set_result(message.get("result", {}))  # type: ignore[arg-type]
+            return
+
         if message.get("method") != "textDocument/publishDiagnostics":
             return
         params = message.get("params")
@@ -165,3 +267,35 @@ async def _read_lsp_message(stream: asyncio.StreamReader) -> dict[str, object]:
     if not isinstance(value, dict):
         raise LspSupervisorError("LSP message payload must be a JSON object")
     return value
+
+
+_LANG_MAP = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascriptreact",
+    ".ts": "typescript",
+    ".tsx": "typescriptreact",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".rb": "ruby",
+    ".swift": "swift",
+    ".kt": "kotlin",
+    ".lua": "lua",
+    ".sh": "shellscript",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".md": "markdown",
+    ".html": "html",
+    ".css": "css",
+}
+
+
+def _language_id(path: Path) -> str:
+    return _LANG_MAP.get(path.suffix.lower(), "plaintext")

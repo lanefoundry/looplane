@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import httpx
+
 from looplane.contracts import (
     ToolCall,
     ToolDefinition,
@@ -46,6 +48,9 @@ from looplane.tooling.timeouts import effective_timeout
 from looplane.tooling.transactions import ProgramLimits, StructuredPrograms
 from looplane.tooling.types import ReviewablePatch, ToolExecutionError, _PathSnapshot
 from looplane.tooling.verification import AuthorizedChecks, VerificationSandboxSettings
+from looplane.tooling.web import http_request as _http_request
+from looplane.tooling.web import web_fetch as _web_fetch
+from looplane.tooling.web import web_search as _web_search
 from looplane.workspace.local_git import LocalGitWorkspace
 
 
@@ -567,6 +572,38 @@ class ToolExecutor:
     def git_diff(self, *, timeout_seconds: float | None = None) -> str:
         return self.git.git_diff(timeout_seconds=timeout_seconds)
 
+    def web_fetch(
+        self,
+        url: str,
+        selector: str | None = None,
+        max_chars: int = 16_000,
+    ) -> str:
+        return _web_fetch(url, selector=selector, max_chars=max_chars)
+
+    def web_search(
+        self,
+        query: str,
+        max_results: int = 5,
+    ) -> str:
+        return _web_search(query, max_results=max_results)
+
+    def http_request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+        timeout: float = 30.0,
+    ) -> str:
+        return _http_request(
+            method,
+            url,
+            headers=headers,
+            body=body,
+            timeout=timeout,
+            max_output_chars=self.max_output_chars,
+        )
+
     def tool_program(
         self,
         steps: Sequence[Mapping[str, Any]],
@@ -615,6 +652,9 @@ class ToolExecutor:
             "git_diff": self.git_diff,
             "tool_program": self.tool_program,
             "tool_transaction": self.tool_transaction,
+            "web_fetch": self.web_fetch,
+            "web_search": self.web_search,
+            "http_request": self.http_request,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -742,7 +782,14 @@ class ToolExecutor:
                 result = handler(**call_arguments, timeout_seconds=timeout_seconds)
             else:
                 result = handler(**call_arguments)
-        except (PathPolicyError, ToolExecutionError, OSError, TypeError, UnicodeError) as exc:
+        except (
+            PathPolicyError,
+            ToolExecutionError,
+            OSError,
+            TypeError,
+            UnicodeError,
+            httpx.HTTPError,
+        ) as exc:
             error = self._bound(f"{type(exc).__name__}: {exc}", self.max_output_chars)
             return ToolObservation(
                 tool_call_id=tool_call_id,
