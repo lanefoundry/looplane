@@ -4,8 +4,10 @@
 #
 # Usage: update-homebrew-tap.sh <version> <sha256>
 # Requires: TAP_TOKEN env var (GitHub PAT with repo scope for the tap)
+#           uv and Python available (for resource block generation)
 set -eu
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 VERSION="$1"
 SHA256="$2"
 TAP_REPO="lanefoundry/homebrew-tap"
@@ -14,6 +16,10 @@ if [ -z "${TAP_TOKEN:-}" ]; then
     echo "error: TAP_TOKEN not set" >&2
     exit 1
 fi
+
+# Generate Python dependency resource blocks
+echo "Generating resource blocks for ${VERSION}..."
+RESOURCES=$(uv run python "$SCRIPT_DIR/generate-homebrew-resources.py" 2>/dev/null)
 
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -34,6 +40,8 @@ class Looplane < Formula
   license "Apache-2.0"
 
   depends_on "python@3.12"
+
+${RESOURCES}
 
   def install
     virtualenv_install_with_resources
