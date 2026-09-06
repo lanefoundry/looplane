@@ -68,6 +68,16 @@ class MessageComposer(TextArea):
             event.prevent_default()
             self.post_message(self.HistoryNavigation(-1 if event.key == "ctrl+p" else 1))
             return
+        if event.key == "up" and self.cursor_location[0] == 0:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.HistoryNavigation(-1))
+            return
+        if event.key == "down" and self.cursor_location[0] >= self.document.line_count - 1:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.HistoryNavigation(1))
+            return
         if event.key in {"pageup", "pagedown"}:
             event.stop()
             event.prevent_default()

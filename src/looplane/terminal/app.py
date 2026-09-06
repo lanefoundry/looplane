@@ -50,6 +50,7 @@ from looplane.conversation_runtime import (
 )
 from looplane.external_agents import ExternalAgentEvent
 from looplane.memory import remember
+from looplane.prompt_history import append_prompt_history, load_prompt_history
 from looplane.prompts import WORKSPACE_CONTEXT_REMINDER_VERSION, build_workspace_context_reminder
 from looplane.provider_catalog import estimate_cost
 from looplane.runtime_semantics import (
@@ -235,6 +236,7 @@ class TerminalDependencies:
     version: Callable[[], str] = _looplane_version
     save_config: Callable[[CliConfig], Awaitable[object]] = save_cli_config
     metrics_type: type[RuntimeMetrics] = RuntimeMetrics
+    update_fallback_specs: Callable[[tuple[str, ...]], None] | None = None
 
 
 class looplaneApp(App[RunResult | None]):
@@ -565,7 +567,7 @@ class looplaneApp(App[RunResult | None]):
                         id="mode",
                     )
                     yield Static(
-                        "Enter send · Shift+Enter newline · / commands · "
+                        "Enter send · Shift+Enter newline · ↑/↓ history · / commands · "
                         "Cmd+C copy · Ctrl+C copy/stop · Ctrl+L model",
                         id="composer-hint",
                         markup=False,
@@ -579,6 +581,7 @@ class looplaneApp(App[RunResult | None]):
         _STARTUP.mark("app_mounted")
         self.register_theme(LOOPLANE_THEME)
         self.theme = "looplane"
+        self._prompt_history = load_prompt_history()
         self.query_one("#task", MessageComposer).move_cursor(
             self.query_one("#task", MessageComposer).document.end
         )
@@ -1201,7 +1204,7 @@ class looplaneApp(App[RunResult | None]):
             title="Select model",
             description=description,
             options=options,
-            hint="Type to search · ↑/↓ to move · Enter to select · Esc to cancel",
+            hint="Type to search · ↑/↓ move · Enter select · Ctrl+F add as fallback · Esc cancel",
         )
         # Always trigger a background refresh so denied models and stale
         # entries are cleared even when the catalog TTL hasn't expired yet.
@@ -1369,6 +1372,80 @@ class looplaneApp(App[RunResult | None]):
         self._refresh_context()
         self.query_one("#status", Static).update(f"Using provider · {provider}")
 
+    def _show_fallback_selector(self) -> None:
+        current = self.config.fallback_models
+        if current:
+            desc = f"Current fallbacks: {', '.join(current)}. Pick a model to add."
+        else:
+            desc = "No fallback models set. Pick a model to add."
+        runtime = self._runtime()
+        provider = self.config.provider if runtime == "looplane-agent" else None
+        import looplane.model_catalog as model_catalog
+
+        available = list(self.runtime_models.get(runtime, ()))
+        snapshot = model_catalog.snapshot(provider) if provider else None
+        if snapshot is not None:
+            self._merge_catalog_models(available, snapshot.models)
+        current_set = set(current)
+        filtered = [
+            (label, value)
+            for label, value in available
+            if value is not None and value not in current_set
+        ]
+        if not filtered:
+            self._write_timeline("Fallback", desc + "\nNo additional models available.")
+            return
+        options = tuple(
+            InlineSelectorOption(
+                value=value,
+                label=label,
+                description=value or label,
+            )
+            for label, value in filtered
+        )
+        self._show_inline_selector(
+            command="fallback",
+            title="Add fallback model",
+            description=desc,
+            options=options,
+        )
+
+    @work(exclusive=True, group="fallback")
+    async def _add_fallback_model(self, spec: str) -> None:
+        current = list(self.config.fallback_models)
+        normalized = spec.strip()
+        if normalized in current:
+            self.query_one("#status", Static).update(f"Already a fallback: {normalized}")
+            return
+        updated = tuple(current + [normalized])
+        new_config = self.config.model_copy(update={"fallback_models": updated})
+        self.config = new_config
+        await self._dependencies.save_config(new_config)
+        updater = self._dependencies.update_fallback_specs
+        if updater is not None:
+            updater(updated)
+        self._write_timeline(
+            "Fallback added",
+            f"{normalized}\nActive fallbacks: {', '.join(updated)}",
+        )
+
+    @work(exclusive=True, group="fallback")
+    async def _clear_fallback_models(self) -> None:
+        if not self.config.fallback_models:
+            self.query_one("#status", Static).update("No fallback models to clear")
+            return
+        cleared = len(self.config.fallback_models)
+        new_config = self.config.model_copy(update={"fallback_models": ()})
+        self.config = new_config
+        await self._dependencies.save_config(new_config)
+        updater = self._dependencies.update_fallback_specs
+        if updater is not None:
+            updater(())
+        self._write_timeline(
+            "Fallbacks cleared",
+            f"Removed {cleared} fallback model(s). Takes effect on next turn.",
+        )
+
     def _show_runtime_selector(self) -> None:
         current = self._runtime()
         self._show_inline_selector(
@@ -1462,6 +1539,14 @@ class looplaneApp(App[RunResult | None]):
         self._close_inline_selector()
         self.query_one("#status", Static).update("Selection cancelled")
 
+    @on(InlineSelectorBlock.SecondarySelected)
+    def inline_selector_secondary(self, event: InlineSelectorBlock.SecondarySelected) -> None:
+        event.stop()
+        if event.selector is not self._active_selector:
+            return
+        if event.selector.kind == "model":
+            self._add_fallback_model(event.value)
+
     @on(InlineSelectorBlock.Selected)
     def inline_selector_selected(self, event: InlineSelectorBlock.Selected) -> None:
         event.stop()
@@ -1486,6 +1571,8 @@ class looplaneApp(App[RunResult | None]):
             self._apply_permission_command(value)
         elif kind == "thinking":
             self._apply_thinking_command(value)
+        elif kind == "fallback":
+            self._add_fallback_model(value)
         elif kind == "rewind":
             self._apply_rewind(value)
         elif kind == "history":
@@ -1603,8 +1690,9 @@ class looplaneApp(App[RunResult | None]):
                 return
             composer.load_text("")
             self._prompt_history.append(instruction)
-            self._prompt_history = self._prompt_history[-100:]
+            self._prompt_history = self._prompt_history[-500:]
             self._history_index = None
+            append_prompt_history(instruction)
             self._queued_prompts.append(instruction)
             self._write_timeline(
                 f"Queued follow-up · {len(self._queued_prompts)}",
@@ -1616,8 +1704,9 @@ class looplaneApp(App[RunResult | None]):
             return
         composer.load_text("")
         self._prompt_history.append(instruction)
-        self._prompt_history = self._prompt_history[-100:]
+        self._prompt_history = self._prompt_history[-500:]
         self._history_index = None
+        append_prompt_history(instruction)
         self._stop_requested = False
         self.initial_prompt = None
         self._send_timestamp = self._dependencies.clock()
@@ -1688,7 +1777,7 @@ class looplaneApp(App[RunResult | None]):
                 "Commands and shortcuts",
                 commands
                 + "\n\nShortcuts\n"
-                + "Enter send · Shift+Enter newline · Ctrl+P/N prompt history\n"
+                + "Enter send · Shift+Enter newline · ↑/↓ or Ctrl+P/N prompt history\n"
                 + "PageUp/PageDown transcript (or approval preview) · Ctrl+O tool detail\n"
                 + "Esc undo send (1.5s) / close / interrupt · Cmd+C copies · "
                 + "Ctrl+C copies a selection; otherwise stops\n"
@@ -1778,6 +1867,13 @@ class looplaneApp(App[RunResult | None]):
                 self._apply_thinking_command(argument)
             else:
                 self._show_thinking_level_selector()
+        elif command is SlashCommand.FALLBACK:
+            if argument and argument.casefold() == "clear":
+                self._clear_fallback_models()
+            elif argument:
+                self._add_fallback_model(argument)
+            else:
+                self._show_fallback_selector()
         elif command is SlashCommand.EXIT:
             if self._agent_running:
                 self._exit_after_stop = True
