@@ -251,8 +251,8 @@ def test_refresh_detects_metadata_changes_removes_stale_routes_and_preserves_bui
     assert "mcp__local__echo" not in tools_map
     assert not executor.execute(ToolCall(name="mcp__local__echo")).ok
     assert executor.execute(ToolCall(name="mcp__local__second")).ok
-    run_check = next(item for item in executor.definitions if item.name == "run_check")
-    assert run_check.input_schema["properties"]["name"]["enum"] == ["check"]
+    shell_def = next(item for item in executor.definitions if item.name == "shell")
+    assert shell_def.input_schema["properties"]["command"]["minLength"] == 1
     assert executor._mcp_clients is bridge.clients
     assert executor._mcp_tools is bridge.tools
     assert executor._mcp_resource_tools is bridge.resource_tools

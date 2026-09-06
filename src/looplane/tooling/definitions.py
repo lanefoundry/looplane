@@ -24,13 +24,27 @@ def tool_definitions() -> tuple[ToolDefinition, ...]:
         ToolDefinition(
             name="read_file",
             description=(
-                "Read one allowed UTF-8 text file with a bounded result. Use this before "
-                "replace_text and whenever exact source text matters. Do not use shell "
-                "commands to inspect file contents."
+                "Read one allowed UTF-8 text file with a bounded result. Returns numbered "
+                "lines in 'LINE\\tCONTENT' format. Use offset and limit to read a specific "
+                "line range instead of the whole file — first search_text to find the line "
+                "number, then read_file with offset and limit to read just that region. "
+                "Use this before replace_text and whenever exact source text matters."
             ),
             input_schema={
                 "type": "object",
-                "properties": {"path": path},
+                "properties": {
+                    "path": path,
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "0-based starting line. Omit to start at the top.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Max lines to return. Omit to read the whole file.",
+                    },
+                },
                 "required": ["path"],
                 "additionalProperties": False,
             },
@@ -40,10 +54,9 @@ def tool_definitions() -> tuple[ToolDefinition, ...]:
         ToolDefinition(
             name="search_text",
             description=(
-                "Search allowed files for a literal text string, respecting .gitignore when "
-                "ripgrep is available. Use it to locate symbols or exact snippets before "
-                "reading files. It is not a regex search and returns bounded path:line:text "
-                "matches."
+                "Search allowed files for a text pattern, respecting .gitignore when "
+                "ripgrep is available. Returns bounded path:line:text matches. "
+                "Default is literal search; set regex to true for pattern matching."
             ),
             input_schema={
                 "type": "object",
@@ -52,6 +65,7 @@ def tool_definitions() -> tuple[ToolDefinition, ...]:
                     "path": {**path, "default": "."},
                     "glob": {"type": ["string", "null"]},
                     "case_sensitive": {"type": "boolean", "default": True},
+                    "regex": {"type": "boolean", "default": False},
                 },
                 "required": ["query"],
                 "additionalProperties": False,
@@ -112,25 +126,23 @@ def tool_definitions() -> tuple[ToolDefinition, ...]:
             },
         ),
         ToolDefinition(
-            name="run_check",
+            name="shell",
             description=(
-                "Run one exact argv verification command selected by its allowlisted name. "
-                "The allowed names come from the task contract, and the harness controls "
-                "timeouts. Use it when the user asks to run a check, when a baseline is needed "
-                "to reproduce or diagnose a requested code change, or after modifying files. "
-                "Do not run it for a request that only needs reading or explanation. Do not "
-                "invent commands or pass shell syntax."
+                "Run a shell command in the workspace. Use it for exploration "
+                "(grep, find, git log, wc) and verification (pytest, linters). "
+                "Dangerous commands are denied; suspicious ones need approval. "
+                "Output is bounded and secrets are redacted."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "name": {
+                    "command": {
                         "type": "string",
-                        "enum": [],
-                        "description": "Allowlisted verification command name.",
-                    }
+                        "minLength": 1,
+                        "description": "Shell command to execute.",
+                    },
                 },
-                "required": ["name"],
+                "required": ["command"],
                 "additionalProperties": False,
             },
         ),
@@ -222,7 +234,7 @@ def tool_definitions() -> tuple[ToolDefinition, ...]:
                                         "create_file",
                                         "replace_text",
                                         "apply_patch",
-                                        "run_check",
+                                        "shell",
                                         "git_diff",
                                         "repeat",
                                         "if_contains",

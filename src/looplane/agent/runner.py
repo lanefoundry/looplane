@@ -677,24 +677,22 @@ class AgentRunner:
         if command is not None:
             parts.append(" ".join(command.argv))
         if tool_call is not None:
-            if tool_call.name == "run_check" and self._executor is not None:
-                check = self._executor.verification_commands.get(
-                    str(tool_call.arguments.get("name", ""))
-                )
-                if check is not None:
-                    parts.append(" ".join(check.argv))
+            if tool_call.name == "shell":
+                cmd = tool_call.arguments.get("command", "")
+                if isinstance(cmd, str) and cmd:
+                    parts.append(cmd)
             if tool_call.name == "tool_transaction" and self._executor is not None:
                 steps = tool_call.arguments.get("steps")
                 if isinstance(steps, Sequence) and not isinstance(steps, (str, bytes)):
                     for step in steps:
-                        if not isinstance(step, Mapping) or step.get("op") != "run_check":
+                        if not isinstance(step, Mapping) or step.get("op") != "shell":
                             continue
                         args = step.get("args", {})
                         if not isinstance(args, Mapping):
                             continue
-                        check = self._executor.verification_commands.get(str(args.get("name", "")))
-                        if check is not None:
-                            parts.append(" ".join(check.argv))
+                        cmd = str(args.get("command", ""))
+                        if cmd:
+                            parts.append(cmd)
             parts.extend(
                 str(value) for value in tool_call.arguments.values() if isinstance(value, str)
             )

@@ -75,18 +75,39 @@ class WorkspaceFiles:
                 break
         return self.bound("\n".join(files), self.output_limits.max_output_chars)
 
-    def read_file(self, path: str) -> str:
+    def read_file(
+        self,
+        path: str,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> str:
         target = self.policy.resolve(path)
         if not target.is_file():
             raise ToolExecutionError(f"not a regular file: {path}")
         with target.open("rb") as handle:
             data = handle.read(self.read_limits.max_read_bytes + 1)
-        truncated = len(data) > self.read_limits.max_read_bytes
+        byte_truncated = len(data) > self.read_limits.max_read_bytes
         visible = data[: self.read_limits.max_read_bytes]
         text = visible.decode("utf-8", errors="replace")
-        if not truncated:
+
+        if offset is not None or limit is not None:
+            all_lines = text.splitlines(keepends=True)
+            total = len(all_lines)
+            start = offset or 0
+            end = (start + limit) if limit is not None else total
+            selected = all_lines[start:end]
+            numbered = [f"{start + i + 1}\t{line}" for i, line in enumerate(selected)]
+            result = "".join(numbered)
+            if end < total or byte_truncated:
+                remaining = total - end if not byte_truncated else "?"
+                result += f"\n... {remaining} more lines below ..."
+            return self.bound(result, self.output_limits.max_output_chars)
+
+        numbered = [f"{i + 1}\t{line}" for i, line in enumerate(text.splitlines(keepends=True))]
+        result = "".join(numbered)
+        if not byte_truncated:
             relative = target.relative_to(self.workspace).as_posix()
             self.versions.record(relative, visible)
-        if truncated:
-            text += f"\n... file truncated at {self.read_limits.max_read_bytes} bytes ..."
-        return self.bound(text, self.output_limits.max_output_chars)
+        if byte_truncated:
+            result += f"\n... file truncated at {self.read_limits.max_read_bytes} bytes ..."
+        return self.bound(result, self.output_limits.max_output_chars)

@@ -29,8 +29,10 @@ from looplane.mcp_client import (
     native_mcp_resource_tool_name,
     split_native_mcp_tool_name,
 )
+from looplane.permissions import CommandPolicyAction, classify_command_policy
 from looplane.policy import PathPolicyError, SafePathPolicy
 from looplane.sandbox.policy import resolve_command_sandbox
+from looplane.secret_scan import redact_secrets, scan_text_for_secrets
 from looplane.tooling.definitions import tool_definitions
 from looplane.tooling.filesystem import OutputLimits, ReadLimits, WorkspaceFiles
 from looplane.tooling.git import WorkspaceGit
@@ -49,6 +51,7 @@ from looplane.workspace.local_git import LocalGitWorkspace
 
 class ToolExecutor:
     _HUNK_HEADER = UnifiedDiffValidator.HUNK_HEADER
+
     def __init__(
         self,
         workspace: Path | LocalGitWorkspace,
@@ -83,7 +86,9 @@ class ToolExecutor:
             raise ValueError("git_dir must be an existing directory")
         self.policy = policy
         self.max_output_chars = self._limit_alias(
-            limits, ("max_tool_output_bytes", "max_output_chars"), 200_000,
+            limits,
+            ("max_tool_output_bytes", "max_output_chars"),
+            200_000,
         )
         self.max_read_bytes = self._limit(limits, "max_read_bytes", 100_000)
         self.max_patch_bytes = self._limit(limits, "max_patch_bytes", 100_000)
@@ -188,6 +193,7 @@ class ToolExecutor:
             git=self.git,
             checks=self.checks,
             limits=self._program_limits,
+            executor_shell=self.shell,
             output_limits=self._output_limits,
             bound=self._bound,
         )
@@ -308,19 +314,6 @@ class ToolExecutor:
         self.mcp_bridge.clear_routes()
         definitions = list(self._tool_definitions())
         definitions.extend(self._mcp_tool_definitions())
-        run_check_index = next(
-            index for index, definition in enumerate(definitions) if definition.name == "run_check"
-        )
-        run_check_definition = definitions[run_check_index]
-        run_check_schema = dict(run_check_definition.input_schema)
-        run_check_properties = dict(run_check_schema["properties"])
-        run_check_name = dict(run_check_properties["name"])
-        run_check_name["enum"] = sorted(self.verification_commands)
-        run_check_properties["name"] = run_check_name
-        run_check_schema["properties"] = run_check_properties
-        definitions[run_check_index] = run_check_definition.model_copy(
-            update={"input_schema": run_check_schema}
-        )
         return tuple(definitions)
 
     def refresh_mcp_tool_definitions(self) -> bool:
@@ -341,8 +334,10 @@ class ToolExecutor:
 
     def close(self) -> None:
         self.mcp_bridge.close()
+
     def _mcp_tool_definitions(self) -> tuple[ToolDefinition, ...]:
         return self.mcp_bridge.discover()
+
     def _mcp_bridge_definitions(self, client: McpClient) -> tuple[ToolDefinition, ...]:
         return self.mcp_bridge.bridge_definitions(client)
 
@@ -361,6 +356,7 @@ class ToolExecutor:
     @property
     def _mcp_prompt_tools(self) -> dict[str, tuple[McpClient, str]]:
         return self.mcp_bridge.prompt_tools
+
     @staticmethod
     def _limit(limits: object | None, name: str, default: int) -> int:
         if limits is None:
@@ -389,18 +385,34 @@ class ToolExecutor:
 
     def _walk_files(self, root: Path):
         return self.files.walk(root)
+
     def list_files(self, path: str = ".") -> str:
         return self.files.list_files(path)
-    def read_file(self, path: str) -> str:
-        return self.files.read_file(path)
+
+    def read_file(
+        self,
+        path: str,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> str:
+        return self.files.read_file(path, offset=offset, limit=limit)
+
     def search_text(
         self,
         query: str,
         path: str = ".",
         glob: str | None = None,
         case_sensitive: bool = True,
+        regex: bool = False,
     ) -> str:
-        return self.search.search_text(query, path, glob, case_sensitive)
+        return self.search.search_text(
+            query,
+            path,
+            glob,
+            case_sensitive,
+            regex=regex,
+        )
+
     def _search_text_with_rg(
         self,
         *,
@@ -415,11 +427,15 @@ class ToolExecutor:
             glob=glob,
             case_sensitive=case_sensitive,
         )
+
     _header_path = staticmethod(UnifiedDiffValidator.header_path)
     _diff_git_paths = staticmethod(UnifiedDiffValidator.diff_git_paths)
+
     def _validate_unified_diff(self, patch: str) -> tuple[str, ...]:
         return self.patch_validator.validate(patch)
+
     _quoted_diff_path = staticmethod(PatchOperations.quoted_diff_path)
+
     def create_file(
         self,
         path: str,
@@ -428,6 +444,7 @@ class ToolExecutor:
         timeout_seconds: float | None = None,
     ) -> str:
         return self.patching.create_file(path, content, timeout_seconds=timeout_seconds)
+
     _effective_timeout = staticmethod(effective_timeout)
 
     def _git(
@@ -440,12 +457,16 @@ class ToolExecutor:
         extra_env: Mapping[str, str] | None = None,
     ) -> CommandResult:
         return self.git.run(
-            argv, stdin=stdin, timeout_seconds=timeout_seconds,
-            max_output_bytes=max_output_bytes, extra_env=extra_env,
+            argv,
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            extra_env=extra_env,
         )
 
     def apply_patch(self, patch: str, *, timeout_seconds: float | None = None) -> str:
         return self.patching.apply_patch(patch, timeout_seconds=timeout_seconds)
+
     @staticmethod
     def _atomic_replace_file(target: Path, payload: bytes, mode: int) -> None:
         AtomicFileWriter().replace(target, payload, mode)
@@ -459,15 +480,77 @@ class ToolExecutor:
         timeout_seconds: float | None = None,
     ) -> str:
         return self.patching.replace_text(path, old_text, new_text, timeout_seconds=timeout_seconds)
+
     def _rollback_patch(self, patch: str, new_paths: Sequence[str]) -> None:
         return self.patching.rollback_patch(patch, new_paths)
+
     def run_check(
-        self, name: str, *, timeout_seconds: float | None = None,
+        self,
+        name: str,
+        *,
+        timeout_seconds: float | None = None,
     ) -> VerificationOutcome:
         return self.checks.run_check(name, timeout_seconds=timeout_seconds)
 
+    _SHELL_TIMEOUT = 30.0
+
+    def shell(
+        self,
+        command: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> str | VerificationOutcome:
+        if not command or not command.strip():
+            raise ToolExecutionError("command must be non-empty")
+        classification = classify_command_policy(command)
+        if classification.action is CommandPolicyAction.DENY:
+            raise ToolExecutionError(f"denied: {classification.reason}")
+
+        for name, vc in self.checks.commands.items():
+            if " ".join(vc.argv) == command.strip():
+                return self.checks.run_check(
+                    name,
+                    timeout_seconds=timeout_seconds,
+                )
+
+        timeout = effective_timeout(self._SHELL_TIMEOUT, timeout_seconds)
+        sandbox = (
+            self._resolve_sandbox(
+                profile=self._sandbox_profile,
+                backend=self._sandbox_backend,
+                cwd=self.workspace,
+                task_home=self._task_home,
+                extra_read_roots=self._sandbox_read_roots,
+            )
+            if self._sandbox_checks
+            else None
+        )
+        result = self._run_command(
+            ("sh", "-c", command),
+            cwd=self.workspace,
+            timeout_seconds=timeout,
+            max_output_chars=self.max_output_chars,
+            env=self._environment(task_home=self._task_home),
+            sandbox=sandbox,
+        )
+        sections: list[str] = []
+        if result.timed_out:
+            sections.append(f"timed out after {timeout:g}s")
+        for label, text in (("stdout", result.stdout), ("stderr", result.stderr)):
+            if not text:
+                continue
+            scan_text_for_secrets(text, path=f"shell:{command[:60]}")
+            sections.append(f"{label}:\n{redact_secrets(text)}")
+        if not sections:
+            sections.append(f"exit {result.returncode} (no output)")
+        else:
+            sections.insert(0, f"exit {result.returncode}")
+        return self._bound("\n".join(sections), self.max_output_chars)
+
     def reviewable_patch(
-        self, *, timeout_seconds: float | None = None,
+        self,
+        *,
+        timeout_seconds: float | None = None,
     ) -> ReviewablePatch:
         return self.git.reviewable_patch(timeout_seconds=timeout_seconds)
 
@@ -475,7 +558,9 @@ class ToolExecutor:
         return self.git.workspace_fingerprint(timeout_seconds=timeout_seconds)
 
     def _reviewable_patch_pinned(
-        self, *, timeout_seconds: float | None = None,
+        self,
+        *,
+        timeout_seconds: float | None = None,
     ) -> ReviewablePatch:
         return self.git._reviewable_patch_pinned(timeout_seconds=timeout_seconds)
 
@@ -483,7 +568,9 @@ class ToolExecutor:
         return self.git.git_diff(timeout_seconds=timeout_seconds)
 
     def tool_program(
-        self, steps: Sequence[Mapping[str, Any]], *,
+        self,
+        steps: Sequence[Mapping[str, Any]],
+        *,
         timeout_seconds: float | None = None,
     ) -> str:
         return self.programs.tool_program(steps, timeout_seconds=timeout_seconds)
@@ -491,7 +578,8 @@ class ToolExecutor:
     _nested_steps = staticmethod(StructuredPrograms.nested_steps)
 
     def _transaction_touched_paths(
-        self, steps: Sequence[Mapping[str, Any]],
+        self,
+        steps: Sequence[Mapping[str, Any]],
     ) -> tuple[str, ...]:
         return self.programs.touched_paths(steps)
 
@@ -502,7 +590,9 @@ class ToolExecutor:
         self.snapshots.restore(snapshots)
 
     def tool_transaction(
-        self, steps: Sequence[Mapping[str, Any]], *,
+        self,
+        steps: Sequence[Mapping[str, Any]],
+        *,
         timeout_seconds: float | None = None,
     ) -> str:
         return self.programs.tool_transaction(steps, timeout_seconds=timeout_seconds)
@@ -521,7 +611,7 @@ class ToolExecutor:
             "create_file": self.create_file,
             "replace_text": self.replace_text,
             "apply_patch": self.apply_patch,
-            "run_check": self.run_check,
+            "shell": self.shell,
             "git_diff": self.git_diff,
             "tool_program": self.tool_program,
             "tool_transaction": self.tool_transaction,
@@ -644,7 +734,7 @@ class ToolExecutor:
                 "create_file",
                 "replace_text",
                 "apply_patch",
-                "run_check",
+                "shell",
                 "git_diff",
                 "tool_program",
                 "tool_transaction",

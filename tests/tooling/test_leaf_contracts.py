@@ -32,9 +32,12 @@ def test_old_factory_is_the_canonical_function() -> None:
 
 def test_builtin_output_matches_pre_extraction_snapshot_including_order() -> None:
     expected = Path(__file__).with_name("builtin_definitions.json").read_text()
-    actual = json.dumps(
-        [definition.model_dump(mode="json") for definition in tool_definitions()], indent=2
-    ) + "\n"
+    actual = (
+        json.dumps(
+            [definition.model_dump(mode="json") for definition in tool_definitions()], indent=2
+        )
+        + "\n"
+    )
     assert actual == expected
 
 
@@ -44,20 +47,18 @@ def test_definition_calls_do_not_share_mutable_schemas() -> None:
     assert first is not second
     assert all(left is not right for left, right in zip(first, second, strict=True))
     first[0].input_schema["properties"]["path"]["default"] = "changed"
-    first[6].input_schema["properties"]["name"]["enum"].append("changed")
+    first[6].input_schema["properties"]["command"]["minLength"] = 999
     assert second[0].input_schema["properties"]["path"]["default"] == "."
-    assert second[6].input_schema["properties"]["name"]["enum"] == []
+    assert second[6].input_schema["properties"]["command"]["minLength"] == 1
 
 
-def test_executor_allowlist_is_sorted_and_does_not_leak_between_instances(tmp_path: Path) -> None:
+def test_executor_definitions_are_stable_across_instances(tmp_path: Path) -> None:
     commands = tuple(
-        contracts.VerificationCommand(name=name, argv=("unused",))
-        for name in ("zeta", "alpha")
+        contracts.VerificationCommand(name=name, argv=("unused",)) for name in ("zeta", "alpha")
     )
     executor = tools.ToolExecutor(tmp_path, SafePathPolicy(tmp_path), commands)
     empty = tools.ToolExecutor(tmp_path, SafePathPolicy(tmp_path), ())
     expected = [item.model_dump(mode="json") for item in tool_definitions()]
-    expected[6]["input_schema"]["properties"]["name"]["enum"] = ["alpha", "zeta"]
     assert [item.model_dump(mode="json") for item in executor.definitions] == expected
     assert empty.definitions == tool_definitions()
     assert executor.refresh_mcp_tool_definitions() is False

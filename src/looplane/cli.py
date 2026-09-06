@@ -396,10 +396,7 @@ def chat(
         list[str] | None,
         typer.Option(
             "--deny-tool",
-            help=(
-                "Forbidden-operation rule like 'read_file(.env*)' or "
-                "'run_check(git push:*)'; repeatable."
-            ),
+            help=("Forbidden-operation rule like 'read_file(.env*)' or 'shell(rm *)'; repeatable."),
         ),
     ] = None,
     fallback_model: Annotated[

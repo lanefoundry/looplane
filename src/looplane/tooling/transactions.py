@@ -25,7 +25,7 @@ _TRANSACTION_OPERATIONS = frozenset(
         "create_file",
         "replace_text",
         "apply_patch",
-        "run_check",
+        "shell",
         "git_diff",
     }
 )
@@ -48,6 +48,7 @@ class StructuredPrograms:
         git: WorkspaceGit,
         checks: AuthorizedChecks,
         limits: ProgramLimits,
+        executor_shell: Callable[..., str] | None = None,
         output_limits: OutputLimits,
         bound: Callable[[str, int], str] = bounded_text,
     ) -> None:
@@ -58,6 +59,7 @@ class StructuredPrograms:
         self.snapshots = snapshots
         self.git = git
         self.checks = checks
+        self.executor_shell = executor_shell
         self.policy = files.policy
         self.workspace = files.workspace
         self.limits = limits
@@ -181,8 +183,8 @@ class StructuredPrograms:
                         **arguments,
                         timeout_seconds=timeout_seconds,
                     )
-                elif op == "run_check":
-                    output = self.checks.run_check(**arguments, timeout_seconds=timeout_seconds)
+                elif op == "shell":
+                    output = self.executor_shell(**arguments, timeout_seconds=timeout_seconds)
                 else:
                     # The fixed operation set has already restricted this to git_diff.
                     output = self.git.git_diff(**arguments, timeout_seconds=timeout_seconds)

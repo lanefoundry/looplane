@@ -40,22 +40,18 @@ def make_executor(
     )
 
 
-def test_run_check_rejects_command_not_in_exact_allowlist(
-    tiny_bug_repo: Path, tmp_path: Path
-) -> None:
-    marker = tmp_path / "must-not-exist"
+def test_shell_denies_critical_commands(tiny_bug_repo: Path, tmp_path: Path) -> None:
     executor = make_executor(tiny_bug_repo)
     call = ToolCall(
-        name="run_check",
-        arguments={"name": "python"},
+        name="shell",
+        arguments={"command": "sudo rm -rf / --no-preserve-root"},
     )
 
     observation = executor.execute(call)
 
     assert observation.ok is False
     assert observation.error is not None
-    assert "allow" in observation.error.lower() or "unknown" in observation.error.lower()
-    assert not marker.exists(), "a rejected check must never reach process execution"
+    assert "denied" in observation.error.lower() or "critical" in observation.error.lower()
 
 
 def test_read_only_tool_definitions_mark_concurrency_safe(tiny_bug_repo: Path) -> None:
@@ -79,7 +75,7 @@ def test_read_only_tool_definitions_mark_concurrency_safe(tiny_bug_repo: Path) -
     assert "if_contains" in program_ops
     assert "repeat" in transaction_ops
     assert "if_contains" in transaction_ops
-    for name in ("create_file", "replace_text", "apply_patch", "run_check"):
+    for name in ("create_file", "replace_text", "apply_patch", "shell"):
         assert definitions[name].read_only is False
         assert definitions[name].concurrency_safe is False
 
@@ -203,9 +199,10 @@ def test_tool_program_rejects_expanded_loop_over_step_limit(tiny_bug_repo: Path)
 
 def test_tool_transaction_applies_edit_and_check_as_one_unit(tiny_bug_repo: Path) -> None:
     target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
+    check_argv = (sys.executable, "-c", "raise SystemExit(0)")
     command = VerificationCommand(
         name="ok",
-        argv=(sys.executable, "-c", "raise SystemExit(0)"),
+        argv=check_argv,
         timeout_seconds=5,
     )
     executor = make_executor(tiny_bug_repo, verification_commands=(command,))
@@ -227,7 +224,7 @@ def test_tool_transaction_applies_edit_and_check_as_one_unit(tiny_bug_repo: Path
                             "new_text": "return left + right",
                         },
                     },
-                    {"op": "run_check", "args": {"name": "ok"}},
+                    {"op": "shell", "args": {"command": " ".join(check_argv)}},
                 ]
             },
         )
@@ -235,7 +232,7 @@ def test_tool_transaction_applies_edit_and_check_as_one_unit(tiny_bug_repo: Path
 
     assert observation.ok is True
     assert observation.content.startswith("[tool-transaction-v1]")
-    assert "## step 3: run_check" in observation.content
+    assert "## step 3: shell" in observation.content
     assert target.read_text().endswith("return left + right\n")
 
 
@@ -244,9 +241,10 @@ def test_tool_transaction_supports_branch_and_rolls_back_taken_edit(
 ) -> None:
     target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
     before = target.read_bytes()
+    check_argv = (sys.executable, "-c", "raise SystemExit(7)")
     command = VerificationCommand(
         name="fail",
-        argv=(sys.executable, "-c", "raise SystemExit(7)"),
+        argv=check_argv,
         timeout_seconds=5,
     )
     executor = make_executor(tiny_bug_repo, verification_commands=(command,))
@@ -272,7 +270,7 @@ def test_tool_transaction_supports_branch_and_rolls_back_taken_edit(
                                     "new_text": "return left + right",
                                 },
                             },
-                            {"op": "run_check", "args": {"name": "fail"}},
+                            {"op": "shell", "args": {"command": " ".join(check_argv)}},
                         ],
                         "else_steps": [{"op": "git_diff"}],
                     },
@@ -290,9 +288,10 @@ def test_tool_transaction_supports_branch_and_rolls_back_taken_edit(
 def test_tool_transaction_rolls_back_edit_when_check_fails(tiny_bug_repo: Path) -> None:
     target = tiny_bug_repo / "src" / "tiny_python_bug" / "calculator.py"
     before = target.read_bytes()
+    check_argv = (sys.executable, "-c", "raise SystemExit(7)")
     command = VerificationCommand(
         name="fail",
-        argv=(sys.executable, "-c", "raise SystemExit(7)"),
+        argv=check_argv,
         timeout_seconds=5,
     )
     executor = make_executor(tiny_bug_repo, verification_commands=(command,))
@@ -314,7 +313,7 @@ def test_tool_transaction_rolls_back_edit_when_check_fails(tiny_bug_repo: Path) 
                             "new_text": "return left + right",
                         },
                     },
-                    {"op": "run_check", "args": {"name": "fail"}},
+                    {"op": "shell", "args": {"command": " ".join(check_argv)}},
                 ]
             },
         )
@@ -328,9 +327,10 @@ def test_tool_transaction_rolls_back_edit_when_check_fails(tiny_bug_repo: Path) 
 
 def test_tool_transaction_rolls_back_new_file_when_check_fails(tiny_bug_repo: Path) -> None:
     target = tiny_bug_repo / "src" / "tiny_python_bug" / "generated.py"
+    check_argv = (sys.executable, "-c", "raise SystemExit(7)")
     command = VerificationCommand(
         name="fail",
-        argv=(sys.executable, "-c", "raise SystemExit(7)"),
+        argv=check_argv,
         timeout_seconds=5,
     )
     executor = make_executor(tiny_bug_repo, verification_commands=(command,))
@@ -349,7 +349,7 @@ new file mode 100644
             arguments={
                 "steps": [
                     {"op": "apply_patch", "args": {"patch": patch}},
-                    {"op": "run_check", "args": {"name": "fail"}},
+                    {"op": "shell", "args": {"command": " ".join(check_argv)}},
                 ]
             },
         )
@@ -365,9 +365,10 @@ def test_tool_transaction_rolls_back_structured_create_when_check_fails(
     tiny_bug_repo: Path,
 ) -> None:
     target = tiny_bug_repo / "src" / "tiny_python_bug" / "structured.py"
+    check_argv = (sys.executable, "-c", "raise SystemExit(7)")
     command = VerificationCommand(
         name="fail",
-        argv=(sys.executable, "-c", "raise SystemExit(7)"),
+        argv=check_argv,
         timeout_seconds=5,
     )
     executor = make_executor(tiny_bug_repo, verification_commands=(command,))
@@ -384,7 +385,7 @@ def test_tool_transaction_rolls_back_structured_create_when_check_fails(
                             "content": "VALUE = 1\n",
                         },
                     },
-                    {"op": "run_check", "args": {"name": "fail"}},
+                    {"op": "shell", "args": {"command": " ".join(check_argv)}},
                 ]
             },
         )
@@ -1187,9 +1188,7 @@ def test_reviewable_patch_pinned_ignores_preexisting_dirty_index(tiny_bug_repo: 
         tiny_bug_repo, base_sha=source_sha, preexisting_dirty_paths=frozenset({"TASK.md"})
     )
     executor.execute(
-        ToolCall(
-            name="read_file", arguments={"path": "src/tiny_python_bug/calculator.py"}
-        )
+        ToolCall(name="read_file", arguments={"path": "src/tiny_python_bug/calculator.py"})
     )
     edit = executor.execute(
         ToolCall(

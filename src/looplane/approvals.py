@@ -151,7 +151,7 @@ TOOL_EFFECTS: dict[str, ToolEffect] = {
     "replace_text": ToolEffect.MODIFY,
     "apply_patch": ToolEffect.MODIFY,
     "tool_transaction": ToolEffect.MODIFY_EXECUTE,
-    "run_check": ToolEffect.EXECUTE,
+    "shell": ToolEffect.EXECUTE,
 }
 
 

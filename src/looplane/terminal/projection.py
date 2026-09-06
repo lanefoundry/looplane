@@ -363,7 +363,7 @@ class TerminalProjection:
         if (
             action is not None
             and request.tool_call is not None
-            and request.tool_call.name == "run_check"
+            and request.tool_call.name == "shell"
             and request.preview.startswith("$ ")
         ):
             action.set_title(f"Run {request.preview[2:]}")
@@ -571,9 +571,9 @@ class TerminalProjection:
             return f"Update {path}" if isinstance(path, str) else "Update files"
         if name == "create_file":
             return f"Create {path}" if isinstance(path, str) else "Create file"
-        if name == "run_check":
-            check = values.get("name")
-            return f"Run {check}" if isinstance(check, str) else "Run check"
+        if name == "shell":
+            cmd = values.get("command")
+            return f"Run {cmd}" if isinstance(cmd, str) else "Run command"
         if name == "git_diff":
             return "Review changes"
         return name.replace("_", " ").capitalize()
@@ -656,7 +656,7 @@ class TerminalProjection:
             detail = data.get("preview") if ok else data.get("error")
             collapsed_detail = None
             detail_kind = "plain" if not ok else None
-            if name == "run_check":
+            if name == "shell":
                 structured = self.structured_verification(data.get("verification"))
                 if structured is None:
                     structured = self.structured_verification(data.get("preview"))

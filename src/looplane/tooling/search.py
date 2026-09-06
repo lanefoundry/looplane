@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -71,9 +72,16 @@ class WorkspaceSearch:
         path: str = ".",
         glob: str | None = None,
         case_sensitive: bool = True,
+        regex: bool = False,
     ) -> str:
         if not isinstance(query, str) or not query:
             raise ToolExecutionError("search query must be a non-empty string")
+        if regex:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            try:
+                re.compile(query, flags)
+            except re.error as exc:
+                raise ToolExecutionError(f"invalid regex: {exc}") from exc
         root = self.policy.resolve(path, allow_workspace_root=True)
         if not root.exists():
             raise ToolExecutionError(f"path does not exist: {path}")
@@ -82,10 +90,16 @@ class WorkspaceSearch:
             root=root,
             glob=glob,
             case_sensitive=case_sensitive,
+            regex=regex,
         )
         if rg_result is not None:
             return rg_result
-        needle = query if case_sensitive else query.casefold()
+        if regex:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            pattern = re.compile(query, flags)
+        else:
+            pattern = None
+            needle = query if case_sensitive else query.casefold()
         matches: list[str] = []
         for file_path in self.files.walk(root):
             relative = file_path.relative_to(self.workspace).as_posix()
@@ -101,15 +115,22 @@ class WorkspaceSearch:
             for line_number, line in enumerate(
                 data.decode("utf-8", errors="replace").splitlines(), 1
             ):
-                haystack = line if case_sensitive else line.casefold()
-                if needle in haystack:
+                if pattern is not None:
+                    matched = pattern.search(line) is not None
+                else:
+                    haystack = line if case_sensitive else line.casefold()
+                    matched = needle in haystack
+                if matched:
                     matches.append(f"{relative}:{line_number}:{line}")
                     if len(matches) >= self.search_limits.max_search_results:
                         matches.append(
                             "... search truncated at "
                             f"{self.search_limits.max_search_results} matches ..."
                         )
-                        return self.bound("\n".join(matches), self.output_limits.max_output_chars)
+                        return self.bound(
+                            "\n".join(matches),
+                            self.output_limits.max_output_chars,
+                        )
         return self.bound("\n".join(matches), self.output_limits.max_output_chars)
 
     def search_with_rg(
@@ -119,6 +140,7 @@ class WorkspaceSearch:
         root: Path,
         glob: str | None,
         case_sensitive: bool,
+        regex: bool = False,
     ) -> str | None:
         if self.which("rg") is None:
             return None
@@ -128,12 +150,13 @@ class WorkspaceSearch:
             return None
         argv = [
             "rg",
-            "--fixed-strings",
             "--line-number",
             "--no-heading",
             "--color",
             "never",
         ]
+        if not regex:
+            argv.append("--fixed-strings")
         if not case_sensitive:
             argv.append("--ignore-case")
         if glob:

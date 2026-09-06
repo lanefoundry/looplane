@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
@@ -104,12 +103,10 @@ def tool_preview(call: ToolCall, verification_commands: Mapping[str, Verificatio
             ensure_ascii=False,
             indent=2,
         )
-    if call.name == "run_check":
-        name = call.arguments.get("name")
-        if isinstance(name, str):
-            command = verification_commands.get(name)
-            if command is not None:
-                return "$ " + shlex.join(command.argv)
+    if call.name == "shell":
+        cmd = call.arguments.get("command")
+        if isinstance(cmd, str):
+            return "$ " + cmd
     return json.dumps(call.arguments, ensure_ascii=False, sort_keys=True, indent=2)
 
 
@@ -215,11 +212,18 @@ async def execute_prepared_tool_call(
             timeout_seconds=remaining(deadline),
         )
     verification_data: dict[str, Any] = {}
-    if call.name == "run_check":
-        outcome = executor.verification_outcomes.get(str(call.arguments.get("name", "")))
-        if outcome is not None:
-            verification_data["verification"] = outcome.model_dump(mode="json")
-            verification_data["verification"]["output"] = bounded_text(outcome.output, 2_000)
+    if call.name == "shell":
+        cmd = str(call.arguments.get("command", "")).strip()
+        for vc_name, vc in executor.verification_commands.items():
+            if " ".join(vc.argv) == cmd:
+                outcome = executor.verification_outcomes.get(vc_name)
+                if outcome is not None:
+                    verification_data["verification"] = outcome.model_dump(mode="json")
+                    verification_data["verification"]["output"] = bounded_text(
+                        outcome.output,
+                        2_000,
+                    )
+                break
     await emit(
         "tool.completed",
         tool_call_id=call.tool_call_id,

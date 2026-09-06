@@ -95,7 +95,7 @@ def test_request_requires_exactly_one_action() -> None:
             action_id="action",
             effect=ToolEffect.EXECUTE,
             reason=ApprovalReason.FINAL_VERIFICATION,
-            tool_call=ToolCall(name="run_check"),
+            tool_call=ToolCall(name="shell"),
             command=VerificationCommand(name="tests", argv=("pytest",)),
         )
 
@@ -105,7 +105,7 @@ def test_tool_effects_are_explicit_and_unknown_tools_fail_closed() -> None:
     assert effect_for_tool("replace_text") == ToolEffect.MODIFY
     assert effect_for_tool("apply_patch") == ToolEffect.MODIFY
     assert effect_for_tool("tool_transaction") == ToolEffect.MODIFY_EXECUTE
-    assert effect_for_tool("run_check") == ToolEffect.EXECUTE
+    assert effect_for_tool("shell") == ToolEffect.EXECUTE
     assert effect_for_tool("tool_program") == ToolEffect.READ
     with pytest.raises(ValueError, match="no approval effect"):
         effect_for_tool("future_network_tool")
