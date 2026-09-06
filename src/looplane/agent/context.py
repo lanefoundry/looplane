@@ -40,6 +40,7 @@ from looplane.instructions import (
     resolve_instruction_documents,
 )
 from looplane.memory import relevant_memory_entries, relevant_memory_files, render_known_context
+from looplane.project_config import load_project_config
 from looplane.prompts import (
     build_coding_agent_system_prompt,
     build_context_pressure_reminder,
@@ -198,10 +199,20 @@ def initial_messages(
     sandbox_checks: bool,
     sandbox_profile: str,
 ) -> list[ConversationItem]:
+    project_config = load_project_config(task.repository)
     known_context = render_known_context(
         relevant_memory_entries(project=task.repository),
-        relevant_memory_files(project=task.repository),
+        relevant_memory_files(project=task.repository, instruction=task.instruction),
     )
+    if project_config.instructions_path:
+        instructions_file = task.repository / project_config.instructions_path
+        if instructions_file.is_file():
+            toml_instructions = instructions_file.read_text(encoding="utf-8", errors="replace")
+            known_context = (
+                f"{known_context}\n\n[looplane.toml instructions]\n{toml_instructions}"
+                if known_context
+                else f"[looplane.toml instructions]\n{toml_instructions}"
+            )
     instruction_resolution = resolve_instruction_documents(
         project_root=task.repository,
         start_dir=Path.cwd(),

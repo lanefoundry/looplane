@@ -9,12 +9,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
+from looplane.agent.async_tool_dispatch import AsyncToolDispatch, is_async_tool
 from looplane.agent.checkpoints import RunPersistence
 from looplane.agent.context import BlockingCall
 from looplane.agent.ports import (
     ApprovalCall,
     DispatchSubagents,
     EventEmitter,
+    ExecuteMemoryTool,
     ExecutePreparedCall,
     HookCall,
     InvokeSkill,
@@ -186,6 +188,8 @@ async def execute_prepared_tool_call(
     mark_started: MarkActionStarted,
     dispatch: DispatchSubagents,
     invoke_skill: InvokeSkill | None = None,
+    async_dispatch: AsyncToolDispatch | None = None,
+    execute_memory: ExecuteMemoryTool | None = None,
     deadline: float,
 ) -> ToolObservation:
     call = prepared.call
@@ -205,6 +209,10 @@ async def execute_prepared_tool_call(
         observation = await invoke_skill(call, deadline=deadline)
     elif call.name == "dispatch_subagents":
         observation = await dispatch(call, deadline=deadline)
+    elif call.name in ("save_memory", "recall_memory") and execute_memory is not None:
+        observation = await blocking(execute_memory, call)
+    elif async_dispatch is not None and is_async_tool(call.name):
+        observation = await async_dispatch.execute(call)
     else:
         observation = await blocking(
             executor.execute,

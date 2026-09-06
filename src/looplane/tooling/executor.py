@@ -35,10 +35,16 @@ from looplane.permissions import CommandPolicyAction, classify_command_policy
 from looplane.policy import PathPolicyError, SafePathPolicy
 from looplane.sandbox.policy import resolve_command_sandbox
 from looplane.secret_scan import redact_secrets, scan_text_for_secrets
-from looplane.tooling.definitions import tool_definitions
+from looplane.tooling.definitions import (
+    background_tool_definitions,
+    media_tool_definitions,
+    pty_tool_definitions,
+    tool_definitions,
+)
 from looplane.tooling.filesystem import OutputLimits, ReadLimits, WorkspaceFiles
 from looplane.tooling.git import WorkspaceGit
 from looplane.tooling.mcp_bridge import McpBridge, McpClient, McpToolNames
+from looplane.tooling.media import view_image as _view_image
 from looplane.tooling.patch_validation import PatchLimits, UnifiedDiffValidator
 from looplane.tooling.patching import PatchOperations
 from looplane.tooling.read_versions import ReadVersionStore
@@ -73,6 +79,10 @@ class ToolExecutor:
         sandbox_profile: str | None = None,
         sandbox_backend: str | None = None,
         sandbox_read_roots: Sequence[Path] = (),
+        enable_background: bool = False,
+        enable_pty: bool = False,
+        enable_media: bool = False,
+        has_playwright: bool = False,
     ) -> None:
         self._output_limits = OutputLimits()
         self._read_limits = ReadLimits()
@@ -113,6 +123,10 @@ class ToolExecutor:
         self._sandbox_profile = sandbox_profile or "verification"
         self._sandbox_backend = sandbox_backend or "auto"
         self._sandbox_read_roots = tuple(Path(root) for root in sandbox_read_roots)
+        self._enable_background = enable_background
+        self._enable_pty = enable_pty
+        self._enable_media = enable_media
+        self._has_playwright = has_playwright
         self.read_versions = ReadVersionStore()
         self.mcp_bridge = McpBridge(
             mcp_servers,
@@ -319,6 +333,12 @@ class ToolExecutor:
         self.mcp_bridge.clear_routes()
         definitions = list(self._tool_definitions())
         definitions.extend(self._mcp_tool_definitions())
+        if self._enable_background:
+            definitions.extend(background_tool_definitions())
+        if self._enable_media:
+            definitions.extend(media_tool_definitions(has_playwright=self._has_playwright))
+        if self._enable_pty:
+            definitions.extend(pty_tool_definitions())
         return tuple(definitions)
 
     def refresh_mcp_tool_definitions(self) -> bool:
@@ -604,6 +624,18 @@ class ToolExecutor:
             max_output_chars=self.max_output_chars,
         )
 
+    def view_image(
+        self,
+        path: str,
+        max_dimension: int = 1024,
+    ) -> str:
+        result = _view_image(path, workspace=self.workspace, max_dimension=max_dimension)
+        if isinstance(result, dict):
+            import json
+
+            return json.dumps(result, ensure_ascii=False)
+        return result
+
     def tool_program(
         self,
         steps: Sequence[Mapping[str, Any]],
@@ -655,6 +687,7 @@ class ToolExecutor:
             "web_fetch": self.web_fetch,
             "web_search": self.web_search,
             "http_request": self.http_request,
+            "view_image": self.view_image,
         }
         handler = handlers.get(name)
         if handler is None:
