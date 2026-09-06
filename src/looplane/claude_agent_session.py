@@ -38,6 +38,7 @@ from looplane.conversation_runtime import (
     TextDeltaEvent,
     ThinkingDeltaEvent,
     ToolCompletedEvent,
+    ToolOutputDeltaEvent,
     ToolStartedEvent,
     TurnCompletedEvent,
     TurnStartedEvent,
@@ -282,7 +283,8 @@ class ClaudeAgentSession:
         if self.model is not None:
             argv.extend(("--model", self.model))
         if self.thinking_level is not None:
-            argv.extend(("--thinking-level", self.thinking_level))
+            effective = "medium" if self.thinking_level == "auto" else self.thinking_level
+            argv.extend(("--thinking-level", effective))
         self._process = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
@@ -505,6 +507,8 @@ class ClaudeAgentSession:
             self._emit(ThinkingDeltaEvent, turn_id=turn_id, text=text)
         elif frame_type == "tool_started":
             self._handle_tool_started(frame, turn_id)
+        elif frame_type == "tool_input_delta":
+            self._handle_tool_input_delta(frame, turn_id)
         elif frame_type == "tool_completed":
             self._handle_tool_completed(frame, turn_id)
         elif frame_type == "action_preview_updated":
@@ -552,6 +556,15 @@ class ClaudeAgentSession:
             summary=summary,
             path=path,
         )
+
+    def _handle_tool_input_delta(self, frame: dict[str, Any], turn_id: str) -> None:
+        self._exact_keys(frame, {"type", "turn_id", "action_id", "text"})
+        action_id = self._safe_id(frame["action_id"], "action_id")
+        action = self._started_actions.get(action_id)
+        if action is None or action[0] != turn_id:
+            raise ConversationProtocolError("tool input delta has no matching start")
+        text = self._safe_text(frame["text"], "text", 64_000)
+        self._emit(ToolOutputDeltaEvent, turn_id=turn_id, action_id=action_id, text=text)
 
     def _handle_tool_completed(self, frame: dict[str, Any], turn_id: str) -> None:
         self._exact_keys(

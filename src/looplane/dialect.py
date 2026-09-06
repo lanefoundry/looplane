@@ -184,11 +184,7 @@ _RESPONSE_OPEN_TOKENS = ("<tool_response>", "<tool_response ")
 def _escape_xml_attr(value: str) -> str:
     """Escape a string for use inside an XML attribute value (double-quoted)."""
     return (
-        value
-        .replace("&", "&amp;")
-        .replace('"', "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
+        value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
     )
 
 
@@ -301,9 +297,7 @@ class XmlDialect(Dialect):
         parts: list[str] = [f'<invoke name="{_escape_xml_attr(call.name)}">']
         for key, value in call.arguments.items():
             rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-            parts.append(
-                f'<parameter name="{_escape_xml_attr(key)}">{rendered}</parameter>'
-            )
+            parts.append(f'<parameter name="{_escape_xml_attr(key)}">{rendered}</parameter>')
         parts.append("</invoke>")
         return "".join(parts)
 

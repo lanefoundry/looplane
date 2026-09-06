@@ -49,6 +49,7 @@ from looplane.agent.run_lifecycle import (
     validate_run_location,
 )
 from looplane.agent.state import ContextState, TurnState
+from looplane.agent.thinking_classifier import classify_thinking
 from looplane.agent.thinking_healing import contains_thinking_fences, heal_thinking
 from looplane.agent.verification import (
     VerificationCache,
@@ -198,10 +199,20 @@ class AgentRunner:
         context_provider_runner: ContextProviderRunner | None = None,
         enable_subagent_dispatch: bool = True,
         subagent_models: Mapping[str, ModelProvider] | None = None,
+        thinking_level: str | None = None,
     ) -> None:
         self.task = task
+        self._thinking_level = thinking_level
         self.model_retry_delay = self._retry_delay
         self._model_calls = model_calls.ModelCallState((model, *fallback_models))
+        if thinking_level and thinking_level != "auto":
+            from looplane.agent.thinking_classifier import THINKING_BUDGETS
+
+            budget = THINKING_BUDGETS.get(thinking_level)
+            if budget is not None:
+                for candidate in self._model_calls.candidates:
+                    if hasattr(candidate, "thinking_budget_tokens"):
+                        candidate.thinking_budget_tokens = budget
         self._review_model = review_model
         self._sandbox_checks = sandbox_checks
         self._sandbox_profile = sandbox_profile or "verification"
@@ -1051,6 +1062,12 @@ class AgentRunner:
             self.model, self._state.messages, self._cancel_requested, self._remaining(deadline)
         )
 
+    def _apply_thinking_budget(self, budget_tokens: int | None) -> None:
+        """Set the thinking budget on the active model if it supports per-turn adjustment."""
+        model = self.model
+        if hasattr(model, "thinking_budget_tokens"):
+            model.thinking_budget_tokens = budget_tokens
+
     async def _backoff_sleep(self, delay: float) -> None:
         await model_calls.backoff_sleep(self._cancel_requested, delay)
 
@@ -1403,6 +1420,20 @@ class AgentRunner:
                         ],
                     )
                 self._state.step += 1
+                if self._thinking_level == "auto":
+                    classification = classify_thinking(
+                        self._state.messages,
+                        step=self._state.step,
+                        turn_start_step=self._turn_start_step,
+                    )
+                    self._apply_thinking_budget(classification.budget_tokens)
+                    await self._event(
+                        "thinking.classified",
+                        step=self._state.step,
+                        level=classification.level,
+                        reason=classification.reason,
+                        budget_tokens=classification.budget_tokens,
+                    )
                 await self._event("model.requested", step=self._state.step)
                 self._wall_time_phase = "model request"
                 turn = await self._complete_model_with_retry(deadline)

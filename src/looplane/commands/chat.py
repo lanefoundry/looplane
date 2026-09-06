@@ -95,9 +95,10 @@ def chat(
         )
         return GuardedApprovalPolicy(base, permission_guard)
 
+    fallback_specs = tuple(fallback_model) if fallback_model else current_config.fallback_models
     model_selection = _bootstrap.ModelSelection(
         services=services,
-        fallback_specs=tuple(fallback_model or ()),
+        fallback_specs=fallback_specs,
         auto_review=auto_review,
         allow_custom_provider_endpoint=allow_custom_provider_endpoint,
         experimental_subscription=experimental_subscription,
@@ -180,6 +181,14 @@ def chat(
         runtime_models = runtime_registry.runtime_model_map()
         services.startup.mark("runtime_discovered")
 
+        from looplane.terminal.app import TerminalDependencies
+
+        def _update_fallback_specs(specs: tuple[str, ...]) -> None:
+            model_selection.fallback_specs = specs
+            model_selection.fallback_cache.clear()
+
+        deps = TerminalDependencies(update_fallback_specs=_update_fallback_specs)
+
         tui_app = looplaneApp(
             repository=repository,
             config=initial_config,
@@ -196,6 +205,7 @@ def chat(
             locked_provider=requested_provider,
             conversation_store=ConversationStore(),
             runner_warmup=_warmup_native_controller,
+            dependencies=deps,
         )
         services.startup.mark("tui_constructed")
         result = tui_app.run(**({"inline": True} if no_alt_screen else {}))

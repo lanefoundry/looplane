@@ -72,8 +72,7 @@ def test_bare_looplane_runs_our_agent_loop_with_trace_and_session(
     )
 
     diagnostics = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in run_root.glob("*/verification.json")
+        path.read_text(encoding="utf-8") for path in run_root.glob("*/verification.json")
     )
     assert result.exit_code == 0, f"{result.output}\nverification:\n{diagnostics}"
     assert "completed: Fixed through the interactive CLI." in result.output
@@ -2281,9 +2280,7 @@ def test_real_tty_routes_bare_prompt_to_full_screen_tui(
     assert captured["ollama_models"] == ("qwen3:4b",)
 
 
-def test_no_alt_screen_runs_tui_inline(
-    tiny_bug_repo: Path, tmp_path: Path, monkeypatch
-) -> None:
+def test_no_alt_screen_runs_tui_inline(tiny_bug_repo: Path, tmp_path: Path, monkeypatch) -> None:
     from looplane import tui
 
     captured: dict[str, object] = {}
@@ -2487,8 +2484,24 @@ def test_conversation_server_wires_native_runtime(tiny_bug_repo: Path, monkeypat
         captured["app"] = app
         captured["uvicorn_kwargs"] = kwargs
 
+    async def fake_create_context(source_repository):
+        from looplane.shared_workspace_context import SharedWorkspaceContext
+
+        return SharedWorkspaceContext(
+            source_repository=source_repository,
+            base_sha="a" * 40,
+            source_was_dirty=False,
+            source_snapshot_warning=None,
+            version="fake",
+            created_at=0.0,
+        )
+
     monkeypatch.setattr(cli.runtime_registry, "_resolve_class", lambda _: FakeSession)
     monkeypatch.setattr("uvicorn.run", fake_run)
+    monkeypatch.setattr(
+        "looplane.shared_workspace_context.SharedWorkspaceContext.create",
+        fake_create_context,
+    )
 
     result = CliRunner().invoke(
         cli.app,
@@ -2506,6 +2519,12 @@ def test_conversation_server_wires_native_runtime(tiny_bug_repo: Path, monkeypat
     )
 
     assert result.exit_code == 0, result.output
+    app = captured["app"]
+    from looplane.conversation_websocket import ConversationWebSocketApp
+
+    assert isinstance(app, ConversationWebSocketApp)
+    assert app.shared_context is not None
+    app._session_factory()
     assert captured["session_kwargs"] == {"source_repository": tiny_bug_repo, "model": "auto"}
     assert captured["uvicorn_kwargs"] == {
         "host": "127.0.0.1",

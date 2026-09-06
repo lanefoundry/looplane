@@ -36,6 +36,12 @@ class InlineSelectorBlock(Vertical):
             self.selector = selector
             self.value = value
 
+    class SecondarySelected(Message):
+        def __init__(self, selector: InlineSelectorBlock, value: str) -> None:
+            super().__init__()
+            self.selector = selector
+            self.value = value
+
     class Cancelled(Message):
         def __init__(self, selector: InlineSelectorBlock) -> None:
             super().__init__()
@@ -136,12 +142,22 @@ class InlineSelectorBlock(Vertical):
         # Focus the search Input so typing starts filtering immediately.
         self.query_one(".selector-search", Input).focus()
 
+    def _secondary_select_highlighted(self) -> None:
+        """Post a SecondarySelected for the currently highlighted option."""
+        choices = self.query_one(".selector-options", OptionList)
+        if choices.highlighted is None:
+            return
+        idx = choices.highlighted
+        if idx < len(self._filtered_indices):
+            orig = self._filtered_indices[idx]
+            self.post_message(self.SecondarySelected(self, self._all_options[orig].value))
+
     async def _on_key(self, event: events.Key) -> None:
         """Forward navigation keys from the Input to the OptionList."""
         search = self.query_one(".selector-search", Input)
         if not search.has_focus:
             return
-        if event.key in ("up", "down", "enter"):
+        if event.key in ("up", "down", "enter", "ctrl+f"):
             choices = self.query_one(".selector-options", OptionList)
             if event.key == "up":
                 choices.action_cursor_up()
@@ -149,6 +165,8 @@ class InlineSelectorBlock(Vertical):
                 choices.action_cursor_down()
             elif event.key == "enter" and choices.highlighted is not None:
                 choices.action_select()
+            elif event.key == "ctrl+f":
+                self._secondary_select_highlighted()
             event.prevent_default()
             event.stop()
 

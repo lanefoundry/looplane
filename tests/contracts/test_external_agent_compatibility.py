@@ -22,10 +22,9 @@ VENDORS = [
     ("pi", "PiBackend", "PiRunner"),
     ("omp", "OmpBackend", "OmpRunner"),
 ]
-ALIASES = [
-    (f"{vendor}_backend", f"{vendor}_runner", old, new)
-    for vendor, old, new in VENDORS
-] + [("external_cli_base", "structured_cli_runner", "StreamJsonCliBackend", "StructuredCliRunner")]
+ALIASES = [(f"{vendor}_backend", f"{vendor}_runner", old, new) for vendor, old, new in VENDORS] + [
+    ("external_cli_base", "structured_cli_runner", "StreamJsonCliBackend", "StructuredCliRunner")
+]
 
 
 @pytest.mark.parametrize("legacy_module,entry_module,old_name,new_name", ALIASES)
@@ -82,9 +81,7 @@ async def test_legacy_command_monkeypatch_reaches_both_imports(
     runner_class = getattr(
         import_module(f"looplane.{module}"), old_name if legacy_import else new_name
     )
-    implementation = (
-        vendor + "_backend" if vendor in {"codex", "claude"} else "external_cli_base"
-    )
+    implementation = vendor + "_backend" if vendor in {"codex", "claude"} else "external_cli_base"
     calls: list[tuple[str, ...]] = []
 
     class CommandIntercepted(Exception):

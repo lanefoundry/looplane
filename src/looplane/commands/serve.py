@@ -92,9 +92,12 @@ def serve_conversation_server(
 ) -> None:
     """Expose a native conversation runtime through the WebSocket attach protocol."""
 
+    import asyncio
+
     import uvicorn
 
     from looplane.conversation_websocket import ConversationWebSocketApp
+    from looplane.shared_workspace_context import SharedWorkspaceContext
 
     if host not in {"localhost", "127.0.0.1", "::1"}:
         raise typer.BadParameter("conversation-server only binds loopback")
@@ -102,5 +105,15 @@ def serve_conversation_server(
     adapter = runtime_registry.RUNTIME_REGISTRY.get(runtime)
     if adapter is None or adapter.native_session is None:
         raise typer.BadParameter("runtime does not expose a native conversation session")
-    session = _bootstrap.build_conversation_session(adapter, repository=repository, model=model)
-    uvicorn.run(ConversationWebSocketApp(session, path=path), host=host, port=port, lifespan="off")
+
+    shared_context = asyncio.run(SharedWorkspaceContext.create(repository))
+
+    def session_factory():
+        return _bootstrap.build_conversation_session(adapter, repository=repository, model=model)
+
+    app = ConversationWebSocketApp(
+        session_factory=session_factory,
+        path=path,
+        shared_context=shared_context,
+    )
+    uvicorn.run(app, host=host, port=port, lifespan="off")

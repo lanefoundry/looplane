@@ -106,6 +106,7 @@ from looplane.session_replay import (
     create_forked_run_from_event,
     reduce_jsonl,
 )
+from looplane.shared_workspace_context import SharedWorkspaceContext
 from looplane.skills import (
     ProjectSkill,
     load_project_skills,
@@ -172,6 +173,7 @@ __all__ = [
     "ConversationRuntimeEvent",
     "ConversationRuntimeSession",
     "ConversationWebSocketApp",
+    "SharedWorkspaceContext",
     "A10_SUBAGENT_PLANNER_POLICY_VERSION",
     "BackendTurnLimiter",
     "TurnLimiter",

@@ -319,9 +319,7 @@ class TestResolveDialectForce:
         assert isinstance(result, XmlDialect)
 
     def test_force_xml_overrides_supports_true(self) -> None:
-        result = resolve_dialect(
-            "gpt-4o", supports_tool_calling=True, force_dialect="xml"
-        )
+        result = resolve_dialect("gpt-4o", supports_tool_calling=True, force_dialect="xml")
         assert isinstance(result, XmlDialect)
 
     def test_force_native_always_returns_none(self) -> None:
@@ -330,9 +328,7 @@ class TestResolveDialectForce:
 
     def test_force_native_overrides_supports_false(self) -> None:
         assert (
-            resolve_dialect(
-                "some-model", supports_tool_calling=False, force_dialect="native"
-            )
+            resolve_dialect("some-model", supports_tool_calling=False, force_dialect="native")
             is None
         )
 
@@ -420,9 +416,7 @@ class TestEncodeInbandHistory:
         assert "<tool_response>" in result[2].content  # re-encoded
         assert result[3].content == "Done."  # pass-through
 
-    def test_assistant_without_tool_calls_passes_through(
-        self, dialect: XmlDialect
-    ) -> None:
+    def test_assistant_without_tool_calls_passes_through(self, dialect: XmlDialect) -> None:
         msg = Message(role="assistant", content="I understand.")
         result = encode_inband_history([msg], dialect)
         assert result == [msg]
@@ -433,9 +427,7 @@ class TestEncodeInbandHistory:
 
 class TestRenderRoundtrip:
     def test_render_tool_call_basic(self, dialect: XmlDialect) -> None:
-        call = ToolCall(
-            tool_call_id="tc1", name="read_file", arguments={"path": "main.py"}
-        )
+        call = ToolCall(tool_call_id="tc1", name="read_file", arguments={"path": "main.py"})
         xml = dialect.render_tool_call(call)
         assert '<invoke name="read_file">' in xml
         assert '<parameter name="path">main.py</parameter>' in xml
@@ -472,17 +464,13 @@ class TestRenderRoundtrip:
         assert "&quot;" in xml
 
     def test_render_tool_result(self, dialect: XmlDialect) -> None:
-        xml = dialect.render_tool_result(
-            name="read_file", content="hello world", is_error=False
-        )
+        xml = dialect.render_tool_result(name="read_file", content="hello world", is_error=False)
         assert "<tool_response>" in xml
         assert "hello world" in xml
         assert "</tool_response>" in xml
 
     def test_render_tool_result_error(self, dialect: XmlDialect) -> None:
-        xml = dialect.render_tool_result(
-            name="read_file", content="not found", is_error=True
-        )
+        xml = dialect.render_tool_result(name="read_file", content="not found", is_error=True)
         assert "<tool_response>" in xml
         assert "not found" in xml
 

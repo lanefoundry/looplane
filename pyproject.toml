@@ -31,6 +31,7 @@ dependencies = [
   "textual>=8.2.8,<9",
   "typer>=0.15.0",
   "uvicorn>=0.30.0",
+  "trafilatura>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -45,16 +46,12 @@ sandbox = [
   "pytest==8.4.2",
   "pytest-asyncio==1.4.0",
 ]
-web = [
-  "trafilatura>=2.0.0",
-  "duckduckgo-search>=7.0.0",
-]
 media = [
   "Pillow>=11.0.0",
   "playwright>=1.49.0",
 ]
 all = [
-  "looplane[web,media]",
+  "looplane[media]",
 ]
 
 [project.scripts]

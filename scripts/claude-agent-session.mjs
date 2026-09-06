@@ -102,6 +102,7 @@ const input = new AsyncInput();
 const abortController = new AbortController();
 const actions = new Map(); // vendor toolUseID -> looplane-local action record
 const pendingApprovals = new Map(); // looplane request ID -> resolver
+const blockIndexToVendorID = new Map(); // content_block index -> vendor toolUseID
 
 function classify(toolName, toolInput) {
   if (!KNOWN_TOOLS.has(toolName) || toolName.startsWith("mcp__") || toolName === "Agent") {
@@ -356,6 +357,10 @@ function ensureAction(toolName, toolInput, vendorID) {
       summary: action.summary,
       path: action.path,
     });
+  } else {
+    action.toolName = classified.toolName;
+    action.summary = classified.summary;
+    action.path = classified.path;
   }
   return action;
 }
@@ -518,7 +523,46 @@ async function consumeSdkMessages() {
   for await (const message of agentQuery) {
     if (message.type === "stream_event") {
       const event = message.event;
-      if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
+      if (event?.type === "content_block_start" && event.content_block?.type === "tool_use") {
+        const block = event.content_block;
+        const vendorID = block.id;
+        const toolName = block.name;
+        if (typeof vendorID === "string" && typeof toolName === "string" && Number.isSafeInteger(event.index)) {
+          const classified = classify(toolName, {});
+          if (classified && activeTurn) {
+            let action = actions.get(vendorID);
+            if (!action) {
+              action = { ...classified, actionID: `action-${nextAction++}`, turnID: activeTurn };
+              actions.set(vendorID, action);
+              emit({
+                type: "tool_started",
+                turn_id: activeTurn,
+                action_id: action.actionID,
+                tool_name: action.toolName,
+                summary: action.summary,
+                path: action.path,
+              });
+            }
+            blockIndexToVendorID.set(event.index, vendorID);
+          }
+        }
+      } else if (event?.type === "content_block_delta" && event.delta?.type === "input_json_delta") {
+        const vendorID = blockIndexToVendorID.get(event.index);
+        if (vendorID) {
+          const action = actions.get(vendorID);
+          if (action && activeTurn) {
+            const text = bounded(event.delta.partial_json);
+            if (text) {
+              emit({
+                type: "tool_input_delta",
+                turn_id: activeTurn,
+                action_id: action.actionID,
+                text,
+              });
+            }
+          }
+        }
+      } else if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
         const text = bounded(event.delta.text);
         if (text) {
           sawPartialText = true;
@@ -570,6 +614,7 @@ async function consumeSdkMessages() {
       latestContextTelemetry = null;
       latestContextModel = null;
       latestStopReason = null;
+      blockIndexToVendorID.clear();
     } else if (message.type === "system") {
       if (message.subtype === "init") updateRuntimeModel(message.model);
     } else if (message.type === "tool_progress" || message.type === "auth_status") {

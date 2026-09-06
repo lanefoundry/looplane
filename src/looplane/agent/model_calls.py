@@ -258,6 +258,10 @@ async def complete_model_with_retry(
                 return result
             except ProviderError as exc:
                 if not exc.retryable:
+                    if exc.fallbackable:
+                        last_error = exc
+                        models.provider_failure_codes.append(exc.status_code)
+                        break
                     raise
                 last_error = exc
                 models.provider_failure_codes.append(exc.status_code)

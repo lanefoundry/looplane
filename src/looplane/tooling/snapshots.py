@@ -51,8 +51,12 @@ class AtomicFileWriter:
 
 class WorkspaceSnapshots:
     def __init__(
-        self, *, policy: SafePathPolicy, versions: ReadVersionStore,
-        atomic_write: AtomicWrite, reset_index: ResetSnapshotIndex,
+        self,
+        *,
+        policy: SafePathPolicy,
+        versions: ReadVersionStore,
+        atomic_write: AtomicWrite,
+        reset_index: ResetSnapshotIndex,
     ) -> None:
         self.policy = policy
         self.versions = versions
@@ -75,7 +79,6 @@ class WorkspaceSnapshots:
                 snapshots[path] = _PathSnapshot(existed=False, data=b"", mode=None)
         return snapshots
 
-
     def restore(self, snapshots: Mapping[str, _PathSnapshot]) -> None:
         if snapshots:
             self.reset_index(
@@ -92,5 +95,3 @@ class WorkspaceSnapshots:
             else:
                 target.unlink(missing_ok=True)
                 self.versions.forget(path)
-
-

@@ -38,10 +38,14 @@ MAX_DENY_RULES = 128
 MAX_DENY_RULE_CHARS = 1024
 MAX_ALLOW_RULES = 128
 MAX_ALLOW_RULE_CHARS = 1024
+MAX_FALLBACK_MODELS = 8
+MAX_FALLBACK_MODEL_CHARS = 256
 MAX_SANDBOX_READ_ROOTS = 64
 SUPPORTED_SANDBOX_PROFILES = frozenset({"verification"})
 SUPPORTED_SANDBOX_BACKENDS = frozenset({"auto", "bubblewrap", "landlock"})
-SUPPORTED_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
+SUPPORTED_THINKING_LEVELS = frozenset(
+    {"off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"}
+)
 
 
 class CliConfig(BaseModel):
@@ -59,6 +63,7 @@ class CliConfig(BaseModel):
     allow_rules: tuple[str, ...] = ()
     sandbox_profile: str | None = None
     sandbox_backend: str | None = None
+    fallback_models: tuple[str, ...] = ()
     sandbox_read_roots: tuple[str, ...] = ()
     thinking_level: str | None = None
 
@@ -134,6 +139,26 @@ class CliConfig(BaseModel):
             AllowRule.parse(rule)
             normalized.append(rule)
         return tuple(normalized)
+
+    @field_validator("fallback_models")
+    @classmethod
+    def validate_fallback_models(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) > MAX_FALLBACK_MODELS:
+            raise ValueError(
+                f"fallback_models cannot contain more than {MAX_FALLBACK_MODELS} entries"
+            )
+        normalized: list[str] = []
+        for spec in value:
+            spec = _normalized(spec)
+            assert spec is not None
+            if len(spec) > MAX_FALLBACK_MODEL_CHARS:
+                raise ValueError(
+                    f"fallback_models entries cannot exceed {MAX_FALLBACK_MODEL_CHARS} characters"
+                )
+            if not spec.isprintable():
+                raise ValueError("fallback_models entries must be printable")
+            normalized.append(spec)
+        return tuple(dict.fromkeys(normalized))
 
     @field_validator("sandbox_profile")
     @classmethod

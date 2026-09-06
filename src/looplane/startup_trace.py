@@ -41,9 +41,7 @@ class _StartupTracer:
             if not self._validate_target(target):
                 self.enabled = False
                 return
-            self._emit_record(
-                {"event": "process_entry", "elapsed_ms": 0.0, "t": _T0_WALL}
-            )
+            self._emit_record({"event": "process_entry", "elapsed_ms": 0.0, "t": _T0_WALL})
 
     @contextlib.contextmanager
     def span(self, name: str) -> Iterator[None]:
@@ -69,9 +67,7 @@ class _StartupTracer:
         if not self.enabled:
             return
         elapsed = (time.perf_counter() - _T0) * 1000.0
-        self._emit_record(
-            {"event": name, "elapsed_ms": round(elapsed, 2), "t": time.time()}
-        )
+        self._emit_record({"event": name, "elapsed_ms": round(elapsed, 2), "t": time.time()})
 
     @staticmethod
     def _validate_target(target: str | None) -> bool:

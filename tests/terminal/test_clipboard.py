@@ -17,7 +17,7 @@ def test_copy_with_native_command_uses_pbcopy_on_macos(monkeypatch) -> None:
     monkeypatch.setattr("looplane.tui_clipboard.subprocess.run", run)
 
     assert copy_with_native_command("selected text", platform="darwin") is True
-    assert calls == [(('pbcopy',), "selected text")]
+    assert calls == [(("pbcopy",), "selected text")]
 
 
 def test_copy_with_native_command_falls_back_when_no_tool_exists(monkeypatch) -> None:

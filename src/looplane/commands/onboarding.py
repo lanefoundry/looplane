@@ -192,6 +192,8 @@ def configure(
     model: str | None = None,
     api_url: str | None = None,
     clear_api_url: bool = False,
+    fallback_model: list[str] | None = None,
+    clear_fallback: bool = False,
     interactive: bool = False,
     *,
     services: CommandServices,
@@ -209,12 +211,24 @@ def configure(
                 )
             services.interactive_setup(current=current)
             return
-        if provider is None and model is None and api_url is None and not clear_api_url:
+        has_value_option = (
+            provider is not None
+            or model is not None
+            or api_url is not None
+            or clear_api_url
+            or fallback_model is not None
+            or clear_fallback
+        )
+        if not has_value_option:
             typer.echo(f"config: {path}")
             typer.echo(f"runtime: {current.runtime or '(automatic)'}")
             typer.echo(f"provider: {current.provider or '(not set)'}")
             typer.echo(f"model: {current.model or '(not set)'}")
             typer.echo(f"api_url: {current.api_url or '(not set)'}")
+            if current.fallback_models:
+                typer.echo(f"fallback_models: {', '.join(current.fallback_models)}")
+            else:
+                typer.echo("fallback_models: (none)")
             typer.echo(f"deny_rules: {len(current.deny_rules)}")
             typer.echo(f"allow_rules: {len(current.allow_rules)}")
             typer.echo(f"sandbox_profile: {current.sandbox_profile or '(default)'}")
@@ -222,6 +236,12 @@ def configure(
             typer.echo(f"sandbox_read_roots: {len(current.sandbox_read_roots)}")
             return
         provider_changed = provider is not None and provider != current.provider
+        if clear_fallback:
+            resolved_fallbacks: tuple[str, ...] = ()
+        elif fallback_model is not None:
+            resolved_fallbacks = tuple(fallback_model)
+        else:
+            resolved_fallbacks = current.fallback_models
         updated = CliConfig(
             runtime="looplane-agent",
             runtime_model=None,
@@ -232,6 +252,7 @@ def configure(
                 if clear_api_url or (provider_changed and api_url is None)
                 else (api_url if api_url is not None else current.api_url)
             ),
+            fallback_models=resolved_fallbacks,
             deny_rules=current.deny_rules,
             allow_rules=current.allow_rules,
             sandbox_profile=current.sandbox_profile,

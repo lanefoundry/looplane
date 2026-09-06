@@ -51,6 +51,7 @@ async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: 
         "statusline_command",
         "deny_rules",
         "allow_rules",
+        "fallback_models",
         "sandbox_profile",
         "sandbox_backend",
         "sandbox_read_roots",

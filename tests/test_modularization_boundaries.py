@@ -7,8 +7,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "src" / "looplane"
 FEATURES = (
-    "looplane.terminal", "looplane.runtimes", "looplane.tooling", "looplane.commands",
-    "looplane.agent", "looplane.execution", "looplane.sandbox", "looplane.workspace",
+    "looplane.terminal",
+    "looplane.runtimes",
+    "looplane.tooling",
+    "looplane.commands",
+    "looplane.agent",
+    "looplane.execution",
+    "looplane.sandbox",
+    "looplane.workspace",
 )
 FACADES = {
     "looplane.tui",
@@ -27,8 +33,10 @@ def _within(module: str, prefixes: tuple[str, ...] | set[str]) -> bool:
 
 def _imports(path: Path) -> set[str]:
     module = ".".join(("looplane", *path.relative_to(ROOT).with_suffix("").parts))
-    package = module.removesuffix(".__init__") if path.name == "__init__.py" else (
-        module.rsplit(".", 1)[0]
+    package = (
+        module.removesuffix(".__init__")
+        if path.name == "__init__.py"
+        else (module.rsplit(".", 1)[0])
     )
     result: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text())):
@@ -45,8 +53,10 @@ def _imports(path: Path) -> set[str]:
             result.update(f"{prefix}.{alias.name}" for alias in node.names)
         elif isinstance(node, ast.Call) and node.args:
             func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else (
-                func.id if isinstance(func, ast.Name) else ""
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else (func.id if isinstance(func, ast.Name) else "")
             )
             arg = node.args[0]
             if (
@@ -92,8 +102,13 @@ def test_feature_packages_do_not_import_facades_or_higher_layers() -> None:
 def test_domain_and_policy_do_not_depend_on_product_or_vendor_layers() -> None:
     graph = _graph()
     owners = (
-        "looplane.contracts", "looplane.events", "looplane.approvals", "looplane.policy",
-        "looplane.runtime_semantics", "looplane.conversation_runtime", "looplane.external_agents",
+        "looplane.contracts",
+        "looplane.events",
+        "looplane.approvals",
+        "looplane.policy",
+        "looplane.runtime_semantics",
+        "looplane.conversation_runtime",
+        "looplane.external_agents",
     )
     forbidden = ("looplane.commands", "looplane.terminal", "looplane.runtimes")
     violations = [
@@ -109,8 +124,10 @@ def test_canonical_events_have_one_definition_owner() -> None:
     from looplane import conversation_runtime
 
     names = {
-        name for name, value in vars(conversation_runtime).items()
-        if isinstance(value, type) and value.__module__ == conversation_runtime.__name__
+        name
+        for name, value in vars(conversation_runtime).items()
+        if isinstance(value, type)
+        and value.__module__ == conversation_runtime.__name__
         and name.endswith("Event")
     }
     expected = {name: "conversation_runtime.py" for name in names}
@@ -147,7 +164,8 @@ def test_production_import_graph_has_no_cycles() -> None:
         reachable[start] = seen
     cycles = {
         frozenset(other for other in reachable[start] if start in reachable.get(other, ()))
-        for start in graph if start in reachable[start]
+        for start in graph
+        if start in reachable[start]
     }
     assert not cycles, cycles
 

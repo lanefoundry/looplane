@@ -85,7 +85,5 @@ class TranscriptMarkdown(Markdown):
         self.app.open_url(resolved.url)
         if resolved.repository_path is not None:
             with suppress(Exception):
-                relative_file = resolved.repository_path.relative_to(
-                    self.app.repository.resolve()
-                )
+                relative_file = resolved.repository_path.relative_to(self.app.repository.resolve())
                 self.app.query_one("#status", Static).update(f"Opening {relative_file}")

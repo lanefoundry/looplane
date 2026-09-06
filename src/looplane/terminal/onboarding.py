@@ -435,11 +435,7 @@ class OnboardingModal(ModalScreen[TuiConfigurationSelection | None]):
         self.query_one("#model-retry", Button).display = False
 
     def _model_fetch_view_available(self) -> bool:
-        return (
-            self.is_mounted
-            and self.is_current
-            and bool(self.query("#model-fetch-status"))
-        )
+        return self.is_mounted and self.is_current and bool(self.query("#model-fetch-status"))
 
     @on(Button.Pressed, "#model-retry")
     def retry_model_fetch(self, _event: Button.Pressed) -> None:

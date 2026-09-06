@@ -78,9 +78,7 @@ def task_for(repository: Path) -> TaskContract:
         repository=repository,
         instruction="Fix the calculator.",
         allowed_paths=("src/**",),
-        verification=(
-            VerificationCommand(name="check-1", argv=("git", "diff", "--check")),
-        ),
+        verification=(VerificationCommand(name="check-1", argv=("git", "diff", "--check")),),
         limits=Limits(max_steps=2, wall_time_seconds=0.5),
     )
 

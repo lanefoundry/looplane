@@ -205,9 +205,7 @@ async def test_subagent_always_edits_its_own_disposable_clone_never_the_real_rep
     model = ScriptedModel(
         [
             ModelTurn(
-                tool_calls=(
-                    ToolCall(name="apply_patch", arguments={"patch": _SUBAGENT_FIX_PATCH}),
-                )
+                tool_calls=(ToolCall(name="apply_patch", arguments={"patch": _SUBAGENT_FIX_PATCH}),)
             ),
             ModelTurn(content="Fixed it in my own workspace."),
         ]
@@ -231,7 +229,13 @@ async def test_subagent_always_edits_its_own_disposable_clone_never_the_real_rep
     # The subagent's edit landed in its own disposable clone, not the real repo.
     assert (tiny_bug_repo / "src/tiny_python_bug/calculator.py").read_bytes() == original
     child_workspace_file = (
-        tmp_path / "runs" / "subagents" / "fixer" / "workspace" / "src" / "tiny_python_bug"
+        tmp_path
+        / "runs"
+        / "subagents"
+        / "fixer"
+        / "workspace"
+        / "src"
+        / "tiny_python_bug"
         / "calculator.py"
     )
     assert b"left + right" in child_workspace_file.read_bytes()

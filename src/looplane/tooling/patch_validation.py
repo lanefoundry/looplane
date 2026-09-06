@@ -40,7 +40,6 @@ class UnifiedDiffValidator:
             path = path[2:]
         return path
 
-
     @staticmethod
     def diff_git_paths(line: str) -> tuple[str, str]:
         try:
@@ -50,7 +49,6 @@ class UnifiedDiffValidator:
         if len(fields) != 2 or not fields[0].startswith("a/") or not fields[1].startswith("b/"):
             raise ToolExecutionError(f"invalid diff --git header: {line!r}")
         return fields[0][2:], fields[1][2:]
-
 
     def validate(self, patch: str) -> tuple[str, ...]:
         if not isinstance(patch, str) or not patch.strip():
@@ -197,9 +195,7 @@ class UnifiedDiffValidator:
 
                 if index < len(lines) and lines[index] == r"\ No newline at end of file":
                     if last_prefix is None:
-                        raise ToolExecutionError(
-                            f"invalid unified diff marker at line {index + 1}"
-                        )
+                        raise ToolExecutionError(f"invalid unified diff marker at line {index + 1}")
                     if last_prefix in " -":
                         old_closed = True
                     if last_prefix in " +":
@@ -222,5 +218,3 @@ class UnifiedDiffValidator:
         if len(paths) > self.limits.max_changed_files:
             raise ToolExecutionError(f"patch exceeds {self.limits.max_changed_files} changed files")
         return tuple(sorted(paths))
-
-

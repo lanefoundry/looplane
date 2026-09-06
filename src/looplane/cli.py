@@ -1074,6 +1074,16 @@ def configure(
     clear_api_url: Annotated[
         bool, typer.Option("--clear-api-url", help="Remove the saved API URL default.")
     ] = False,
+    fallback_model: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--fallback-model",
+            help="Set fallback model(s), e.g. 'openrouter/gemini-2.5-flash:free'; repeatable.",
+        ),
+    ] = None,
+    clear_fallback: Annotated[
+        bool, typer.Option("--clear-fallback", help="Remove all saved fallback models.")
+    ] = False,
     interactive: Annotated[
         bool, typer.Option("--interactive", help="Run provider/model setup in this terminal.")
     ] = False,
@@ -1087,6 +1097,8 @@ def configure(
         model=model,
         api_url=api_url,
         clear_api_url=clear_api_url,
+        fallback_model=fallback_model,
+        clear_fallback=clear_fallback,
         interactive=interactive,
         services=_command_services(),
     )

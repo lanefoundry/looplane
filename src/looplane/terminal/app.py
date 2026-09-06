@@ -1627,6 +1627,7 @@ class looplaneApp(App[RunResult | None]):
     def _show_thinking_level_selector(self) -> None:
         current = self.config.thinking_level or "medium"
         levels = (
+            ("auto", "Auto", "Adjust per turn based on prompt complexity"),
             ("off", "Off", "Disable extended thinking"),
             ("minimal", "Minimal", "1k token budget"),
             ("low", "Low", "2k token budget"),
@@ -3591,6 +3592,27 @@ class looplaneApp(App[RunResult | None]):
         outcome = "Copied selection" if native_copied else "Copy requested via terminal"
         self.query_one("#status", Static).update(f"{outcome} · {len(selected_text)} {unit}")
         return True
+
+    def on_mouse_up(self, event: object) -> None:
+        """Copy-on-select: auto-copy when mouse drag ends with a selection.
+
+        Mouse tracking prevents Cmd+C from reaching the pty, so we copy on
+        mouse-up — the same approach Claude Code and opencode use.
+        """
+
+        self.set_timer(0.05, self._copy_on_select)
+
+    def _copy_on_select(self) -> None:
+        """Deferred copy after mouse-up so Textual finalises the selection."""
+
+        selected = self.screen.get_selected_text()
+        if not selected:
+            return
+        native_copied = self._dependencies.copy_native(selected)
+        self.copy_to_clipboard(selected)
+        unit = "character" if len(selected) == 1 else "characters"
+        outcome = "Copied" if native_copied else "Copy requested via terminal"
+        self.query_one("#status", Static).update(f"{outcome} · {len(selected)} {unit}")
 
     def action_quit_when_idle(self) -> None:
         composer_has_input = bool(

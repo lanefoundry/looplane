@@ -38,6 +38,7 @@ class ProviderErrorKind(StrEnum):
     RETRYABLE = "retryable"
     AUTH = "auth"
     RATE_LIMIT = "rate_limit"
+    QUOTA_EXHAUSTED = "quota_exhausted"
     INVALID_REQUEST = "invalid_request"
     PROVIDER = "provider"
 
@@ -67,6 +68,15 @@ class ProviderError(RuntimeError):
     @property
     def retryable(self) -> bool:
         return self.kind in {ProviderErrorKind.RETRYABLE, ProviderErrorKind.RATE_LIMIT}
+
+    @property
+    def fallbackable(self) -> bool:
+        """Whether this error should trigger a fallback to the next candidate."""
+        return self.kind in {
+            ProviderErrorKind.RETRYABLE,
+            ProviderErrorKind.RATE_LIMIT,
+            ProviderErrorKind.QUOTA_EXHAUSTED,
+        }
 
 
 @runtime_checkable
@@ -208,14 +218,41 @@ def _should_retry_header(headers: Mapping[str, str]) -> bool | None:
     return None
 
 
+def _is_quota_exhausted(response: httpx.Response, detail: Any) -> bool:
+    """Detect hard quota exhaustion (daily cap, shared capacity) vs transient bursts."""
+    if response.status_code != 429:
+        return False
+    if response.headers.get("x-ratelimit-remaining") == "0":
+        reset_ms = response.headers.get("x-ratelimit-reset")
+        if reset_ms is not None:
+            import time as _time
+
+            try:
+                reset_in = int(reset_ms) / 1000 - _time.time()
+                if reset_in > 600:
+                    return True
+            except (ValueError, OverflowError):
+                pass
+    if isinstance(detail, dict):
+        error = detail.get("error", detail)
+        if isinstance(error, dict):
+            source = error.get("limit_source", "")
+            if "shared_capacity" in source or "daily" in str(error.get("message", "")).lower():
+                return True
+    return False
+
+
 def _http_error(provider_name: str, response: httpx.Response) -> ProviderError:
     try:
         detail = response.json()
     except ValueError:
         detail = response.text
     kind = _error_kind(response.status_code)
+    if kind == ProviderErrorKind.RATE_LIMIT and _is_quota_exhausted(response, detail):
+        kind = ProviderErrorKind.QUOTA_EXHAUSTED
     should_retry = _should_retry_header(response.headers)
-    if should_retry is False and kind is not ProviderErrorKind.AUTH:
+    no_override = {ProviderErrorKind.AUTH, ProviderErrorKind.QUOTA_EXHAUSTED}
+    if should_retry is False and kind not in no_override:
         kind = ProviderErrorKind.PROVIDER
     elif should_retry is True and kind in {
         ProviderErrorKind.PROVIDER,
@@ -953,6 +990,7 @@ class AnthropicModel(_HttpModel):
         supports_tool_calling: bool | None = None,
         capabilities: ModelCapabilities | None = None,
         allow_custom_endpoint: bool = False,
+        thinking_budget_tokens: int | None = None,
     ) -> None:
         validated_base_url = _validated_native_base_url(
             base_url,
@@ -967,6 +1005,7 @@ class AnthropicModel(_HttpModel):
         self.anthropic_version = anthropic_version
         self.capabilities = _capabilities(capabilities, supports_tool_calling)
         self.last_cache_trace: ProviderCacheTrace | None = None
+        self.thinking_budget_tokens: int | None = thinking_budget_tokens
 
     async def complete(
         self,
@@ -990,6 +1029,11 @@ class AnthropicModel(_HttpModel):
                 }
                 for tool in tools
             ]
+        if self.thinking_budget_tokens is not None:
+            payload["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self.thinking_budget_tokens,
+            }
         payload = apply_provider_cache_defaults(
             self.provider_name,
             payload,

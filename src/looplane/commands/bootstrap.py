@@ -620,6 +620,7 @@ class ChatRuntimeFactory:
                     Path(root).expanduser() for root in self.initial_config.sandbox_read_roots
                 ),
                 event_sink=event_sink,
+                thinking_level=request.thinking_level,
             ),
             ModelBundleResource(
                 selected_model, self.model_selection.build_review_model(request.provider)

@@ -105,7 +105,10 @@ class AuthorizedChecks:
         return self.git.output_limits
 
     def run_check(
-        self, name: str, *, timeout_seconds: float | None = None,
+        self,
+        name: str,
+        *,
+        timeout_seconds: float | None = None,
     ) -> VerificationOutcome:
         command = self.commands.get(name)
         if command is None:
