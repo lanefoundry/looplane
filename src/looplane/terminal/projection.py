@@ -622,7 +622,7 @@ class TerminalProjection:
                 detail_kind=self.tool_detail_kind(name),
             )
             if action.status not in {"completed", "failed", "denied", "cancelled"}:
-                action.set_state("running")
+                action.set_state("running", detail="Running…")
         elif event_type == "approval.requested" and isinstance(action_id, str):
             action = self._tool_actions.get(action_id)
             if action is not None:
@@ -873,7 +873,7 @@ class TerminalProjection:
                 detail=event.summary or None,
                 detail_kind=self.tool_detail_kind(event.kind.value),
             )
-            action.set_state("running")
+            action.set_state("running", detail=event.summary or "Running…")
             self._set_loading(f"Using {event.tool_name}…", phase=LoadingPhase.TOOL_USE)
             return
         if isinstance(event, ToolOutputDeltaEvent):

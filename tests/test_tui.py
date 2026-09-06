@@ -3769,7 +3769,7 @@ async def test_consecutive_read_search_actions_collapse_into_one_group(tmp_path:
 
         groups = list(app.query(ToolGroupBlock))
         assert len(groups) == 1
-        assert groups[0].collapsed is True
+        assert groups[0].collapsed is False
         assert groups[0].title == "Explored 2 items"
         actions = list(app.query(ToolActionBlock))
         assert len(actions) == 2

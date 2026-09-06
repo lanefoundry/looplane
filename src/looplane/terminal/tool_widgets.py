@@ -37,6 +37,7 @@ class ToolActionBlock(Vertical):
 
     _COLLAPSED_DETAIL_LINES = 18
     _COLLAPSED_DETAIL_CHARS = 4_000
+    _COLLAPSED_PLAIN_LINES = 3
 
     def __init__(
         self,
@@ -115,10 +116,15 @@ class ToolActionBlock(Vertical):
             return self.detail
         if self.collapsed_detail is not None:
             return self.collapsed_detail
-        if self.detail_kind != "diff":
+        if not self.detail:
             return self.detail
+        max_lines = (
+            self._COLLAPSED_DETAIL_LINES
+            if self.detail_kind == "diff"
+            else self._COLLAPSED_PLAIN_LINES
+        )
         lines = self.detail.splitlines()
-        preview = "\n".join(lines[: self._COLLAPSED_DETAIL_LINES])
+        preview = "\n".join(lines[:max_lines])
         if len(preview) > self._COLLAPSED_DETAIL_CHARS:
             preview = preview[: self._COLLAPSED_DETAIL_CHARS]
         if preview != self.detail:
@@ -202,14 +208,6 @@ class ToolGroupBlock(Collapsible):
 
     def action_updated(self) -> None:
         self._refresh_title()
-        terminal = {"completed", "failed", "denied", "cancelled"}
-        if (
-            not self._user_toggled
-            and not self._is_verbose()
-            and self.actions
-            and all(action.status in terminal for action in self.actions)
-        ):
-            self.collapsed = True
 
     def _refresh_title(self) -> None:
         done = sum(action.status == "completed" for action in self.actions)
