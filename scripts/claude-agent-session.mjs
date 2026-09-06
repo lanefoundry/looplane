@@ -14,6 +14,14 @@ const MAX_FRAME_BYTES = 256_000;
 const MAX_TEXT = 64_000;
 const MAX_CHANGE_SOURCE_BYTES = 2_000_000;
 const KNOWN_TOOLS = new Set(["Read", "Glob", "Grep", "Bash", "Edit", "Write"]);
+const THINKING_BUDGETS = {
+  minimal: 1024,
+  low: 2048,
+  medium: 8192,
+  high: 16384,
+  xhigh: 32768,
+  max: 32768,
+};
 
 function parseArgs(argv) {
   const result = {};
@@ -65,6 +73,10 @@ class AsyncInput {
 }
 
 const args = parseArgs(process.argv.slice(2));
+const thinkingLevel = args["thinking-level"] ?? "medium";
+if (thinkingLevel !== "off" && !Object.hasOwn(THINKING_BUDGETS, thinkingLevel)) {
+  throw new Error("invalid thinking level");
+}
 const sdkRoot = fs.realpathSync(args["sdk-path"]);
 const packageJson = JSON.parse(fs.readFileSync(path.join(sdkRoot, "package.json"), "utf8"));
 if (packageJson.name !== "@anthropic-ai/claude-agent-sdk" || packageJson.version !== SDK_VERSION) {
@@ -78,6 +90,7 @@ let closing = false;
 let nextAction = 1;
 let nextApproval = 1;
 let sawPartialText = false;
+let sawPartialThinking = false;
 let interruptRequested = false;
 let latestContextTelemetry = null;
 let latestContextModel = null;
@@ -452,12 +465,21 @@ function toolResult(message) {
 
 function assistantFallback(message) {
   captureAssistantUsage(message);
-  if (sawPartialText) return;
+  if (sawPartialText && sawPartialThinking) return;
   const content = message?.message?.content;
   if (!Array.isArray(content)) return;
   for (const block of content) {
-    if (block?.type === "text" && typeof block.text === "string" && block.text) {
+    if (!sawPartialText && block?.type === "text" && typeof block.text === "string" && block.text) {
       emit({ type: "text_delta", turn_id: activeTurn, text: bounded(block.text) });
+    } else if (
+      !sawPartialThinking &&
+      block?.type === "thinking" &&
+      typeof block.thinking === "string" &&
+      block.thinking
+    ) {
+      emit({ type: "thinking_delta", turn_id: activeTurn, text: bounded(block.thinking) });
+    } else if (!sawPartialThinking && block?.type === "redacted_thinking") {
+      emit({ type: "thinking_delta", turn_id: activeTurn, text: "[thinking hidden for safety]" });
     } else if (block?.type === "tool_use") {
       ensureAction(block.name, block.input ?? {}, block.id);
     } else if (block?.type === "mcp_tool_use" || block?.type === "server_tool_use") {
@@ -475,6 +497,9 @@ async function consumeSdkMessages() {
       settingSources: [],
       persistSession: false,
       includePartialMessages: true,
+      ...(thinkingLevel !== "off"
+        ? { thinking: { type: "enabled", budget_tokens: THINKING_BUDGETS[thinkingLevel] } }
+        : {}),
       tools: ["Read", "Glob", "Grep", "Bash", "Edit", "Write"],
       allowedTools: ["Read", "Glob", "Grep"],
       disallowedTools: ["Agent", "Task", "WebFetch", "WebSearch"],
@@ -495,6 +520,12 @@ async function consumeSdkMessages() {
         if (text) {
           sawPartialText = true;
           emit({ type: "text_delta", turn_id: activeTurn, text });
+        }
+      } else if (event?.type === "content_block_delta" && event.delta?.type === "thinking_delta") {
+        const text = bounded(event.delta.thinking);
+        if (text) {
+          sawPartialThinking = true;
+          emit({ type: "thinking_delta", turn_id: activeTurn, text });
         }
       }
     } else if (message.type === "assistant") {
@@ -529,6 +560,7 @@ async function consumeSdkMessages() {
       });
       activeTurn = null;
       sawPartialText = false;
+      sawPartialThinking = false;
       interruptRequested = false;
       latestContextTelemetry = null;
       latestContextModel = null;
@@ -566,6 +598,7 @@ reader.on("line", async (line) => {
       }
       activeTurn = frame.turn_id;
       sawPartialText = false;
+      sawPartialThinking = false;
       interruptRequested = false;
       emit({ type: "turn_accepted", turn_id: activeTurn });
       emitRuntimeModel();

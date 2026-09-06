@@ -64,6 +64,7 @@ class TuiRunRequest:
     mode: str = "agent"
     context_id: str | None = None
     continuation_run_dir: Path | None = None
+    thinking_level: str | None = None
 
 
 RunnerFactory = Callable[

@@ -41,6 +41,7 @@ MAX_ALLOW_RULE_CHARS = 1024
 MAX_SANDBOX_READ_ROOTS = 64
 SUPPORTED_SANDBOX_PROFILES = frozenset({"verification"})
 SUPPORTED_SANDBOX_BACKENDS = frozenset({"auto", "bubblewrap", "landlock"})
+SUPPORTED_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 
 class CliConfig(BaseModel):
@@ -59,6 +60,7 @@ class CliConfig(BaseModel):
     sandbox_profile: str | None = None
     sandbox_backend: str | None = None
     sandbox_read_roots: tuple[str, ...] = ()
+    thinking_level: str | None = None
 
     @field_validator("runtime")
     @classmethod
@@ -166,6 +168,15 @@ class CliConfig(BaseModel):
                 raise ValueError("sandbox_read_roots entries must be printable paths")
             normalized.append(normalized_root)
         return tuple(dict.fromkeys(normalized))
+
+    @field_validator("thinking_level")
+    @classmethod
+    def validate_thinking_level(cls, value: str | None) -> str | None:
+        value = _normalized(value)
+        if value is not None and value not in SUPPORTED_THINKING_LEVELS:
+            choices = ", ".join(sorted(SUPPORTED_THINKING_LEVELS))
+            raise ValueError(f"thinking_level must be one of: {choices}")
+        return value
 
     @field_validator("api_url")
     @classmethod

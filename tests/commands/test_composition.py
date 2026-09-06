@@ -226,6 +226,7 @@ async def test_warmup_and_turn_share_owned_native_controller(services, tmp_path)
         model="test",
         context_id="context-one",
         instruction="explain",
+        thinking_level=None,
     )
     turn, controller = factory.make_runner(request, None, None)
     assert warmed == [controller]

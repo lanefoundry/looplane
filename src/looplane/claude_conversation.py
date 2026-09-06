@@ -31,10 +31,12 @@ class IsolatedClaudeConversation:
         source_repository: str | Path,
         *,
         model: str | None = None,
+        thinking_level: str | None = None,
         allowed_paths: tuple[str, ...] = ("**",),
     ) -> None:
         self.source_repository = Path(source_repository)
         self.model = model
+        self.thinking_level = thinking_level
         self.allowed_paths = allowed_paths
         self.workspace: ConversationWorkspace | None = None
         self.session: ClaudeAgentSession | None = None
@@ -56,6 +58,7 @@ class IsolatedClaudeConversation:
                 session = ClaudeAgentSession(
                     working_directory=workspace.workspace_path,
                     model=self.model,
+                    thinking_level=self.thinking_level,
                 )
                 await session.start()
             except BaseException:

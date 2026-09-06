@@ -25,6 +25,7 @@ from looplane.conversation_runtime import (
     RuntimeModelUpdatedEvent,
     RuntimeTurnStatus,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
     ToolOutputDeltaEvent,
     TurnStartedEvent,
 )
@@ -226,6 +227,10 @@ class TerminalProjection:
         self._runtime_stream_visible_length: dict[str, int] = {}
         self._runtime_stream_last_flush: dict[str, float] = {}
         self._runtime_text_blocks: set[str] = set()
+        self._runtime_thinking_text: dict[str, str] = {}
+        self._thinking_actions: dict[str, str] = {}
+        self._thinking_started_at: dict[str, float] = {}
+        self._thinking_finalized: set[str] = set()
 
     def drain(self) -> tuple[ViewCommand, ...]:
         commands = tuple(self._commands)
@@ -266,6 +271,10 @@ class TerminalProjection:
         self._runtime_stream_visible_length.clear()
         self._runtime_stream_last_flush.clear()
         self._runtime_text_blocks.clear()
+        self._runtime_thinking_text.clear()
+        self._thinking_actions.clear()
+        self._thinking_started_at.clear()
+        self._thinking_finalized.clear()
 
     def write_turn(self, role: str, content: str) -> str:
         item_id = f"message:{uuid4().hex}"
@@ -327,6 +336,20 @@ class TerminalProjection:
         if pending is not None:
             self._apply_verification_reuse(action, pending)
         return action
+
+    def _finalize_thinking(self, turn_id: str) -> None:
+        if turn_id in self._thinking_finalized:
+            return
+        action_id = self._thinking_actions.get(turn_id)
+        if action_id is None:
+            return
+        self._thinking_finalized.add(turn_id)
+        action = self._tool_actions.get(action_id)
+        if action is None:
+            return
+        started_at = self._thinking_started_at.get(turn_id)
+        elapsed = self.clock() - started_at if started_at is not None else 0.0
+        action.set_state("completed", collapsed_detail=f"Thought for {elapsed:.0f}s")
 
     def prepare_approval(self, request: ApprovalRequest) -> tuple[ViewCommand, ...]:
         action = self._tool_actions.get(request.action_id)
@@ -778,11 +801,25 @@ class TerminalProjection:
         if isinstance(event, TurnStartedEvent):
             self._runtime_stream_text[event.turn_id] = ""
             self._runtime_stream_visible_length[event.turn_id] = 0
+            self._runtime_thinking_text[event.turn_id] = ""
             self.state.turn_started_at = self.clock()
             self.state.stream_char_count = 0
             self._set_loading("Thinking…", phase=LoadingPhase.REQUESTING)
             return
+        if isinstance(event, ThinkingDeltaEvent):
+            if event.turn_id not in self._thinking_started_at:
+                self._thinking_started_at[event.turn_id] = self.clock()
+            combined = self._runtime_thinking_text.get(event.turn_id, "") + event.text
+            self._runtime_thinking_text[event.turn_id] = combined
+            action_id = self._thinking_actions.setdefault(
+                event.turn_id, f"thinking:{event.turn_id}"
+            )
+            action = self.ensure_tool_action(action_id, "Thinking…", detail_kind="thinking")
+            action.set_state("running", detail=combined, collapsed_detail="Thinking…")
+            self._set_loading("Thinking…", phase=LoadingPhase.THINKING)
+            return
         if isinstance(event, TextDeltaEvent):
+            self._finalize_thinking(event.turn_id)
             streamed = self._runtime_stream_text.get(event.turn_id, "") + event.text
             self._runtime_stream_text[event.turn_id] = streamed
             self.state.stream_char_count += len(event.text)
@@ -825,6 +862,7 @@ class TerminalProjection:
             self._set_status("Context compacted · ready")
             return
         if isinstance(event, RuntimeToolStartedEvent):
+            self._finalize_thinking(event.turn_id)
             self.flush_runtime_stream_preview(event.turn_id, final=True)
             title = event.tool_name
             if event.path:
@@ -913,6 +951,7 @@ class TerminalProjection:
             self._set_loading("Thinking…", phase=LoadingPhase.THINKING)
             return
         if isinstance(event, RuntimeTurnCompletedEvent):
+            self._finalize_thinking(event.turn_id)
             self.flush_runtime_stream_preview(event.turn_id, final=True)
             final_stream_text = self._runtime_stream_text.get(event.turn_id)
             if final_stream_text:
@@ -920,6 +959,10 @@ class TerminalProjection:
             self._runtime_stream_text.pop(event.turn_id, None)
             self._runtime_stream_visible_length.pop(event.turn_id, None)
             self._runtime_stream_last_flush.pop(event.turn_id, None)
+            self._runtime_thinking_text.pop(event.turn_id, None)
+            self._thinking_actions.pop(event.turn_id, None)
+            self._thinking_started_at.pop(event.turn_id, None)
+            self._thinking_finalized.discard(event.turn_id)
             self._set_loading(None)
             self._mark_turn_finished()
             if self.context.result is not None:

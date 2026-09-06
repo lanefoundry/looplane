@@ -18,6 +18,7 @@ from looplane.conversation_runtime import (
     RuntimeSkillsChangedEvent,
     RuntimeToolKind,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
     ToolStartedEvent,
     TurnCompletedEvent,
 )
@@ -43,6 +44,19 @@ def test_event_contract_is_strict_and_discriminated() -> None:
     with pytest.raises(ValidationError):
         CONVERSATION_RUNTIME_EVENT_ADAPTER.validate_python(
             {"event_type": "vendor_magic", "sequence": 0, "turn_id": "turn"}
+        )
+
+
+def test_thinking_delta_event_is_discriminated_and_bounded() -> None:
+    event = CONVERSATION_RUNTIME_EVENT_ADAPTER.validate_python(
+        {"event_type": "thinking_delta", "sequence": 0, "turn_id": "turn", "text": "pondering"}
+    )
+    assert isinstance(event, ThinkingDeltaEvent)
+    assert event.text == "pondering"
+
+    with pytest.raises(ValidationError):
+        CONVERSATION_RUNTIME_EVENT_ADAPTER.validate_python(
+            {"event_type": "thinking_delta", "sequence": 0, "turn_id": "turn", "text": ""}
         )
 
 

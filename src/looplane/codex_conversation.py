@@ -14,8 +14,10 @@ class IsolatedCodexConversation(_CanonicalHost):
         *,
         executable: str | Path = "codex",
         model: str | None = None,
+        thinking_level: str | None = None,
         allowed_paths: tuple[str, ...] = ("**",),
     ) -> None:
+        del thinking_level  # Extended-thinking budgets are Claude-Agent-SDK-specific.
         super().__init__(
             source_repository,
             executable=executable,

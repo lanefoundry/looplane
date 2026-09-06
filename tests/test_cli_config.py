@@ -54,6 +54,7 @@ async def test_cli_config_round_trip_is_strict_non_secret_and_private(tmp_path: 
         "sandbox_profile",
         "sandbox_backend",
         "sandbox_read_roots",
+        "thinking_level",
     }
 
 
@@ -70,6 +71,10 @@ def test_cli_config_rejects_credentials_unknown_fields_and_symlinks(tmp_path: Pa
         CliConfig(sandbox_profile="networked")
     with pytest.raises(ValidationError, match="sandbox_backend"):
         CliConfig(sandbox_backend="ptrace")
+    with pytest.raises(ValidationError, match="thinking_level"):
+        CliConfig(thinking_level="ultra")
+    assert CliConfig(thinking_level="high").thinking_level == "high"
+    assert CliConfig().thinking_level is None
     with pytest.raises(ValidationError, match="NUL"):
         CliConfig(sandbox_read_roots=("bad\x00root",))
 

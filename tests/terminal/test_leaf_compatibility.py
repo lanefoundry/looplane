@@ -21,14 +21,31 @@ from looplane.terminal import events, status, types
 @pytest.mark.parametrize(
     ("module", "names"),
     [
-        (types, (
-            "ProviderOption", "RuntimeOption", "RuntimeModelOption", "InteractionState",
-            "LoadingPhase", "TuiRunner", "TuiResource", "TuiRunRequest", "RunnerFactory",
-            "TuiConfigurationSelection", "CommandMenuChoice", "InlineSelectorOption",
-        )),
-        (events, (
-            "RunEventMessage", "ExternalRunEventMessage", "ConversationRuntimeEventMessage",
-        )),
+        (
+            types,
+            (
+                "ProviderOption",
+                "RuntimeOption",
+                "RuntimeModelOption",
+                "InteractionState",
+                "LoadingPhase",
+                "TuiRunner",
+                "TuiResource",
+                "TuiRunRequest",
+                "RunnerFactory",
+                "TuiConfigurationSelection",
+                "CommandMenuChoice",
+                "InlineSelectorOption",
+            ),
+        ),
+        (
+            events,
+            (
+                "RunEventMessage",
+                "ExternalRunEventMessage",
+                "ConversationRuntimeEventMessage",
+            ),
+        ),
         (status, ("format_token_count", "_add_usage", "_usage_bar")),
     ],
 )
@@ -40,12 +57,21 @@ def test_old_exports_are_canonical_objects(module, names) -> None:
 def test_request_defaults_frozen_fields_and_pickle_compatibility() -> None:
     request = types.TuiRunRequest(Path("repo"), "fix", "native", None, None, None)
     assert [field.name for field in dataclasses.fields(request)] == [
-        "repository", "instruction", "runtime", "provider", "model", "api_url",
-        "mode", "context_id", "continuation_run_dir",
+        "repository",
+        "instruction",
+        "runtime",
+        "provider",
+        "model",
+        "api_url",
+        "mode",
+        "context_id",
+        "continuation_run_dir",
+        "thinking_level",
     ]
     assert request.mode == "agent"
     assert request.context_id is None
     assert request.continuation_run_dir is None
+    assert request.thinking_level is None
     with pytest.raises(dataclasses.FrozenInstanceError):
         request.mode = "ask"
     assert pickle.loads(pickle.dumps(request)) == request
@@ -59,17 +85,33 @@ def test_selection_and_enum_contracts() -> None:
     assert option.selected is False
     assert types.CommandMenuChoice("/help", "/help", True).execute is True
     assert [state.value for state in types.InteractionState] == [
-        "approval", "selector", "command-menu", "running", "composer", "transcript",
+        "approval",
+        "selector",
+        "command-menu",
+        "running",
+        "composer",
+        "transcript",
     ]
     assert [phase.value for phase in types.LoadingPhase] == [
-        "requesting", "responding", "thinking", "tool-use", "verifying",
+        "requesting",
+        "responding",
+        "thinking",
+        "tool-use",
+        "verifying",
     ]
 
 
 @pytest.mark.parametrize(
     ("count", "expected"),
-    [(-1, "-1"), (0, "0"), (999, "999"), (1000, "1k"), (1540, "1.5k"),
-     (12340, "12.3k"), (1000000, "1000k")],
+    [
+        (-1, "-1"),
+        (0, "0"),
+        (999, "999"),
+        (1000, "1k"),
+        (1540, "1.5k"),
+        (12340, "12.3k"),
+        (1000000, "1000k"),
+    ],
 )
 def test_token_formatting_boundaries(count, expected) -> None:
     assert status.format_token_count(count) == expected
@@ -77,8 +119,17 @@ def test_token_formatting_boundaries(count, expected) -> None:
 
 @pytest.mark.parametrize(
     ("percent", "width", "filled"),
-    [(-10, 10, 0), (0, 10, 0), (5, 10, 0), (15, 10, 2), (50, 10, 5),
-     (100, 10, 10), (200, 10, 10), (50, 4, 2), (100, 0, 0)],
+    [
+        (-10, 10, 0),
+        (0, 10, 0),
+        (5, 10, 0),
+        (15, 10, 2),
+        (50, 10, 5),
+        (100, 10, 10),
+        (200, 10, 10),
+        (50, 4, 2),
+        (100, 0, 0),
+    ],
 )
 def test_usage_bar_clamping_and_rounding(percent, width, filled) -> None:
     expected = "\u25b0" * filled + "\u25b1" * (width - filled)
@@ -87,10 +138,20 @@ def test_usage_bar_clamping_and_rounding(percent, width, filled) -> None:
 
 @pytest.mark.parametrize("provider_total", [None, 0, 100])
 def test_usage_arithmetic_preserves_total_fallback(provider_total) -> None:
-    left = Usage(input_tokens=10, output_tokens=5, cached_input_tokens=3,
-                 reasoning_tokens=2, provider_total_tokens=provider_total)
-    right = Usage(input_tokens=20, output_tokens=7, cached_input_tokens=4,
-                  reasoning_tokens=3, provider_total_tokens=50)
+    left = Usage(
+        input_tokens=10,
+        output_tokens=5,
+        cached_input_tokens=3,
+        reasoning_tokens=2,
+        provider_total_tokens=provider_total,
+    )
+    right = Usage(
+        input_tokens=20,
+        output_tokens=7,
+        cached_input_tokens=4,
+        reasoning_tokens=3,
+        provider_total_tokens=50,
+    )
     original = left.model_dump()
     combined = status._add_usage(left, right)
     assert combined.input_tokens == 30
@@ -103,9 +164,11 @@ def test_usage_arithmetic_preserves_total_fallback(provider_total) -> None:
 
 @pytest.mark.parametrize(
     ("message_type", "handler_name"),
-    [(events.RunEventMessage, "on_run_event_message"),
-     (events.ExternalRunEventMessage, "on_external_run_event_message"),
-     (events.ConversationRuntimeEventMessage, "on_conversation_runtime_event_message")],
+    [
+        (events.RunEventMessage, "on_run_event_message"),
+        (events.ExternalRunEventMessage, "on_external_run_event_message"),
+        (events.ConversationRuntimeEventMessage, "on_conversation_runtime_event_message"),
+    ],
 )
 async def test_message_routing_payload_and_generation(message_type, handler_name) -> None:
     payload = object()
@@ -149,6 +212,9 @@ for name in ('looplane.tui', 'looplane.cli', 'looplane.backends', 'textual.app')
     assert name not in sys.modules, name
 """
     completed = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=20,
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=20,
     )
     assert completed.returncode == 0, completed.stderr

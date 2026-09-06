@@ -37,7 +37,7 @@ from looplane.approvals import (
     ApprovalDecision,
     ApprovalRequest,
 )
-from looplane.cli_config import CliConfig, save_cli_config
+from looplane.cli_config import SUPPORTED_THINKING_LEVELS, CliConfig, save_cli_config
 from looplane.contracts import RunResult, RunStatus, Usage
 from looplane.conversation import (
     ConversationEventKind,
@@ -1381,6 +1381,27 @@ class looplaneApp(App[RunResult | None]):
             ),
         )
 
+    def _show_thinking_level_selector(self) -> None:
+        current = self.config.thinking_level or "medium"
+        levels = (
+            ("off", "Off", "Disable extended thinking"),
+            ("minimal", "Minimal", "1k token budget"),
+            ("low", "Low", "2k token budget"),
+            ("medium", "Medium", "8k token budget"),
+            ("high", "High", "16k token budget"),
+            ("xhigh", "Extra high", "32k token budget"),
+            ("max", "Max", "32k token budget"),
+        )
+        self._show_inline_selector(
+            command="thinking",
+            title="Extended thinking",
+            description="Choose how much the model reasons before responding.",
+            options=tuple(
+                InlineSelectorOption(value, label, description, value == current)
+                for value, label, description in levels
+            ),
+        )
+
     def _close_inline_selector(self, *, restore_focus: bool = True) -> None:
         selector = self._active_selector
         self._active_selector = None
@@ -1417,6 +1438,8 @@ class looplaneApp(App[RunResult | None]):
             self._apply_provider_command(value)
         elif kind == "permissions":
             self._apply_permission_command(value)
+        elif kind == "thinking":
+            self._apply_thinking_command(value)
         elif kind == "rewind":
             self._apply_rewind(value)
         elif kind == "history":
@@ -1704,6 +1727,11 @@ class looplaneApp(App[RunResult | None]):
                 self._apply_permission_command(argument)
             else:
                 self._show_permissions_selector()
+        elif command is SlashCommand.THINKING:
+            if argument:
+                self._apply_thinking_command(argument)
+            else:
+                self._show_thinking_level_selector()
         elif command is SlashCommand.EXIT:
             if self._agent_running:
                 self._exit_after_stop = True
@@ -1736,6 +1764,32 @@ class looplaneApp(App[RunResult | None]):
             f"Mode: {mode.value} · existing exact grants remain process-local.",
         )
         self.query_one("#status", Static).update(f"Permission mode · {mode.value}")
+
+    async def _apply_thinking_command(self, requested: str) -> None:
+        normalized = requested.strip().casefold()
+        if normalized not in SUPPORTED_THINKING_LEVELS:
+            choices = "|".join(sorted(SUPPORTED_THINKING_LEVELS))
+            self.query_one("#status", Static).update(f"Usage: /thinking [{choices}]")
+            return
+        previous = self.config.thinking_level or "medium"
+        if normalized == previous:
+            self.query_one("#status", Static).update(f"Thinking level unchanged · {normalized}")
+            return
+        token = self._binding.capture()
+        self.config = self.config.model_copy(update={"thinking_level": normalized})
+        # The sidecar only reads its thinking budget at process spawn, so a level
+        # change only takes effect once the native session is rebuilt.
+        await self.aclose_resources()
+        if not self._binding.current(token):
+            return
+        await self._persist_default_config()
+        if not self._binding.current(token):
+            return
+        self._write_timeline(
+            "Extended thinking",
+            f"{previous} → {normalized} · applies to the next turn",
+        )
+        self.query_one("#status", Static).update(f"Thinking level · {normalized}")
 
     @work(exclusive=True, group="configuration")
     async def _apply_model_command(self, requested: str) -> None:
@@ -2403,6 +2457,7 @@ class looplaneApp(App[RunResult | None]):
                 self.config.runtime_model if self._uses_native_conversation() else self.config.model
             ),
             api_url=self.config.api_url,
+            thinking_level=self.config.thinking_level,
             context_id=self._runtime_context_id,
             continuation_run_dir=(
                 self._active_agent_run_dir

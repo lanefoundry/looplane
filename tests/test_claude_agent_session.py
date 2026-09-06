@@ -21,6 +21,7 @@ from looplane.conversation_runtime import (
     RuntimeToolKind,
     RuntimeTurnStatus,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
     ToolCompletedEvent,
     ToolStartedEvent,
     TurnCompletedEvent,
@@ -402,6 +403,115 @@ async def test_edit_preview_is_pre_execution_contained_and_context_usage_is_esti
     assert isinstance(await _next(stream), ContextUsageUpdatedEvent)
     assert isinstance(await _next(stream), TurnCompletedEvent)
     assert created.read_text(encoding="utf-8") == "hello\n"
+    await session.aclose()
+
+
+@pytest.mark.asyncio
+async def test_thinking_delta_streams_before_text_with_default_budget(tmp_path: Path) -> None:
+    sdk = _fake_sdk(tmp_path)
+    (sdk / "sdk.mjs").write_text(
+        dedent(
+            """\
+            export function query({ prompt, options }) {
+              if (options.thinking?.type !== "enabled" || options.thinking.budget_tokens !== 8192) {
+                throw new Error("expected default medium thinking budget");
+              }
+              const stream = (async function* () {
+                for await (const message of prompt) {
+                  yield { type: "system", subtype: "init", model: "claude-test" };
+                  yield {
+                    type: "stream_event",
+                    event: {
+                      type: "content_block_delta",
+                      delta: { type: "thinking_delta", thinking: "pondering" },
+                    },
+                  };
+                  yield {
+                    type: "stream_event",
+                    event: {
+                      type: "content_block_delta",
+                      delta: { type: "text_delta", text: "done" },
+                    },
+                  };
+                  yield { type: "result", subtype: "success", is_error: false };
+                }
+              })();
+              stream.interrupt = async () => {};
+              return stream;
+            }
+            """
+        ),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = ClaudeAgentSession(
+        working_directory=workspace,
+        node_executable="node",
+        sidecar_path=Path(__file__).resolve().parents[1] / "scripts" / "claude-agent-session.mjs",
+        sdk_path=sdk,
+        request_timeout_seconds=2,
+        shutdown_timeout_seconds=0.2,
+    )
+    await session.start()
+    stream = session.events()
+    await session.send_turn("think")
+    assert isinstance(await _next(stream), TurnStartedEvent)
+    assert isinstance(await _next(stream), RuntimeModelUpdatedEvent)
+    thinking = await _next(stream)
+    text = await _next(stream)
+    terminal = await _next(stream)
+    assert isinstance(thinking, ThinkingDeltaEvent) and thinking.text == "pondering"
+    assert isinstance(text, TextDeltaEvent) and text.text == "done"
+    assert isinstance(terminal, TurnCompletedEvent)
+    await session.aclose()
+
+
+@pytest.mark.asyncio
+async def test_thinking_level_off_omits_the_thinking_option(tmp_path: Path) -> None:
+    sdk = _fake_sdk(tmp_path)
+    (sdk / "sdk.mjs").write_text(
+        dedent(
+            """\
+            export function query({ prompt, options }) {
+              if (options.thinking !== undefined) throw new Error("thinking must be omitted");
+              const stream = (async function* () {
+                for await (const message of prompt) {
+                  yield { type: "system", subtype: "init", model: "claude-test" };
+                  yield {
+                    type: "assistant", parent_tool_use_id: null,
+                    message: { model: "claude-test", content: [{ type: "text", text: "done" }] },
+                  };
+                  yield { type: "result", subtype: "success", is_error: false };
+                }
+              })();
+              stream.interrupt = async () => {};
+              return stream;
+            }
+            """
+        ),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = ClaudeAgentSession(
+        working_directory=workspace,
+        thinking_level="off",
+        node_executable="node",
+        sidecar_path=Path(__file__).resolve().parents[1] / "scripts" / "claude-agent-session.mjs",
+        sdk_path=sdk,
+        request_timeout_seconds=2,
+        shutdown_timeout_seconds=0.2,
+    )
+    await session.start()
+    stream = session.events()
+    await session.send_turn("hello")
+    assert isinstance(await _next(stream), TurnStartedEvent)
+    assert isinstance(await _next(stream), RuntimeModelUpdatedEvent)
+    text = await _next(stream)
+    terminal = await _next(stream)
+    assert isinstance(text, TextDeltaEvent) and text.text == "done"
+    assert isinstance(terminal, TurnCompletedEvent)
     await session.aclose()
 
 

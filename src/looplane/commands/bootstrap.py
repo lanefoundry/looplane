@@ -36,7 +36,9 @@ if TYPE_CHECKING:
     from looplane.permissions import PermissionGuard
     from looplane.terminal.types import TuiRunRequest
 
-    NativeControllerCache = dict[tuple[str, Path, str | None, str | None], ConversationController]
+    NativeControllerCache = dict[
+        tuple[str, Path, str | None, str | None, str | None], ConversationController
+    ]
 
 from looplane.commands import common as _common
 from looplane.commands import policy as _policy
@@ -75,11 +77,12 @@ def _schedule_controller_cleanup(controller: ConversationController) -> None:
 
 def _acquire_native_controller(
     cache: NativeControllerCache,
-    identity: tuple[str, Path, str | None, str | None],
+    identity: tuple[str, Path, str | None, str | None, str | None],
     *,
     adapter: runtime_registry.RuntimeAdapter,
     repository: Path,
     model: str | None,
+    thinking_level: str | None = None,
     backend_limiter: BackendTurnLimiter | None = None,
     services: CommandServices,
 ) -> ConversationController:
@@ -106,7 +109,7 @@ def _acquire_native_controller(
     if controller is None:
         with services.startup.span("controller.build"):
             session_cls = runtime_registry._resolve_class(adapter.native_session)
-            session = session_cls(repository, model=model)
+            session = session_cls(repository, model=model, thinking_level=thinking_level)
             controller = ConversationController(
                 session,
                 backend_limiter=backend_limiter,
@@ -502,6 +505,7 @@ class ChatRuntimeFactory:
                 request.repository.resolve(),
                 request.model,
                 request.context_id,
+                request.thinking_level,
             )
             controller = _acquire_native_controller(
                 self.native_controllers,
@@ -509,6 +513,7 @@ class ChatRuntimeFactory:
                 adapter=adapter,
                 repository=request.repository,
                 model=request.model,
+                thinking_level=request.thinking_level,
                 backend_limiter=self.native_backend_limiter,
                 services=self.services,
             )
@@ -603,13 +608,15 @@ class ChatRuntimeFactory:
             return
         try:
             model = self.initial_config.runtime_model or self.initial_config.model
-            identity = (runtime, self.repository.resolve(), model, context_id)
+            thinking_level = self.initial_config.thinking_level
+            identity = (runtime, self.repository.resolve(), model, context_id, thinking_level)
             controller = _acquire_native_controller(
                 self.native_controllers,
                 identity,
                 adapter=adapter,
                 repository=self.repository,
                 model=model,
+                thinking_level=thinking_level,
                 backend_limiter=self.native_backend_limiter,
                 services=self.services,
             )

@@ -21,6 +21,7 @@ from typing import Any
 from uuid import uuid4
 
 from looplane.approvals import ApprovalDecision, ToolEffect
+from looplane.cli_config import SUPPORTED_THINKING_LEVELS
 from looplane.conversation_runtime import (
     ActionPreviewUpdatedEvent,
     ApprovalRequestedEvent,
@@ -35,6 +36,7 @@ from looplane.conversation_runtime import (
     RuntimeToolStatus,
     RuntimeTurnStatus,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
     ToolCompletedEvent,
     ToolStartedEvent,
     TurnCompletedEvent,
@@ -106,6 +108,7 @@ class ClaudeAgentSession:
         *,
         working_directory: str | Path,
         model: str | None = None,
+        thinking_level: str | None = None,
         node_executable: str | Path = "node",
         sidecar_path: str | Path | None = None,
         sdk_path: str | Path | None = None,
@@ -127,6 +130,7 @@ class ClaudeAgentSession:
         if not self.working_directory.is_dir():
             raise ValueError("working_directory must be an existing directory")
         self.model = self._validate_model(model)
+        self.thinking_level = self._validate_thinking_level(thinking_level)
         self.node_executable = str(node_executable)
         self.sidecar_path = Path(sidecar_path).expanduser() if sidecar_path is not None else None
         self.sdk_path = Path(sdk_path).expanduser() if sdk_path is not None else None
@@ -164,6 +168,14 @@ class ClaudeAgentSession:
         if not normalized or len(normalized) > 256 or not normalized.isprintable():
             raise ValueError("model must be a printable model name")
         return normalized
+
+    @staticmethod
+    def _validate_thinking_level(thinking_level: str | None) -> str | None:
+        if thinking_level is None:
+            return None
+        if thinking_level not in SUPPORTED_THINKING_LEVELS:
+            raise ValueError("thinking_level must be a supported extended-thinking level")
+        return thinking_level
 
     def _source_env(self) -> Mapping[str, str]:
         return os.environ if self._host_env is None else self._host_env
@@ -269,6 +281,8 @@ class ClaudeAgentSession:
         ]
         if self.model is not None:
             argv.extend(("--model", self.model))
+        if self.thinking_level is not None:
+            argv.extend(("--thinking-level", self.thinking_level))
         self._process = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
@@ -485,6 +499,10 @@ class ClaudeAgentSession:
             self._exact_keys(frame, {"type", "turn_id", "text"})
             text = self._safe_text(frame["text"], "text", 64_000)
             self._emit(TextDeltaEvent, turn_id=turn_id, text=text)
+        elif frame_type == "thinking_delta":
+            self._exact_keys(frame, {"type", "turn_id", "text"})
+            text = self._safe_text(frame["text"], "text", 64_000)
+            self._emit(ThinkingDeltaEvent, turn_id=turn_id, text=text)
         elif frame_type == "tool_started":
             self._handle_tool_started(frame, turn_id)
         elif frame_type == "tool_completed":

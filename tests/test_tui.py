@@ -52,6 +52,7 @@ from looplane.conversation_runtime import (
     RuntimeToolStatus,
     RuntimeTurnStatus,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
     ToolCompletedEvent,
     ToolOutputDeltaEvent,
     ToolStartedEvent,
@@ -1315,8 +1316,7 @@ async def test_failed_resume_preserves_current_conversation_and_lease(tmp_path: 
 
         app._resume_conversation("broken")
         await _wait_until(
-            lambda: "Could not resume conversation"
-            in str(app.query_one("#status", Static).content)
+            lambda: "Could not resume conversation" in str(app.query_one("#status", Static).content)
         )
 
         assert app._conversation_id == "current"
@@ -1340,9 +1340,7 @@ async def test_resuming_active_conversation_is_a_safe_noop(tmp_path: Path) -> No
     async with app.run_test(size=(100, 30)):
         app._conversation_id = "a" * 32
         app._resume_conversation("a" * 32)
-        await _wait_until(
-            lambda: "already active" in str(app.query_one("#status", Static).content)
-        )
+        await _wait_until(lambda: "already active" in str(app.query_one("#status", Static).content))
         assert app._conversation_id == "a" * 32
 
 
@@ -1373,9 +1371,7 @@ async def test_conversation_rotation_closes_superseded_native_resources(
         await _wait_until(lambda: resource.closed)
         assert resource not in app._persistent_resources
         if command == "resume":
-            await _wait_until(
-                lambda: app._conversation_id == target.manifest.conversation_id
-            )
+            await _wait_until(lambda: app._conversation_id == target.manifest.conversation_id)
         else:
             assert app._conversation_id is None
 
@@ -1523,9 +1519,7 @@ async def test_native_runtime_switch_retains_conversation_but_new_command_clears
 
         task.load_text("/new")
         app._submit_current_task()
-        await _wait_until(
-            lambda: app._conversation_id is None and not app.query(MessageBlock)
-        )
+        await _wait_until(lambda: app._conversation_id is None and not app.query(MessageBlock))
         assert list(app.query(MessageBlock)) == []
         assert app._ask_history == []
 
@@ -1734,9 +1728,7 @@ async def test_run_check_approval_displays_exact_command_in_action_title(tmp_pat
     )
 
     async with app.run_test(size=(100, 30)):
-        await _wait_until(
-            lambda: any(block.is_mounted for block in app.query(InlineApprovalBlock))
-        )
+        await _wait_until(lambda: any(block.is_mounted for block in app.query(InlineApprovalBlock)))
         action = app.query_one(ToolActionBlock)
         approval = app.query_one(InlineApprovalBlock)
         assert action.title == "Run git diff --check"
@@ -2830,9 +2822,7 @@ async def test_final_verification_shows_command_once_without_internal_name(
         assert actions[0].title == "Check git diff --check"
         assert actions[0].status == "completed"
         assert actions[0].detail == "Passed · exit 0 · 0.00s"
-        assert not any(
-            entry.title == "Check · check-1" for entry in app.query(TimelineEntry)
-        )
+        assert not any(entry.title == "Check · check-1" for entry in app.query(TimelineEntry))
 
 
 async def test_final_verification_uses_result_fallback_without_live_events(
@@ -3018,9 +3008,7 @@ async def test_failed_edit_tool_uses_plain_error_not_diff_syntax(tmp_path: Path)
 
 
 def test_create_file_title_keeps_path_and_plain_detail_kind() -> None:
-    assert looplaneApp._tool_title("create_file", {"path": "src/new.py"}) == (
-        "Create src/new.py"
-    )
+    assert looplaneApp._tool_title("create_file", {"path": "src/new.py"}) == ("Create src/new.py")
     assert looplaneApp._tool_detail_kind("create_file") == "plain"
 
 
@@ -3820,6 +3808,7 @@ async def test_ctrl_o_toggles_global_tool_verbose(tmp_path: Path) -> None:
         detail = first.query_one(".tool-detail")
         assert detail.styles.max_height is not None
 
+
 async def test_scrolled_transcript_reports_deduplicated_new_items(tmp_path: Path) -> None:
     app = looplaneApp(
         repository=tmp_path,
@@ -4003,6 +3992,63 @@ async def test_runtime_loading_follows_runtime_attention_states(tmp_path: Path) 
         assert indicator.display is False
         assert indicator.auto_refresh is None
         assert status.loading_label is None
+
+
+async def test_thinking_delta_collapses_by_default_and_finalizes_on_text(
+    tmp_path: Path,
+) -> None:
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(runtime="codex-cli"),
+        runner_factory=lambda *_: (FakeRunner(), None),
+        runtimes=(("codex-cli", "Codex CLI"),),
+        providers=(("ollama", "Ollama"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._generation = 1
+        app.conversation_runtime_event_received(
+            ConversationRuntimeEventMessage(
+                TurnStartedEvent(sequence=0, turn_id="turn"), generation=1
+            )
+        )
+        app.conversation_runtime_event_received(
+            ConversationRuntimeEventMessage(
+                ThinkingDeltaEvent(sequence=1, turn_id="turn", text="pondering"),
+                generation=1,
+            )
+        )
+        await pilot.pause()
+
+        action = app.query_one(ToolActionBlock)
+        assert action.detail_kind == "thinking"
+        assert action.status == "running"
+        assert action._visible_detail() == "Thinking…"
+        assert action.detail == "pondering"
+
+        app.conversation_runtime_event_received(
+            ConversationRuntimeEventMessage(
+                ThinkingDeltaEvent(sequence=2, turn_id="turn", text=" more"),
+                generation=1,
+            )
+        )
+        await pilot.pause()
+        assert action.detail == "pondering more"
+        assert action._visible_detail() == "Thinking…"
+
+        app.conversation_runtime_event_received(
+            ConversationRuntimeEventMessage(
+                TextDeltaEvent(sequence=3, turn_id="turn", text="done"),
+                generation=1,
+            )
+        )
+        await pilot.pause()
+        assert action.status == "completed"
+        assert action._visible_detail().startswith("Thought for ")
+        assert action.detail == "pondering more"
+
+        app.action_toggle_tool_verbose()
+        assert action._visible_detail() == "pondering more"
 
 
 async def test_runtime_loading_status_glimmers_then_reveals_elapsed_time(
@@ -5027,7 +5073,7 @@ async def test_esc_after_undo_window_does_regular_interrupt(tmp_path: Path) -> N
         runner_ref.append(runner)
         return runner, FakeModel()
 
-    from looplane.terminal.app import TerminalDependencies, _UNDO_SEND_WINDOW_S
+    from looplane.terminal.app import _UNDO_SEND_WINDOW_S, TerminalDependencies
     from looplane.terminal.app import looplaneApp as CanonicalApp
 
     app = CanonicalApp(

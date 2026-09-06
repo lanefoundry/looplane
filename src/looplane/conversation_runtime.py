@@ -148,6 +148,11 @@ class TextDeltaEvent(_RuntimeEvent):
     text: str = Field(min_length=1, max_length=64_000)
 
 
+class ThinkingDeltaEvent(_RuntimeEvent):
+    event_type: Literal["thinking_delta"] = "thinking_delta"
+    text: str = Field(min_length=1, max_length=64_000)
+
+
 class NoticeEvent(_RuntimeEvent):
     event_type: Literal["notice"] = "notice"
     level: Literal["info", "warning"]
@@ -292,6 +297,7 @@ ConversationRuntimeEvent = Annotated[
     TurnStartedEvent
     | NoticeEvent
     | TextDeltaEvent
+    | ThinkingDeltaEvent
     | ContextUsageUpdatedEvent
     | RuntimeModelUpdatedEvent
     | RuntimeSkillsChangedEvent
