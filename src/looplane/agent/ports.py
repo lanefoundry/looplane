@@ -59,6 +59,10 @@ class DispatchSubagents(Protocol):
     async def __call__(self, call: ToolCall, *, deadline: float) -> ToolObservation: ...
 
 
+class ExecuteMemoryTool(Protocol):
+    def __call__(self, call: ToolCall) -> ToolObservation: ...
+
+
 class ToolExecutionPort(Protocol):
     @property
     def verification_commands(self) -> Mapping[str, VerificationCommand]: ...

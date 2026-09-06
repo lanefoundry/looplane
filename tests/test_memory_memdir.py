@@ -141,6 +141,45 @@ class TestRelevantMemoryFiles:
         assert "user-pref" in slugs
         assert "session-b" not in slugs
 
+    def test_scores_by_instruction_relevance(self, tmp_path: Path) -> None:
+        mem_dir = tmp_path / "memory"
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        save_memory_file(
+            memory_type="session_summary",
+            description="Fixed authentication login bug",
+            body="Corrected session token expiry in auth.py.",
+            slug="auth-fix",
+            project=repo,
+            memory_dir=mem_dir,
+        )
+        save_memory_file(
+            memory_type="session_summary",
+            description="Refactored database migrations",
+            body="Moved alembic scripts to new directory structure.",
+            slug="db-refactor",
+            project=repo,
+            memory_dir=mem_dir,
+        )
+        save_memory_file(
+            memory_type="session_summary",
+            description="Updated CSS styling for dashboard",
+            body="Changed color theme and layout grid.",
+            slug="css-update",
+            project=repo,
+            memory_dir=mem_dir,
+        )
+        # With limit=2 and instruction about auth, the auth memory should rank first
+        relevant = relevant_memory_files(
+            project=repo,
+            memory_dir=mem_dir,
+            limit=2,
+            instruction="Fix the authentication token validation bug",
+        )
+        assert len(relevant) == 2
+        slugs = [m.slug for m in relevant]
+        assert slugs[0] == "auth-fix"
+
 
 class TestRenderKnownContext:
     def test_renders_both_entries_and_files(self, tmp_path: Path) -> None:

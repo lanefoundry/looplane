@@ -11,6 +11,7 @@ from uuid import uuid4
 from looplane.agent import (
     completion,
     context,
+    memory_dispatch,
     memory_extraction,
     model_calls,
     skill_dispatch,
@@ -827,6 +828,7 @@ class AgentRunner:
             defs = (*defs, self._invoke_skill_definition())
         if self._enable_subagent_dispatch:
             defs = (*defs, self._dispatch_subagents_definition())
+        defs = (*defs, *memory_dispatch.memory_tool_definitions())
         return defs
 
     def _invoke_skill_definition(self) -> ToolDefinition:
@@ -848,6 +850,11 @@ class AgentRunner:
     @staticmethod
     def _dispatch_subagents_definition() -> ToolDefinition:
         return subagent_dispatch.dispatch_subagents_definition()
+
+    def _execute_memory_tool(self, call: ToolCall) -> ToolObservation:
+        if call.name == "save_memory":
+            return memory_dispatch.execute_save_memory(call, project=self.task.repository)
+        return memory_dispatch.execute_recall_memory(call, project=self.task.repository)
 
     def _can_execute_concurrently(self, call: ToolCall) -> bool:
         return tool_scheduler.can_execute_concurrently(call, self._provider_tool_definitions())
@@ -1094,6 +1101,7 @@ class AgentRunner:
             mark_started=self._mark_approved_action_started,
             dispatch=self._execute_dispatch_subagents,
             invoke_skill=self._execute_invoke_skill if self._skills else None,
+            execute_memory=self._execute_memory_tool,
             deadline=deadline,
         )
         await verification.finish_manual_check(check, observation, call.tool_call_id)

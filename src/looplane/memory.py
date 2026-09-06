@@ -272,20 +272,44 @@ def relevant_memory_entries(
     return tuple(selected[-limit:])
 
 
+def _tokenize(text: str) -> set[str]:
+    return {w for w in re.split(r"[^a-z0-9]+", text.lower()) if len(w) > 2}
+
+
+def _relevance_score(mem: MemoryFile, instruction_tokens: set[str]) -> float:
+    mem_tokens = _tokenize(mem.description) | _tokenize(mem.body[:300])
+    overlap = len(mem_tokens & instruction_tokens)
+    type_boost = 0.5 if mem.type in ("user_preference", "project_preference") else 0.0
+    recency = mem.created_at.timestamp() / 1e10
+    return overlap + type_boost + recency
+
+
+RELEVANCE_THRESHOLD = 10
+
+
 def relevant_memory_files(
     *,
     project: Path,
     memory_dir: Path | None = None,
     limit: int = 20,
+    instruction: str = "",
 ) -> tuple[MemoryFile, ...]:
-    """Return memory files relevant to the given project."""
+    """Return memory files relevant to the given project.
+
+    When there are more candidates than *limit* and an *instruction* is
+    provided, score by keyword overlap + recency and return the top *limit*.
+    """
     project_key = str(project.resolve(strict=False))
-    selected = [
+    candidates = [
         mem
         for mem in load_memory_files(memory_dir)
         if mem.project is None or mem.project == project_key
     ]
-    return tuple(selected[:limit])
+    if len(candidates) <= limit or not instruction:
+        return tuple(candidates[:limit])
+    tokens = _tokenize(instruction)
+    scored = sorted(candidates, key=lambda m: _relevance_score(m, tokens), reverse=True)
+    return tuple(scored[:limit])
 
 
 def render_known_context(
