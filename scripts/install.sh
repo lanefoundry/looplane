@@ -1,5 +1,5 @@
 #!/bin/sh
-# looplane installer — one-liner: curl -fsSL https://raw.githubusercontent.com/vincentxuu/looplane/main/scripts/install.sh | sh
+# looplane installer — one-liner: curl -fsSL https://raw.githubusercontent.com/lanefoundry/looplane/main/scripts/install.sh | sh
 set -eu
 
 BOLD="\033[1m"

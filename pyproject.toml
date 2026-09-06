@@ -50,9 +50,9 @@ sandbox = [
 looplane = "looplane.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/vincentxuu/looplane"
-Repository = "https://github.com/vincentxuu/looplane"
-Issues = "https://github.com/vincentxuu/looplane/issues"
+Homepage = "https://github.com/lanefoundry/looplane"
+Repository = "https://github.com/lanefoundry/looplane"
+Issues = "https://github.com/lanefoundry/looplane/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/looplane"]

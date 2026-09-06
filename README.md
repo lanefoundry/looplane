@@ -4,7 +4,7 @@
 
 **A Python-first coding agent that produces verified patches in disposable workspaces.**
 
-[![CI](https://github.com/vincentxuu/looplane/actions/workflows/python-ci.yml/badge.svg)](https://github.com/vincentxuu/looplane/actions/workflows/python-ci.yml)
+[![CI](https://github.com/lanefoundry/looplane/actions/workflows/python-ci.yml/badge.svg)](https://github.com/lanefoundry/looplane/actions/workflows/python-ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/looplane.svg)](https://pypi.org/project/looplane/)
 ![Status](https://img.shields.io/badge/status-early_preview-orange.svg)
@@ -50,7 +50,7 @@ The project provides a provider-neutral `ModelProvider` contract with canonical 
 ### One-liner (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vincentxuu/looplane/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/lanefoundry/looplane/main/scripts/install.sh | sh
 ```
 
 This installs uv and Python automatically if needed, then installs looplane as an isolated tool.
@@ -71,7 +71,7 @@ pipx install looplane
 ### With Homebrew (macOS)
 
 ```bash
-brew install vincentxuu/tap/looplane
+brew install lanefoundry/tap/looplane
 ```
 
 ### With pip
@@ -93,7 +93,7 @@ looplane update
 For development and contributing, clone the repo and use `uv`:
 
 ```bash
-git clone https://github.com/vincentxuu/looplane.git
+git clone https://github.com/lanefoundry/looplane.git
 cd looplane
 uv sync --extra dev
 uv run pytest
@@ -418,7 +418,7 @@ Backlog items in `docs/agent-diff-report.md` are not implementation proof. Befor
 
 ## Contributing and support
 
-Use [GitHub Issues](https://github.com/vincentxuu/looplane/issues) for bugs and feature proposals. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md) before opening a pull request. Report security vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Use [GitHub Issues](https://github.com/lanefoundry/looplane/issues) for bugs and feature proposals. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md) before opening a pull request. Report security vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

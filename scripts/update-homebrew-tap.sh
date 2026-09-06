@@ -8,7 +8,7 @@ set -eu
 
 VERSION="$1"
 SHA256="$2"
-TAP_REPO="vincentxuu/homebrew-tap"
+TAP_REPO="lanefoundry/homebrew-tap"
 
 if [ -z "${TAP_TOKEN:-}" ]; then
     echo "error: TAP_TOKEN not set" >&2
@@ -28,7 +28,7 @@ class Looplane < Formula
   include Language::Python::Virtualenv
 
   desc "A Python-first coding agent that produces verified patches in disposable workspaces"
-  homepage "https://github.com/vincentxuu/looplane"
+  homepage "https://github.com/lanefoundry/looplane"
   url "https://pypi.io/packages/source/l/looplane/looplane-${VERSION}.tar.gz"
   sha256 "${SHA256}"
   license "Apache-2.0"

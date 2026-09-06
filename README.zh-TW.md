@@ -4,7 +4,7 @@
 
 **AI agent 值得信賴的 Python-first 編碼代理。**
 
-[![CI](https://github.com/vincentxuu/looplane/actions/workflows/python-ci.yml/badge.svg)](https://github.com/vincentxuu/looplane/actions/workflows/python-ci.yml)
+[![CI](https://github.com/lanefoundry/looplane/actions/workflows/python-ci.yml/badge.svg)](https://github.com/lanefoundry/looplane/actions/workflows/python-ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status](https://img.shields.io/badge/status-early_preview-orange.svg)
 
@@ -351,7 +351,7 @@ TUI 改動除了測試，也要產生寬版、窄版與 loading 狀態截圖，�
 
 ## Contributing and support
 
-一般 bug 與功能提案請使用 [GitHub Issues](https://github.com/vincentxuu/looplane/issues)。送出 pull request 前請閱讀 [CONTRIBUTING.md](CONTRIBUTING.md) 與[行為準則](CODE_OF_CONDUCT.md)。安全漏洞請依 [SECURITY.md](SECURITY.md) 私下通報。
+一般 bug 與功能提案請使用 [GitHub Issues](https://github.com/lanefoundry/looplane/issues)。送出 pull request 前請閱讀 [CONTRIBUTING.md](CONTRIBUTING.md) 與[行為準則](CODE_OF_CONDUCT.md)。安全漏洞請依 [SECURITY.md](SECURITY.md) 私下通報。
 
 ## 授權
 

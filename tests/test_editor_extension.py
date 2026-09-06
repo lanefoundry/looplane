@@ -16,7 +16,7 @@ def test_vscode_extension_manifest_packages_looplane_ide_bridge() -> None:
     assert manifest["main"] == "./dist/extension.js"
     assert manifest["repository"] == {
         "type": "git",
-        "url": "https://github.com/vincentxuu/looplane.git",
+        "url": "https://github.com/lanefoundry/looplane.git",
         "directory": "editors/vscode",
     }
     assert "onStartupFinished" in manifest["activationEvents"]
