@@ -11,6 +11,7 @@ from uuid import uuid4
 from looplane.agent import (
     completion,
     context,
+    memory_extraction,
     model_calls,
     skill_dispatch,
     subagent_dispatch,
@@ -887,6 +888,13 @@ class AgentRunner:
             *self._state.messages[plan.end :],
         ]
         self._context_state.history_summary_fallback_applied = True
+        if summary.content:
+            await asyncio.to_thread(
+                memory_extraction.persist_compaction_summary,
+                run_id=self.run_id,
+                summary_text=summary.content,
+                project=self.task.repository,
+            )
         await self._event(
             "context_pressure.summary_fallback_applied",
             source_start_index=plan.start,
@@ -1162,6 +1170,17 @@ class AgentRunner:
         patch_timeout_seconds: float | None = None,
         collected_patch: tuple[str, tuple[str, ...]] | None = None,
     ) -> RunResult:
+        await asyncio.to_thread(
+            memory_extraction.extract_session_memory,
+            run_id=self.run_id,
+            instruction=self.task.instruction,
+            messages=tuple(self._state.messages),
+            status=status,
+            summary=summary,
+            verification=verification or self._state.last_verification,
+            step_count=self._state.step,
+            project=self.task.repository,
+        )
         return await completion.finish(
             completion.CompletionInputs(
                 self.run_id,
