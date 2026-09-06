@@ -1264,6 +1264,45 @@ def run(
     )
 
 
+@app.command()
+def update(
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Reinstall even if already up to date.")
+    ] = False,
+) -> None:
+    "Self-update looplane to the latest version."
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    pipx = shutil.which("pipx")
+
+    if uv:
+        cmd = [uv, "tool", "upgrade", "looplane"]
+        if force:
+            cmd = [uv, "tool", "install", "looplane", "--force"]
+    elif pipx:
+        cmd = [pipx, "upgrade", "looplane"]
+        if force:
+            cmd = [pipx, "install", "looplane", "--force"]
+    else:
+        typer.echo("Neither uv nor pipx found. Update manually:")
+        typer.echo("  pip install --upgrade looplane")
+        raise typer.Exit(1)
+
+    typer.echo(f"Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd)
+    raise typer.Exit(result.returncode)
+
+
+@app.command()
+def version() -> None:
+    "Show the installed looplane version."
+    from importlib.metadata import version as pkg_version
+
+    typer.echo(f"looplane {pkg_version('looplane')}")
+
+
 @app.command("export-otel")
 def export_otel(
     run_id: Annotated[str, typer.Argument(help="Run id (or 'last')")],

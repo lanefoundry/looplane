@@ -6,9 +6,10 @@
 
 [![CI](https://github.com/vincentxuu/looplane/actions/workflows/python-ci.yml/badge.svg)](https://github.com/vincentxuu/looplane/actions/workflows/python-ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/looplane.svg)](https://pypi.org/project/looplane/)
 ![Status](https://img.shields.io/badge/status-early_preview-orange.svg)
 
-[Quick start](#quick-start) · [Usage](#daily-cli) · [Cloudflare](#cloudflare-control-plane) · [Docs](#documentation)
+[Install](#install) · [Quick start](#quick-start) · [Usage](#daily-cli) · [Cloudflare](#cloudflare-control-plane) · [Docs](#documentation)
 
 [English](README.md) · [繁體中文](README.zh-TW.md)
 
@@ -44,11 +45,56 @@ The project provides a provider-neutral `ModelProvider` contract with canonical 
 - 外部 runtime 可接 Claude Code、Codex CLI、OpenCode、Pi、OMP；它們只改 disposable clone，looplane 仍負責 patch audit 和 final checks。
 - 目前也有 repository-local skills/hooks/plugins、IDE/LSP snapshot、VS Code bridge、MCP client、subagents、conversation persistence、SDK、usage/cost、OTel export，以及 `cloudflare/` remote control plane。
 
-## Quick start
+## Install
 
-Requirements: Python 3.11+, uv, and Git.
+### One-liner (recommended)
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/vincentxuu/looplane/main/scripts/install.sh | sh
+```
+
+This installs uv and Python automatically if needed, then installs looplane as an isolated tool.
+
+### With uv
+
+```bash
+uv tool install looplane          # install
+uvx looplane                      # or run without installing
+```
+
+### With pipx
+
+```bash
+pipx install looplane
+```
+
+### With Homebrew (macOS)
+
+```bash
+brew install vincentxuu/tap/looplane
+```
+
+### With pip
+
+```bash
+pip install looplane
+```
+
+### Self-update
+
+```bash
+looplane update
+```
+
+安裝方式擇一即可。推薦 `uv tool install`（自動隔離、不汙染系統 Python）。macOS 使用者也可用 `brew install`。`looplane update` 會自動偵測安裝管道並升級。
+
+## Quick start (contributors)
+
+For development and contributing, clone the repo and use `uv`:
+
+```bash
+git clone https://github.com/vincentxuu/looplane.git
+cd looplane
 uv sync --extra dev
 uv run pytest
 uv run ruff check .
