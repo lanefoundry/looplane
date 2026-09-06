@@ -33,7 +33,7 @@ looplane 可當作互動式的日常 CLI 使用，同時保持有界、可稽核
 - 儲存庫本地的 `.looplane/skills/*.md`、opt-in blocking hooks、plugin manifests、IDE/LSP snapshots，以及 `editors/vscode` 下的 VS Code bridge 雛形。
 - 原生 MCP client 支援 looplane 擁有的 OAuth grants 與 MCP tools/resources 的 approval 分類。
 - 程式化 subagent 派遣與原生有界 `dispatch_subagents` fan-out，適用於 scout、analyst 與 reviewer 子工作空間。
-- 對話持久化、WebSocket attach、deterministic replay/fork helpers、SDK facade、session usage summaries、cost estimates 與 OpenTelemetry GenAI export。
+- 對話持久化、WebSocket attach（含多 tab 獨立 session、共享唯讀 workspace context、斷線 resume）、deterministic replay/fork helpers、SDK facade、session usage summaries、cost estimates 與 OpenTelemetry GenAI export。
 - `cloudflare/` 下的 Cloudflare Worker/Sandbox 控制平面，支援非同步、text-source-map 遠端執行，提供 durable status、event、approval、cancel 與 artifact routes。
 
 中文摘要：
@@ -42,7 +42,7 @@ looplane 可當作互動式的日常 CLI 使用，同時保持有界、可稽核
 - `looplane exec` 和 `looplane -p` 可做 headless run，保留 path allowlist、精準 check command、run bundle 與可恢復的 non-terminal session。
 - 原生 loop 支援 OpenAI-compatible、Ollama、Anthropic、Gemini、Cloudflare Workers AI，以及明確標成 experimental 的 app-owned ChatGPT/Codex OAuth。
 - 外部 runtime 可接 Claude Code、Codex CLI、OpenCode、Pi、OMP；它們只改 disposable clone，looplane 仍負責 patch audit 和 final checks。
-- 目前也有 repository-local skills/hooks/plugins、IDE/LSP snapshot、VS Code bridge、MCP client、subagents、conversation persistence、SDK、usage/cost、OTel export，以及 `cloudflare/` remote control plane。
+- 目前也有 repository-local skills/hooks/plugins、IDE/LSP snapshot、VS Code bridge、MCP client、subagents、conversation persistence（含多 tab 獨立 session、共享唯讀 workspace context、斷線 resume）、SDK、usage/cost、OTel export，以及 `cloudflare/` remote control plane。
 
 ## Quick start
 
@@ -108,6 +108,61 @@ looplane export-otel <run-id> -o run.otel.json
 looplane gateway --provider ollama --model qwen3:4b --port 8788
 looplane conversation-server --help
 looplane policy --help
+```
+
+## 對話服務
+
+`looplane conversation-server` 透過 WebSocket attach 協議對外提供原生對話 runtime。多個 tab 或 client 可以同時連線，各自取得獨立的 session（隔離的 controller、history、workspace）。
+
+```bash
+# 在目前 repository 啟動 server。
+looplane conversation-server
+
+# 指定 runtime、model 與 port。
+looplane conversation-server --runtime codex-cli --model auto --port 8788
+```
+
+Client 透過 WebSocket 連到 `/v1/conversation/attach`，可在 query string 帶 `conversation_id` 指定 session：
+
+```
+ws://localhost:8788/v1/conversation/attach?conversation_id=my-tab-1
+```
+
+- **沒帶 `conversation_id`** — server 自動產生。
+- **新的 `conversation_id`** — 建立全新 session。
+- **已存在的 `conversation_id`（已斷線）** — resume，對話歷史完整保留。
+- **已存在的 `conversation_id`（仍在線）** — 拒絕第二條連線（code 1008）。
+
+連線成功後 server 會先推一個 `session_context` 訊息，包含共享的 repo 快照：
+
+```json
+{
+  "type": "session_context",
+  "conversation_id": "my-tab-1",
+  "resumed": false,
+  "base_sha": "a1b2c3...",
+  "source_was_dirty": true,
+  "context_version": "sha256...",
+  "source_snapshot_warning": "The source repository had uncommitted changes..."
+}
+```
+
+斷線後 session 保留 5 分鐘（idle timeout），超時後才清除。每個 session 在自己的 disposable workspace clone 裡運作；共享 context（HEAD commit、dirty 狀態）是唯讀的，server 啟動時算一次。
+
+### SDK 用法
+
+```python
+from looplane.sdk import ConversationWebSocketApp, SharedWorkspaceContext
+
+# 多 session 模式：每個 conversation_id 各自取得獨立 session。
+shared_ctx = await SharedWorkspaceContext.create(repo_path)
+app = ConversationWebSocketApp(
+    session_factory=my_session_factory,
+    shared_context=shared_ctx,
+)
+
+# 單一 session 模式（向後相容）。
+app = ConversationWebSocketApp(my_session)
 ```
 
 ## Runtime And Provider Setup / Runtime 與 Provider 設定
@@ -206,6 +261,25 @@ looplane 的預設本地邊界是 disposable Git workspace 加上 Python policy 
 `--unsafe-local-exec` 允許在 host 上執行可信任 repository 的檢查。如果有可用的 `--sandbox-checks`，可提供額外的 verification-command 隔離。在 macOS 上使用平台 sandbox wrapper；在 Linux 上，`sandbox_backend` 可選擇 `auto`、`bubblewrap` 或 `landlock`。
 
 本機預設安全邊界是 disposable Git workspace 加上 Python policy checks。互動模式下修改與執行需要 approval；verification command 是 exact argv，不是 shell string；provider credential 留在 coordinator process，不會轉交給 repository checks。`--unsafe-local-exec` 表示你同意在 host 上跑 trusted repo 的檢查。
+
+`--edit-real-repo`（只影響 native `looplane-agent` runtime）是明確的 opt-in：關掉 disposable clone，讓 agent 直接改這個 repo 的真實 working tree，改完立刻反映在 `git status`/`git diff`，不用再手動 `git apply` run 結束後的 `changes.patch`。每次檔案變更前仍會顯示 diff 給你核准；repo 原本就有的未提交變更會被排除在回報的 patch 之外、也不會被 allowed-path policy 卡住，並會在丟給 model 的 context 裡加一段警告。`--edit-real-repo` 跟 `--dangerous` 疊加使用時，需要額外一次獨立的互動確認（或設定 `LOOPLANE_ACCEPT_DANGEROUS_MODE=1`）。外部 runtime（Claude Code、Codex CLI、OpenCode、Pi、OMP）與 Cloudflare 遠端 sandbox 不受這個 flag 影響，仍維持上述 disposable clone／patch audit 邊界。
+
+`--dangerous` 自動核准 read 與 modify 等級的工具呼叫，不再逐一詢問——等同 Claude Code 的 `--dangerously-skip-permissions`。首次使用需要互動確認對話框，接受後記錄到 `~/.local/state/looplane/dangerous-mode-accepted`，之後不再詢問。非互動環境可設定 `LOOPLANE_ACCEPT_DANGEROUS_MODE=1` 跳過對話框。`--dangerous` 下仍然生效的防護：
+
+- **Deny rules 是權威層。** `--deny-tool` 規則（如 `--deny-tool 'shell(rm *)'`）與 forbidden-operation pattern 在 auto-approve 分支之前被評估，無法被覆蓋。
+- **EXECUTE 等級仍需核准。** 只有 READ 與 MODIFY 等級被自動核准；EXECUTE 等級一律詢問。
+- **Root/sudo 直接拒絕。** 以 root 身份執行 `--dangerous` 會直接退出，除非在 sandbox 內（`LOOPLANE_SANDBOX=1`）。
+
+```bash
+# 自動核准 read/modify 動作
+looplane chat --dangerous "重構 auth 模組"
+
+# 搭配直接編輯 repo（需額外一次確認）
+looplane chat --dangerous --edit-real-repo "修復失敗的測試"
+
+# 非互動 / CI
+LOOPLANE_ACCEPT_DANGEROUS_MODE=1 looplane chat --dangerous -p "更新依賴"
+```
 
 ## Cloudflare Control Plane / Cloudflare 控制平面
 
