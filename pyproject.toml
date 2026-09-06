@@ -45,6 +45,17 @@ sandbox = [
   "pytest==8.4.2",
   "pytest-asyncio==1.4.0",
 ]
+web = [
+  "trafilatura>=2.0.0",
+  "duckduckgo-search>=7.0.0",
+]
+media = [
+  "Pillow>=11.0.0",
+  "playwright>=1.49.0",
+]
+all = [
+  "looplane[web,media]",
+]
 
 [project.scripts]
 looplane = "looplane.cli:app"

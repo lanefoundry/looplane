@@ -9,7 +9,7 @@
 [![PyPI](https://img.shields.io/pypi/v/looplane.svg)](https://pypi.org/project/looplane/)
 ![Status](https://img.shields.io/badge/status-early_preview-orange.svg)
 
-[Install](#install) · [Quick start](#quick-start) · [Usage](#daily-cli) · [Cloudflare](#cloudflare-control-plane) · [Docs](#documentation)
+[Tools](#tool-surface--工具一覽) · [Install](#install) · [Quick start](#quick-start) · [Usage](#daily-cli) · [Cloudflare](#cloudflare-control-plane) · [Docs](#documentation)
 
 [English](README.md) · [繁體中文](README.zh-TW.md)
 
@@ -44,6 +44,50 @@ The project provides a provider-neutral `ModelProvider` contract with canonical 
 - 原生 loop 支援 OpenAI-compatible、Ollama、Anthropic、Gemini、Cloudflare Workers AI，以及明確標成 experimental 的 app-owned ChatGPT/Codex OAuth。
 - 外部 runtime 可接 Claude Code、Codex CLI、OpenCode、Pi、OMP；它們只改 disposable clone，looplane 仍負責 patch audit 和 final checks。
 - 目前也有 repository-local skills/hooks/plugins、IDE/LSP snapshot、VS Code bridge、MCP client、subagents、conversation persistence（含多 tab 獨立 session、共享唯讀 workspace context、斷線 resume）、SDK、usage/cost、OTel export，以及 `cloudflare/` remote control plane。
+
+## Tool Surface / 工具一覽
+
+The native `looplane-agent` runtime exposes a bounded tool surface to the model. Core workspace tools (`read_file`, `create_file`, `replace_text`, `apply_patch`, `search_text`, `shell`, `git_diff`) are always available. Additional tool families are registered conditionally:
+
+| Category | Tools | Requires |
+| --- | --- | --- |
+| **Batch orchestration** | `tool_program`, `tool_transaction` | — (built-in) |
+| **Subagents** | `dispatch_subagents` | — (built-in) |
+| **Web & HTTP** | `web_fetch`, `web_search`, `http_request` | `trafilatura`, `duckduckgo-search` (optional) |
+| **LSP semantics** | `lsp_symbols`, `lsp_references`, `lsp_definition`, `lsp_diagnostics` | LSP server configured in `looplane.toml` |
+| **Background processes** | `start_process`, `read_process`, `stop_process`, `list_processes`, `wait_for_output` | `enable_background` flag |
+| **Media** | `view_image`, `take_screenshot` | `Pillow`; `playwright` for screenshots |
+| **Interactive terminal** | `start_session`, `send_input`, `read_session`, `end_session` | `enable_pty` flag |
+
+`tool_transaction` bundles edits and checks into an atomic unit — if any step fails, touched files are rolled back automatically. `tool_program` batches up to 8 read-only steps in a single model call with `repeat` and `if_contains` control flow. These two are unique to looplane; mainstream coding agents do not offer atomic rollback or batched read orchestration.
+
+工具分為核心（永遠可用）與擴充（依設定條件載入）。`tool_transaction`（原子事務：改壞自動回滾）與 `tool_program`（批量只讀編排：一次 tool call 跑多步讀取含控制流）是 looplane 的差異化設計，主流 coding agent 均無此能力。
+
+### Optional dependencies / 可選依賴
+
+```bash
+pip install looplane[web]      # web_fetch + web_search (trafilatura, duckduckgo-search)
+pip install looplane[media]    # view_image + take_screenshot (Pillow, playwright)
+pip install looplane[all]      # all optional dependencies
+```
+
+### Project configuration / 專案配置
+
+Place a `looplane.toml` at the repository root to configure LSP servers, verification tools, web domain policies, and auto-approve rules. See `.research/capability-roadmap.md` for the full schema.
+
+```toml
+[project]
+instructions = "docs/agent-instructions.md"
+
+[lsp.python]
+command = ["pyright-langserver", "--stdio"]
+
+[tools.verification]
+lint = "ruff check ."
+test = "pytest -x -q"
+```
+
+在 repo 根目錄放一份 `looplane.toml` 即可配置 LSP server、verification tool、web domain 白黑名單與自動核准規則。`agent/context.py` 會在組裝 prompt 時自動載入。
 
 ## Install
 
