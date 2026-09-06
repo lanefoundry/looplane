@@ -59,7 +59,10 @@ class RuntimeMetrics(Static):
     _CONTEXT_CRITICAL_PERCENT = 90.0
 
     def __init__(
-        self, *, id: str, token_formatter: Callable[[int], str] = format_token_count,
+        self,
+        *,
+        id: str,
+        token_formatter: Callable[[int], str] = format_token_count,
     ) -> None:
         super().__init__("", id=id, markup=False)
         self._token_formatter = token_formatter
@@ -70,11 +73,14 @@ class RuntimeMetrics(Static):
         model: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        cache_hit_percent: float | None = None,
+        reasoning_tokens: int | None = None,
         context_percent: float | None = None,
         elapsed_seconds: float | None = None,
         stream_output_tokens: int | None = None,
         running_tools: int | None = None,
         queued_prompts: int | None = None,
+        cost_usd: float | None = None,
     ) -> None:
         text = Text()
         if model:
@@ -96,6 +102,13 @@ class RuntimeMetrics(Static):
                 text.append(" · ", style="dim")
             text.append(f"↑{self._token_formatter(input_tokens)}", style="dim")
             text.append(f" ↓{self._token_formatter(output_tokens or 0)}", style="dim")
+            if cache_hit_percent is not None:
+                text.append(f" ⚡{cache_hit_percent:.0f}%", style="dim")
+            if reasoning_tokens:
+                text.append(
+                    f" 💭{self._token_formatter(reasoning_tokens)}",
+                    style="dim",
+                )
         if context_percent is not None:
             if text.plain:
                 text.append(" · ", style="dim")
@@ -110,6 +123,12 @@ class RuntimeMetrics(Static):
             if text.plain:
                 text.append(" · ", style="dim")
             text.append(f"{elapsed_seconds:.0f}s", style="dim")
+        if cost_usd is not None and cost_usd > 0:
+            from looplane.pricing import format_cost
+
+            if text.plain:
+                text.append(" · ", style="dim")
+            text.append(format_cost(cost_usd), style="dim")
         self.update(text)
 
 

@@ -759,6 +759,32 @@ class TerminalProjection:
             self._set_loading("Verifying…", phase=LoadingPhase.VERIFYING)
         elif event_type in {"verification.completed", "verification.reused"}:
             self._set_loading("Thinking…", phase=LoadingPhase.THINKING)
+        elif event_type == "model.retry":
+            attempt = data.get("attempt", 1)
+            delay = data.get("delay_seconds", 0)
+            provider = data.get("provider", "")
+            label = f"Retrying in {delay:.0f}s (attempt {attempt})"
+            if provider:
+                label += f" · {provider}"
+            self._set_loading(label, phase=LoadingPhase.REQUESTING)
+            self._write_notice(
+                f"Provider error, retrying in {delay:.0f}s "
+                f"(attempt {attempt}: {data.get('error', 'unknown')})"
+            )
+        elif event_type == "model.fallback":
+            to_model = data.get("to_model", "fallback")
+            to_provider = data.get("to_provider", "")
+            label = f"Switching to {to_model}…"
+            self._set_loading(label, phase=LoadingPhase.REQUESTING)
+            from_model = data.get("from_model", "")
+            from_provider = data.get("from_provider", "")
+            from_desc = f"{from_provider}/{from_model}" if from_provider else from_model
+            to_desc = f"{to_provider}/{to_model}" if to_provider else to_model
+            self._write_notice(f"Falling back from {from_desc} → {to_desc}")
+        elif event_type == "model.completed":
+            finish = data.get("finish_reason")
+            if finish == "length":
+                self._write_notice("Output truncated (max tokens reached) — continuing")
 
     def external_event_received(self, event: ExternalAgentEvent) -> None:
         if self.context.mode == "ask" and event.event_type == "message" and event.text:
@@ -972,6 +998,8 @@ class TerminalProjection:
                 self._set_status(
                     f"Failed · {self.one_line_error(event.error or 'Unknown runtime error')}"
                 )
+            elif event.finish_reason == "length":
+                self._set_status("Completed · output truncated (max tokens)")
             else:
                 self._set_status(
                     "Completed" if event.status.value == "completed" else event.status.value.title()

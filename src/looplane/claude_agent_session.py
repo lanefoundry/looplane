@@ -665,7 +665,11 @@ class ClaudeAgentSession:
         return changes
 
     def _handle_turn_completed(self, frame: dict[str, Any], turn_id: str) -> None:
-        self._exact_keys(frame, {"type", "turn_id", "status", "error"})
+        self._exact_keys(
+            frame,
+            {"type", "turn_id", "status", "error"},
+            optional={"finish_reason"},
+        )
         if turn_id in self._terminal_turns:
             raise ConversationProtocolError("duplicate terminal turn")
         status = RuntimeTurnStatus(frame["status"])
@@ -682,7 +686,18 @@ class ClaudeAgentSession:
         for request_id, pending in tuple(self._pending_approvals.items()):
             if pending.turn_id == turn_id:
                 del self._pending_approvals[request_id]
-        self._emit(TurnCompletedEvent, turn_id=turn_id, status=status, error=error)
+        finish_reason = frame.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason:
+            finish_reason = finish_reason[:64]
+        else:
+            finish_reason = None
+        self._emit(
+            TurnCompletedEvent,
+            turn_id=turn_id,
+            status=status,
+            error=error,
+            finish_reason=finish_reason,
+        )
 
     def _frame_turn(self, frame: dict[str, Any]) -> str:
         turn_id = self._safe_id(frame.get("turn_id"), "turn_id")
@@ -734,8 +749,15 @@ class ClaudeAgentSession:
                 self._kill_process(process)
 
     @staticmethod
-    def _exact_keys(frame: dict[str, Any], expected: set[str]) -> None:
-        if set(frame) != expected:
+    def _exact_keys(
+        frame: dict[str, Any],
+        expected: set[str],
+        optional: set[str] | None = None,
+    ) -> None:
+        keys = set(frame)
+        if optional:
+            keys -= optional
+        if keys != expected:
             raise ConversationProtocolError("sidecar frame has unexpected fields")
 
     @staticmethod

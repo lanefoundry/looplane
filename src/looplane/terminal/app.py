@@ -486,6 +486,8 @@ class looplaneApp(App[RunResult | None]):
         self._runtime_text_blocks: dict[str, MessageBlock] = {}
         self._latest_context_telemetry: ContextTelemetry | None = None
         self._runtime_reported_model: str | None = None
+        self._cumulative_cost: float = 0.0
+        self._last_costed_telemetry: ContextTelemetry | None = None
         self._turn_started_at: float | None = None
         self._last_turn_seconds: float | None = None
         self._stream_char_count = 0
@@ -680,15 +682,42 @@ class looplaneApp(App[RunResult | None]):
             else None
         )
         queued = len(self._queued_prompts) if self._agent_running else None
+        cache_hit: float | None = None
+        if telemetry is not None:
+            cache_hit = telemetry.input_cache_hit_rate
+        reasoning = (
+            telemetry.reasoning_output_tokens
+            if telemetry is not None and telemetry.reasoning_output_tokens
+            else None
+        )
+        if (
+            telemetry is not None
+            and telemetry is not self._last_costed_telemetry
+            and self._runtime_reported_model
+        ):
+            from looplane.pricing import estimate_cost
+
+            cost = estimate_cost(
+                self._runtime_reported_model,
+                telemetry.input_tokens,
+                telemetry.output_tokens,
+                cached_input_tokens=telemetry.cached_input_tokens,
+            )
+            if cost is not None:
+                self._cumulative_cost += cost
+            self._last_costed_telemetry = telemetry
         self.query_one("#metrics", RuntimeMetrics).set_metrics(
             model=self._runtime_reported_model,
             input_tokens=telemetry.input_tokens if telemetry is not None else None,
             output_tokens=telemetry.output_tokens if telemetry is not None else None,
+            cache_hit_percent=cache_hit * 100 if cache_hit is not None else None,
+            reasoning_tokens=reasoning,
             context_percent=context_percent,
             elapsed_seconds=self._last_turn_seconds,
             stream_output_tokens=self._stream_char_count // 4 if streaming else None,
             running_tools=running_tools,
             queued_prompts=queued,
+            cost_usd=(self._cumulative_cost if self._cumulative_cost > 0 else None),
         )
 
     def _mark_turn_finished(self) -> None:

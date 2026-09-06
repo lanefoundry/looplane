@@ -283,6 +283,7 @@ class TurnCompletedEvent(_RuntimeEvent):
     event_type: Literal["turn_completed"] = "turn_completed"
     status: RuntimeTurnStatus
     error: str | None = Field(default=None, max_length=16_000)
+    finish_reason: str | None = None
 
     @model_validator(mode="after")
     def error_matches_status(self) -> TurnCompletedEvent:

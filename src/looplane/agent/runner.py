@@ -49,6 +49,7 @@ from looplane.agent.run_lifecycle import (
     validate_run_location,
 )
 from looplane.agent.state import ContextState, TurnState
+from looplane.agent.thinking_healing import contains_thinking_fences, heal_thinking
 from looplane.agent.verification import (
     VerificationCache,
     VerificationInputs,
@@ -88,7 +89,7 @@ from looplane.execution.environment import sanitized_subprocess_env
 from looplane.execution.local_process import run_local_process as run_bounded_command
 from looplane.hooks import HookDecision, HookEventName, HookRunner, load_project_hook_runner
 from looplane.mcp_client import load_native_mcp_server_configs
-from looplane.models import ModelProvider, ProviderError
+from looplane.models import ModelProvider, ProviderError, ProviderErrorKind
 from looplane.permissions import PermissionGuard
 from looplane.policy import SafePathPolicy
 from looplane.prompts import (
@@ -1422,6 +1423,24 @@ class AgentRunner:
                         error=error,
                         patch_timeout_seconds=1.0,
                     )
+                if (
+                    turn.content
+                    and self.model.provider_name != "anthropic"
+                    and contains_thinking_fences(turn.content)
+                ):
+                    visible, extracted = heal_thinking(turn.content)
+                    if extracted:
+                        await self._event(
+                            "thinking.healed",
+                            text=bounded_text(extracted, 64_000),
+                        )
+                    if visible != turn.content:
+                        turn = ModelTurn(
+                            content=visible or None,
+                            tool_calls=turn.tool_calls,
+                            usage=turn.usage,
+                            finish_reason=turn.finish_reason,
+                        )
                 assistant = turn.as_message()
                 self._state.messages.append(assistant)
                 await self._event(
@@ -1794,7 +1813,14 @@ class AgentRunner:
                 error=str(exc),
             )
             error_text: str | None = None
-            if exc.retryable:
+            if exc.kind == ProviderErrorKind.QUOTA_EXHAUSTED:
+                error_text = (
+                    f"{exc.provider_name} quota exhausted for this model — "
+                    "the daily or shared-capacity limit has been reached. "
+                    "Switch to another model with /model, or add your own "
+                    "provider key to bypass shared limits."
+                )
+            elif exc.retryable:
                 attempts = len(self._model_calls.provider_failure_codes)
                 codes = ", ".join(
                     str(code) if code is not None else "transport error"

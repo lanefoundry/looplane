@@ -94,6 +94,7 @@ let sawPartialThinking = false;
 let interruptRequested = false;
 let latestContextTelemetry = null;
 let latestContextModel = null;
+let latestStopReason = null;
 let reportedRuntimeModel = null;
 let emittedRuntimeModelTurn = null;
 let emittedRuntimeModel = null;
@@ -153,6 +154,8 @@ function captureAssistantUsage(message) {
   } else {
     latestContextModel = null;
   }
+  const sr = message?.message?.stop_reason;
+  latestStopReason = typeof sr === "string" && sr ? sr : null;
 }
 
 function updateRuntimeModel(value) {
@@ -552,18 +555,21 @@ async function consumeSdkMessages() {
       }
       const telemetry = contextTelemetryForResult(message);
       if (telemetry) emit({ type: "context_usage_updated", turn_id: activeTurn, telemetry });
-      emit({
+      const turnFrame = {
         type: "turn_completed",
         turn_id: activeTurn,
         status: terminalStatus,
         error: terminalStatus === "failed" ? "Claude turn failed" : null,
-      });
+      };
+      if (latestStopReason) turnFrame.finish_reason = latestStopReason;
+      emit(turnFrame);
       activeTurn = null;
       sawPartialText = false;
       sawPartialThinking = false;
       interruptRequested = false;
       latestContextTelemetry = null;
       latestContextModel = null;
+      latestStopReason = null;
     } else if (message.type === "system") {
       if (message.subtype === "init") updateRuntimeModel(message.model);
     } else if (message.type === "tool_progress" || message.type === "auth_status") {
