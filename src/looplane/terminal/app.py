@@ -1168,8 +1168,29 @@ class looplaneApp(App[RunResult | None]):
         if snapshot is not None:
             self._merge_catalog_models(available, snapshot.models)
         self._ensure_automatic_entry(available)
+        denied = model_catalog.denied_models(provider) if provider else {}
+        if denied:
+            ok = [(label, value) for label, value in available if value not in denied]
+            bad = [
+                (f"{label} (recently failed)", value)
+                for label, value in available
+                if value in denied
+            ]
+            available = ok + bad
         if selected is not None and all(value != selected for _label, value in available):
             available.append((selected, selected))
+        # Insert recently-used models right after the Automatic entry.
+        recents = model_catalog.recent_models(provider) if provider else ()
+        if recents:
+            recent_set = set(recents)
+            non_recent = [(lbl, v) for lbl, v in available if v not in recent_set]
+            recent_entries: list[tuple[str, str | None]] = []
+            for model_id in recents:
+                original_label = next((lbl for lbl, v in available if v == model_id), model_id)
+                recent_entries.append((f"★ {original_label}", model_id))
+            # Find end of Automatic entry (value is None).
+            auto_end = next((i for i, (_, v) in enumerate(non_recent) if v is not None), 0)
+            available = non_recent[:auto_end] + recent_entries + non_recent[auto_end:]
         options = self._model_selector_options(available, selected)
         active = self._runtime_reported_model
         description = "Switch models for this conversation."
@@ -1180,11 +1201,11 @@ class looplaneApp(App[RunResult | None]):
             title="Select model",
             description=description,
             options=options,
-            hint="↑/↓ to move · Enter to use this model · Esc to cancel",
+            hint="Type to search · ↑/↓ to move · Enter to select · Esc to cancel",
         )
-        # Stale-while-revalidate: the selector above already shows whatever was
-        # cached; a background refresh swaps fresh options into the open picker.
-        if provider is not None and model_catalog.is_stale(snapshot):
+        # Always trigger a background refresh so denied models and stale
+        # entries are cleared even when the catalog TTL hasn't expired yet.
+        if provider is not None:
             self._refresh_model_catalog(provider)
 
     @work(exclusive=True, group="catalog-refresh")
@@ -1213,8 +1234,27 @@ class looplaneApp(App[RunResult | None]):
         available = list(self.runtime_models.get("looplane-agent", ()))
         self._merge_catalog_models(available, models)
         self._ensure_automatic_entry(available)
+        denied = model_catalog.denied_models(provider)
+        if denied:
+            ok = [(label, value) for label, value in available if value not in denied]
+            bad = [
+                (f"{label} (recently failed)", value)
+                for label, value in available
+                if value in denied
+            ]
+            available = ok + bad
         if selected is not None and all(value != selected for _label, value in available):
             available.append((selected, selected))
+        recents = model_catalog.recent_models(provider)
+        if recents:
+            recent_set = set(recents)
+            non_recent = [(lbl, v) for lbl, v in available if v not in recent_set]
+            recent_entries: list[tuple[str, str | None]] = []
+            for model_id in recents:
+                original_label = next((lbl for lbl, v in available if v == model_id), model_id)
+                recent_entries.append((f"★ {original_label}", model_id))
+            auto_end = next((i for i, (_, v) in enumerate(non_recent) if v is not None), 0)
+            available = non_recent[:auto_end] + recent_entries + non_recent[auto_end:]
         # The selector may still be mid-mount (an instant refresh can outrun
         # compose); defer one refresh cycle so query_one finds the OptionList.
         options = self._model_selector_options(available, selected)
@@ -1432,6 +1472,12 @@ class looplaneApp(App[RunResult | None]):
         self._close_inline_selector()
         if kind == "model":
             self._apply_model_command("auto" if value == _AUTOMATIC_MODEL else value)
+            if value != _AUTOMATIC_MODEL and self._runtime() == "looplane-agent":
+                provider = self.config.provider
+                if provider:
+                    import looplane.model_catalog as model_catalog
+
+                    model_catalog.record_recent(provider, value)
         elif kind == "runtime":
             self._apply_runtime_command(value)
         elif kind == "provider":

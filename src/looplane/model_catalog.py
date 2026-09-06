@@ -30,6 +30,15 @@ CATALOG_VERSION = "model-catalog-v1"
 # a picker that revalidates in the background anyway.
 CATALOG_TTL_SECONDS = 24 * 3600.0
 
+# Aggregators proxy hundreds of upstream models that churn faster; refresh more
+# often so stale/removed entries don't linger a full day.
+AGGREGATOR_PROVIDERS = frozenset({"openrouter", "opencode-zen", "ollama-cloud"})
+AGGREGATOR_CATALOG_TTL_SECONDS = 4 * 3600.0  # 4 hours for aggregators
+
+# Disk-persisted denylist for models that exhausted their retry budget.
+DENYLIST_VERSION = "model-denylist-v1"
+DENYLIST_TTL_SECONDS = 3600.0  # denied models recover after 1 hour
+
 
 @dataclass(frozen=True)
 class CatalogSnapshot:
@@ -136,12 +145,16 @@ def snapshot(provider: str) -> CatalogSnapshot | None:
     return CatalogSnapshot(models=models, fetched_at=fetched_at)
 
 
-def is_stale(snapshot: CatalogSnapshot | None) -> bool:
+def is_stale(snapshot: CatalogSnapshot | None, provider: str | None = None) -> bool:
     """True when there is no snapshot or it is older than the TTL."""
 
     if snapshot is None:
         return True
-    return time.time() - snapshot.fetched_at > CATALOG_TTL_SECONDS
+    if provider in AGGREGATOR_PROVIDERS:
+        ttl = AGGREGATOR_CATALOG_TTL_SECONDS
+    else:
+        ttl = CATALOG_TTL_SECONDS
+    return time.time() - snapshot.fetched_at > ttl
 
 
 def store_models(provider: str, models: tuple[str, ...]) -> None:
@@ -177,6 +190,38 @@ async def refresh(
     return result.models
 
 
+RECENTS_VERSION = "model-recents-v1"
+MAX_RECENT_MODELS = 8
+
+
+def record_recent(provider: str, model_id: str) -> None:
+    """Add a model to the front of the recent list."""
+    key = f"recents:{provider}"
+    entry = read_entry(key, RECENTS_VERSION)
+    recents: list[str] = []
+    if entry is not None:
+        _, value = entry
+        if isinstance(value, list):
+            recents = [str(m) for m in value if m]
+    if model_id in recents:
+        recents.remove(model_id)
+    recents.insert(0, model_id)
+    recents = recents[:MAX_RECENT_MODELS]
+    write_entry(key, RECENTS_VERSION, recents)
+
+
+def recent_models(provider: str) -> tuple[str, ...]:
+    """Return recently used models, most recent first."""
+    key = f"recents:{provider}"
+    entry = read_entry(key, RECENTS_VERSION)
+    if entry is None:
+        return ()
+    _, value = entry
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(m) for m in value if m)
+
+
 async def _fetch(
     provider: str,
     *,
@@ -195,3 +240,54 @@ async def _fetch(
             raise ValueError(f"{provider} credential is incomplete (missing {field})")
         values[field] = value
     return await verify_native_credential(provider, values, timeout=timeout, client=client)
+
+
+# ---------------------------------------------------------------------------
+# Failed-model denylist
+# ---------------------------------------------------------------------------
+
+
+def report_failure(provider: str, model_id: str) -> None:
+    """Record a model that exhausted its retry budget.
+
+    The denial persists for ``DENYLIST_TTL_SECONDS``; after that the model is
+    silently re-admitted so transient outages don't permanently hide it.
+    """
+
+    key = f"denylist:{provider}"
+    entry = read_entry(key, DENYLIST_VERSION)
+    if entry is not None and isinstance(entry[1], dict):
+        denials: dict[str, float] = dict(entry[1])
+    else:
+        denials: dict[str, float] = {}
+    denials[model_id] = time.time()
+    write_entry(key, DENYLIST_VERSION, denials)
+
+
+def denied_models(provider: str) -> dict[str, float]:
+    """Return ``{model_id: denied_at_epoch}`` for models still within TTL."""
+
+    key = f"denylist:{provider}"
+    entry = read_entry(key, DENYLIST_VERSION)
+    if entry is None or not isinstance(entry[1], dict):
+        return {}
+    now = time.time()
+    return {
+        model_id: denied_at
+        for model_id, denied_at in entry[1].items()
+        if isinstance(denied_at, (int, float)) and now - denied_at <= DENYLIST_TTL_SECONDS
+    }
+
+
+def clear_denial(provider: str, model_id: str) -> None:
+    """Remove a model from the denylist (e.g. on successful use)."""
+
+    key = f"denylist:{provider}"
+    entry = read_entry(key, DENYLIST_VERSION)
+    if entry is None or not isinstance(entry[1], dict):
+        return
+    denials: dict[str, float] = dict(entry[1])
+    if model_id not in denials:
+        return
+    del denials[model_id]
+    write_entry(key, DENYLIST_VERSION, denials)

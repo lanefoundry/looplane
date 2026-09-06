@@ -244,19 +244,27 @@ async def complete_model_with_retry(
         models.provider_failure_codes = []
         for attempt in range(1, MODEL_ATTEMPTS + 1):
             try:
-                return await complete_model_or_cancel(
+                result = await complete_model_or_cancel(
                     models.model,
                     state.messages,
                     tool_definitions(),
                     cancel_requested,
                     remaining(deadline),
                 )
+                if result is not None:
+                    from looplane.model_catalog import clear_denial
+
+                    clear_denial(models.model.provider_name, models.model.model_id)
+                return result
             except ProviderError as exc:
                 if not exc.retryable:
                     raise
                 last_error = exc
                 models.provider_failure_codes.append(exc.status_code)
                 if attempt == MODEL_ATTEMPTS:
+                    from looplane.model_catalog import report_failure
+
+                    report_failure(candidate.provider_name, candidate.model_id)
                     break
                 delay = retry_delay(attempt, exc.retry_after_seconds)
                 await emit(
