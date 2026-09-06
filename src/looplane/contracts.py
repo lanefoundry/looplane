@@ -64,6 +64,7 @@ class TaskContract(ContractModel):
     enabled_skills: tuple[str, ...] = ()
     task_id: str = Field(default_factory=lambda: uuid4().hex, min_length=1)
     base_sha: str | None = None
+    attachments: tuple[dict[str, str], ...] = ()
 
     @field_validator("instruction", "task_id")
     @classmethod

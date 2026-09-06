@@ -37,6 +37,7 @@ from looplane.approvals import (
     ApprovalDecision,
     ApprovalRequest,
 )
+from looplane.attachment_manager import format_attachment
 from looplane.cli_config import SUPPORTED_THINKING_LEVELS, CliConfig, save_cli_config
 from looplane.contracts import RunResult, RunStatus, Usage
 from looplane.conversation import (
@@ -400,6 +401,10 @@ class looplaneApp(App[RunResult | None]):
     #task > .text-area--cursor {
         background: transparent; color: $accent; text-style: underline;
     }
+    #attachment-bar {
+        display: none; height: auto; max-height: 3;
+        padding: 0 1; color: $text-muted;
+    }
     #composer-actions { height: 1; }
     #mode { display: none; }
     #composer-hint {
@@ -559,6 +564,7 @@ class looplaneApp(App[RunResult | None]):
                     soft_wrap=True,
                     tab_behavior="focus",
                 )
+                yield Static("", id="attachment-bar", markup=False)
                 with Horizontal(id="composer-actions"):
                     yield Select(
                         (("Ask", "ask"), ("Agent", "agent")),
@@ -1044,6 +1050,97 @@ class looplaneApp(App[RunResult | None]):
             )
             for item in DEFAULT_SLASH_COMMAND_REGISTRY.complete(text)
         )
+
+    @on(MessageComposer.FileDropped)
+    def file_dropped(self, event: MessageComposer.FileDropped) -> None:
+        from looplane.attachment_manager import (
+            AttachmentError,
+            resolve_and_read,
+            validate_attachment_count,
+        )
+
+        composer = self.query_one("#task", MessageComposer)
+        added = 0
+        for path in event.paths:
+            try:
+                validate_attachment_count(len(composer.all_attachments))
+                attachment = resolve_and_read(path, base=self.repository)
+                composer.add_attachment(attachment)
+                added += 1
+            except AttachmentError as exc:
+                self.query_one("#status", Static).update(str(exc))
+                break
+        if added:
+            self.query_one("#status", Static).update(f"Dropped {added} file(s)")
+
+    @on(MessageComposer.ClipboardImagePaste)
+    def clipboard_image_paste(self, _event: MessageComposer.ClipboardImagePaste) -> None:
+        self._try_clipboard_image_paste()
+
+    @work(exclusive=True, group="clipboard-paste")
+    async def _try_clipboard_image_paste(self) -> None:
+        import asyncio
+
+        from looplane.attachment_manager import (
+            AttachmentError,
+            read_clipboard_image,
+            validate_attachment_count,
+        )
+
+        token = self._binding.capture()
+        attachment = await asyncio.get_event_loop().run_in_executor(None, read_clipboard_image)
+        if not self._binding.current(token):
+            return
+        composer = self.query_one("#task", MessageComposer)
+        if attachment is not None:
+            try:
+                validate_attachment_count(len(composer.all_attachments))
+            except AttachmentError as exc:
+                self.query_one("#status", Static).update(str(exc))
+                return
+            composer.add_attachment(attachment)
+            self.query_one("#status", Static).update(f"Pasted {format_attachment(attachment)}")
+        else:
+            # No image in clipboard — do normal text paste
+            try:
+                import subprocess
+                import sys as _sys
+
+                cmd = (
+                    ["pbpaste"]
+                    if _sys.platform == "darwin"
+                    else ["xclip", "-selection", "clipboard", "-o"]
+                )
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if result.returncode == 0 and result.stdout:
+                    start, end = composer.selection
+                    composer.replace(result.stdout, start, end, maintain_selection_offset=False)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+    @on(MessageComposer.AttachmentsChanged)
+    def attachments_changed(self, _event: MessageComposer.AttachmentsChanged) -> None:
+        if not self.query("#attachment-bar"):
+            return
+        composer = self.query_one("#task", MessageComposer)
+        all_att = composer.all_attachments
+        bar = self.query_one("#attachment-bar", Static)
+        if not all_att:
+            bar.display = False
+            bar.update("")
+            return
+        lines: list[str] = []
+        for att in all_att:
+            prefix = "(ctx) " if att in composer.session_attachments else ""
+            lines.append(f"  {prefix}{format_attachment(att)}")
+        bar.update("\n".join(lines))
+        bar.display = True
 
     @on(MessageComposer.CommandNavigation)
     def navigate_command_menu(self, event: MessageComposer.CommandNavigation) -> None:
@@ -1702,7 +1799,9 @@ class looplaneApp(App[RunResult | None]):
                 f"Working · {len(self._queued_prompts)} follow-up(s) queued"
             )
             return
+        collected_attachments = self._collect_attachments(composer, instruction)
         composer.load_text("")
+        composer.clear_pending_attachments()
         self._prompt_history.append(instruction)
         self._prompt_history = self._prompt_history[-500:]
         self._history_index = None
@@ -1712,7 +1811,7 @@ class looplaneApp(App[RunResult | None]):
         self._send_timestamp = self._dependencies.clock()
         self._sent_instruction = instruction
         self._undo_send_requested = False
-        self._run_agent(instruction)
+        self._run_agent(instruction, attachments=collected_attachments)
 
     def _dispatch_command(self, instruction: str) -> None:
         try:
@@ -1867,6 +1966,10 @@ class looplaneApp(App[RunResult | None]):
                 self._apply_thinking_command(argument)
             else:
                 self._show_thinking_level_selector()
+        elif command is SlashCommand.ADD:
+            self._handle_add_command(argument or "")
+        elif command is SlashCommand.REMOVE:
+            self._handle_remove_command(argument or "")
         elif command is SlashCommand.FALLBACK:
             if argument and argument.casefold() == "clear":
                 self._clear_fallback_models()
@@ -1880,6 +1983,93 @@ class looplaneApp(App[RunResult | None]):
                 self.action_stop_or_quit()
             else:
                 self.exit(self._result)
+
+    def _collect_attachments(
+        self, composer: MessageComposer, instruction: str
+    ) -> tuple[dict[str, str], ...]:
+        from looplane.attachment_manager import (
+            AttachmentError,
+            detect_paths_in_text,
+            resolve_and_read,
+        )
+
+        all_attachments = list(composer.all_attachments)
+        detected = detect_paths_in_text(instruction, base=self.repository)
+        known_names = {a.name for a in all_attachments}
+        for path in detected:
+            if path.name in known_names:
+                continue
+            try:
+                att = resolve_and_read(path, base=self.repository)
+                all_attachments.append(att)
+                known_names.add(att.name)
+            except AttachmentError:
+                pass
+        return tuple(a.to_provider_dict() for a in all_attachments)
+
+    def _handle_add_command(self, argument: str) -> None:
+        from glob import glob as _glob
+
+        from looplane.attachment_manager import (
+            AttachmentError,
+            resolve_and_read,
+            validate_attachment_count,
+            validate_session_attachment_count,
+        )
+
+        if not argument.strip():
+            self.query_one("#status", Static).update("Usage: /add <path> [--context]")
+            return
+        parts = argument.strip().split()
+        session_context = "--context" in parts
+        paths = [p for p in parts if p != "--context"]
+        if not paths:
+            self.query_one("#status", Static).update("Usage: /add <path> [--context]")
+            return
+        composer = self.query_one("#task", MessageComposer)
+        expanded: list[str] = []
+        for pattern in paths:
+            matches = _glob(str(Path(pattern).expanduser()), recursive=True)
+            if matches:
+                expanded.extend(matches)
+            else:
+                expanded.append(pattern)
+        added = 0
+        for file_path in expanded:
+            try:
+                current = len(composer.all_attachments)
+                validate_attachment_count(current)
+                if session_context:
+                    validate_session_attachment_count(len(composer.session_attachments))
+                attachment = resolve_and_read(file_path, base=self.repository)
+                if session_context:
+                    composer.add_session_attachment(attachment)
+                else:
+                    composer.add_attachment(attachment)
+                added += 1
+            except AttachmentError as exc:
+                self.query_one("#status", Static).update(str(exc))
+                if not added:
+                    return
+                break
+        if added:
+            kind = "context" if session_context else "pending"
+            self.query_one("#status", Static).update(f"Added {added} attachment(s) ({kind})")
+
+    def _handle_remove_command(self, argument: str) -> None:
+        if not argument.strip():
+            self.query_one("#status", Static).update("Usage: /remove <name|--all>")
+            return
+        composer = self.query_one("#task", MessageComposer)
+        if argument.strip() == "--all":
+            composer.clear_all_attachments()
+            self.query_one("#status", Static).update("All attachments removed")
+            return
+        name = argument.strip()
+        if composer.remove_attachment(name):
+            self.query_one("#status", Static).update(f"Removed {name}")
+        else:
+            self.query_one("#status", Static).update(f"No attachment named: {name}")
 
     def _apply_permission_command(self, requested: str) -> None:
         normalized = requested.casefold()
@@ -2484,7 +2674,9 @@ class looplaneApp(App[RunResult | None]):
         self.query_one("#status", Static).update("Conversation cleared · ready")
 
     @work(exclusive=True, group="agent-run")
-    async def _run_agent(self, instruction: str) -> None:
+    async def _run_agent(
+        self, instruction: str, *, attachments: tuple[dict[str, str], ...] = ()
+    ) -> None:
         self._set_running(True)
         self._turn_started_at = self._dependencies.clock()
         self._last_turn_seconds = None
@@ -2503,7 +2695,11 @@ class looplaneApp(App[RunResult | None]):
         self._set_activity_visible(False)
         if self.query("#messages"):
             self._pre_turn_widget_count = len(self.query_one("#messages", Vertical).children)
-        self._write_turn("You" if self._mode == "ask" else "Task", instruction)
+        display_instruction = instruction
+        if attachments:
+            att_names = " · ".join(a.get("name", "file") for a in attachments)
+            display_instruction = f"{instruction}\n  {att_names}"
+        self._write_turn("You" if self._mode == "ask" else "Task", display_instruction)
         self._set_loading(
             "Thinking…" if self._uses_native_conversation() else "Starting isolated workspace…",
             phase=LoadingPhase.REQUESTING,
@@ -2606,6 +2802,7 @@ class looplaneApp(App[RunResult | None]):
                 if self._mode == "agent" and not self._uses_native_conversation()
                 else None
             ),
+            attachments=attachments,
         )
         resource: TuiResource | None = None
         try:

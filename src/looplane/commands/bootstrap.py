@@ -487,6 +487,28 @@ class ChatRuntimeFactory:
     native_controllers: NativeControllerCache = field(default_factory=dict)
     native_backend_limiter: BackendTurnLimiter = field(default_factory=_new_turn_limiter)
 
+    @staticmethod
+    def _to_runtime_attachments(
+        raw: tuple[dict[str, str], ...],
+    ) -> tuple:
+        from looplane.conversation_runtime import RuntimeAttachment
+
+        out: list[RuntimeAttachment] = []
+        for item in raw:
+            name = item.get("name", "attachment")
+            media_type = item.get("media_type", "text/plain")
+            content = item.get("content")
+            data_base64 = item.get("data_base64")
+            uri = item.get("uri")
+            if data_base64 is not None:
+                uri_str = f"data:{media_type};base64,{data_base64}"
+                out.append(RuntimeAttachment(name=name, media_type=media_type, uri=uri_str))
+            elif uri is not None:
+                out.append(RuntimeAttachment(name=name, media_type=media_type, uri=uri))
+            elif content is not None:
+                out.append(RuntimeAttachment(name=name, media_type=media_type, content=content))
+        return tuple(out)
+
     def make_runner(
         self,
         request: TuiRunRequest,
@@ -517,11 +539,13 @@ class ChatRuntimeFactory:
                 backend_limiter=self.native_backend_limiter,
                 services=self.services,
             )
+            runtime_attachments = self._to_runtime_attachments(getattr(request, "attachments", ()))
             return (
                 controller.turn(
                     request.instruction,
                     event_sink=event_sink,
                     approval_callback=lambda event: decide_runtime_approval(approval_policy, event),
+                    attachments=runtime_attachments,
                 ),
                 controller,
             )
@@ -532,6 +556,7 @@ class ChatRuntimeFactory:
             instruction=request.instruction,
             allowed_paths=("**",),
             verification=_common._commands(self.check),
+            attachments=getattr(request, "attachments", ()),
             limits=Limits(
                 wall_time_seconds=300.0
                 if adapter.kind is runtime_registry.RuntimeKind.EXTERNAL

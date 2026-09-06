@@ -39,7 +39,7 @@ from looplane.instructions import (
     render_instruction_diagnostics,
     resolve_instruction_documents,
 )
-from looplane.memory import relevant_memory_entries, render_known_context
+from looplane.memory import relevant_memory_entries, relevant_memory_files, render_known_context
 from looplane.prompts import (
     build_coding_agent_system_prompt,
     build_context_pressure_reminder,
@@ -198,7 +198,10 @@ def initial_messages(
     sandbox_checks: bool,
     sandbox_profile: str,
 ) -> list[ConversationItem]:
-    known_context = render_known_context(relevant_memory_entries(project=task.repository))
+    known_context = render_known_context(
+        relevant_memory_entries(project=task.repository),
+        relevant_memory_files(project=task.repository),
+    )
     instruction_resolution = resolve_instruction_documents(
         project_root=task.repository,
         start_dir=Path.cwd(),
@@ -273,7 +276,11 @@ def initial_messages(
                 runtime_context=runtime_context,
             ),
         ),
-        Message(role="user", content=request),
+        Message(
+            role="user",
+            content=request,
+            provider_metadata=({"attachments": list(task.attachments)} if task.attachments else {}),
+        ),
     ]
 
 

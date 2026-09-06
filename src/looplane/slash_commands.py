@@ -34,6 +34,9 @@ class SlashCommand(StrEnum):
     PERMISSIONS = "permissions"
     THINKING = "thinking"
     SKILL = "skill"
+    ADD = "add"
+    REMOVE = "remove"
+    FALLBACK = "fallback"
     EXIT = "exit"
 
 
@@ -284,6 +287,26 @@ DEFAULT_COMMANDS: Final[tuple[CommandMetadata, ...]] = (
         "Load a project skill by name, or list available skills.",
         ArgumentExpectation.OPTIONAL,
         "name",
+    ),
+    CommandMetadata(
+        SlashCommand.ADD,
+        "Attach a file or image to the next message.",
+        ArgumentExpectation.REQUIRED,
+        "path [--context]",
+        aliases=("attach",),
+    ),
+    CommandMetadata(
+        SlashCommand.REMOVE,
+        "Remove an attached file, or --all to clear.",
+        ArgumentExpectation.REQUIRED,
+        "name|--all",
+        aliases=("detach",),
+    ),
+    CommandMetadata(
+        SlashCommand.FALLBACK,
+        "Add, view, or clear fallback models.",
+        ArgumentExpectation.OPTIONAL,
+        "model|clear",
     ),
     CommandMetadata(
         SlashCommand.EXIT,

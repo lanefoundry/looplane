@@ -67,6 +67,7 @@ def test_request_defaults_frozen_fields_and_pickle_compatibility() -> None:
         "context_id",
         "continuation_run_dir",
         "thinking_level",
+        "attachments",
     ]
     assert request.mode == "agent"
     assert request.context_id is None

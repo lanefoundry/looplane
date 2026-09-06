@@ -38,6 +38,9 @@ def test_default_registry_exposes_discoverable_metadata() -> None:
         SlashCommand.PERMISSIONS,
         SlashCommand.THINKING,
         SlashCommand.SKILL,
+        SlashCommand.ADD,
+        SlashCommand.REMOVE,
+        SlashCommand.FALLBACK,
         SlashCommand.EXIT,
     ]
     assert all(metadata.description for metadata in commands)
@@ -94,7 +97,10 @@ def test_completion_requires_leading_slash_and_filters_names_and_aliases() -> No
         SlashCommand.COMPACT,
         SlashCommand.CONTEXT,
     ]
-    assert [item.command for item in complete_slash_commands("/rem")] == [SlashCommand.REMEMBER]
+    assert [item.command for item in complete_slash_commands("/rem")] == [
+        SlashCommand.REMEMBER,
+        SlashCommand.REMOVE,
+    ]
     assert complete_slash_commands("/resume abc") == (
         DEFAULT_SLASH_COMMAND_REGISTRY.resolve("resume"),
     )
@@ -135,6 +141,37 @@ def test_unknown_and_non_command_input_are_rejected_locally() -> None:
 
     with pytest.raises(NotSlashCommand):
         parse_slash_command("hello")
+
+
+def test_add_command_is_parseable_and_requires_argument() -> None:
+    parsed = parse_slash_command("/add screenshot.png")
+    assert parsed.command is SlashCommand.ADD
+    assert parsed.argument == "screenshot.png"
+
+    with pytest.raises(InvalidSlashCommand, match="argument is required"):
+        parse_slash_command("/add")
+
+
+def test_remove_command_is_parseable_and_requires_argument() -> None:
+    parsed = parse_slash_command("/remove screenshot.png")
+    assert parsed.command is SlashCommand.REMOVE
+    assert parsed.argument == "screenshot.png"
+
+    parsed_all = parse_slash_command("/remove --all")
+    assert parsed_all.argument == "--all"
+
+    with pytest.raises(InvalidSlashCommand, match="argument is required"):
+        parse_slash_command("/remove")
+
+
+def test_add_and_remove_aliases_resolve() -> None:
+    attach = DEFAULT_SLASH_COMMAND_REGISTRY.resolve("attach")
+    assert attach is not None
+    assert attach.command is SlashCommand.ADD
+
+    detach = DEFAULT_SLASH_COMMAND_REGISTRY.resolve("detach")
+    assert detach is not None
+    assert detach.command is SlashCommand.REMOVE
 
 
 def test_registry_rejects_duplicate_aliases() -> None:
