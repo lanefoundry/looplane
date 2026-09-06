@@ -1,0 +1,26 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=500]
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (fast subset)
+        entry: uv run pytest --ignore=tests/sandbox --ignore=tests/execution --ignore=tests/test_conversation_workspace.py --ignore=tests/test_external_runner.py --ignore=tests/test_claude_backend.py -x -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

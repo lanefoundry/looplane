@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Install git hooks from scripts/ into .git/hooks/
+# Install git hooks via the pre-commit framework.
+# Requires: pip install pre-commit (or uv tool install pre-commit)
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-HOOKS_DIR="$REPO_ROOT/.git/hooks"
+if ! command -v pre-commit >/dev/null 2>&1; then
+    echo "pre-commit not found. Install with: pip install pre-commit"
+    exit 1
+fi
 
-for hook in "$REPO_ROOT"/scripts/pre-commit; do
-    name="$(basename "$hook")"
-    cp "$hook" "$HOOKS_DIR/$name"
-    chmod +x "$HOOKS_DIR/$name"
-    echo "installed $name"
-done
+pre-commit install
+pre-commit install --hook-type pre-push
+echo "hooks installed: pre-commit (ruff) + pre-push (pytest)"
