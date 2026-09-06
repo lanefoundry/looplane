@@ -153,7 +153,8 @@ class WebSearchResult:
 #
 # Fallback chain inspired by omp (oh-my-pi) and opencode:
 #   API-key providers first → credential-free providers as fallback.
-#   Default order: tavily → brave → jina → exa → parallel → duckduckgo
+#   Default order: tavily → brave → jina → exa → parallel →
+#                  duckduckgo → startpage → ecosia
 #
 # API-key providers activate only when their env var is set.
 # Credential-free providers are always available.
@@ -486,6 +487,223 @@ class _DuckDuckGoSearch(_SearchProvider):
 
 
 # -------------------------------------------------------------------
+# Startpage (credential-free, proxies Google index)
+# -------------------------------------------------------------------
+
+_SP_HIDDEN_RE = re.compile(
+    r"<input[^>]+type=[\"']hidden[\"'][^>]*>",
+    re.DOTALL,
+)
+_SP_NAME_RE = re.compile(r"name=[\"']([^\"']+)[\"']")
+_SP_VALUE_RE = re.compile(r"value=[\"']([^\"']*)[\"']")
+_SP_RESULT_RE = re.compile(
+    r'<div[^>]+class="[^"]*\bw-gl__result\b[^"]*"[^>]*>'
+    r"(.*?)</div>\s*(?=<div[^>]+class=\"[^\"]*\\bw-gl|$)",
+    re.DOTALL,
+)
+_SP_LINK_RE = re.compile(
+    r'<a[^>]+class="[^"]*result-link[^"]*"[^>]*'
+    r'href="([^"]+)"[^>]*>(.*?)</a>',
+    re.DOTALL,
+)
+_SP_DESC_RE = re.compile(
+    r'<p[^>]+class="[^"]*\bdescription\b[^"]*"[^>]*>(.*?)</p>',
+    re.DOTALL,
+)
+
+
+class _StartpageSearch(_SearchProvider):
+    name = "startpage"
+
+    def search(
+        self,
+        query: str,
+        *,
+        max_results: int = 5,
+    ) -> list[WebSearchResult]:
+        with httpx.Client(
+            timeout=_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={
+                "User-Agent": _BROWSER_UA,
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        ) as client:
+            # Phase 1: extract anti-bot token
+            form_data = self._extract_form_token(client)
+
+            # Phase 2: search
+            form_data["query"] = query
+            if form_data.get("sc"):
+                resp = client.post(
+                    "https://www.startpage.com/sp/search",
+                    data=form_data,
+                    headers={
+                        "Content-Type": ("application/x-www-form-urlencoded"),
+                        "Referer": "https://www.startpage.com/",
+                    },
+                )
+            else:
+                resp = client.get(
+                    "https://www.startpage.com/sp/search",
+                    params={"query": query},
+                    headers={"Referer": "https://www.startpage.com/"},
+                )
+            resp.raise_for_status()
+
+        html = resp.text
+        if any(
+            s in html
+            for s in (
+                "/sp/captcha",
+                "component---src-pages-captcha",
+            )
+        ) or any(s in str(resp.url) for s in ("/captcha", "/errors/")):
+            raise ToolExecutionError("Startpage CAPTCHA triggered")
+
+        return self._parse_results(html, max_results)
+
+    @staticmethod
+    def _extract_form_token(
+        client: httpx.Client,
+    ) -> dict[str, str]:
+        try:
+            resp = client.get("https://www.startpage.com/")
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            return {}
+
+        fields: dict[str, str] = {}
+        for m in _SP_HIDDEN_RE.finditer(resp.text):
+            tag = m.group(0)
+            name_m = _SP_NAME_RE.search(tag)
+            val_m = _SP_VALUE_RE.search(tag)
+            if name_m:
+                fields[name_m.group(1)] = val_m.group(1) if val_m else ""
+        return fields
+
+    @staticmethod
+    def _parse_results(
+        html: str,
+        max_results: int,
+    ) -> list[WebSearchResult]:
+        results: list[WebSearchResult] = []
+        for m in _SP_RESULT_RE.finditer(html):
+            if len(results) >= max_results:
+                break
+            block = m.group(1)
+            link_m = _SP_LINK_RE.search(block)
+            if not link_m:
+                continue
+            url = link_m.group(1)
+            if not url.startswith("http"):
+                continue
+            title = _decode_html(link_m.group(2))
+            desc_m = _SP_DESC_RE.search(block)
+            snippet = _decode_html(desc_m.group(1)) if desc_m else ""
+            results.append(
+                WebSearchResult(
+                    title=title,
+                    url=url,
+                    snippet=snippet,
+                ),
+            )
+        return results
+
+
+# -------------------------------------------------------------------
+# Ecosia (credential-free, Bing-backed)
+# -------------------------------------------------------------------
+
+_ECO_RESULT_RE = re.compile(
+    r'<article[^>]+data-test-id="organic-result"[^>]*>'
+    r"(.*?)</article>",
+    re.DOTALL,
+)
+_ECO_LINK_RE = re.compile(
+    r'<a[^>]+href="(https?://[^"]+)"[^>]*>.*?'
+    r'data-test-id="result-title"[^>]*>(.*?)</',
+    re.DOTALL,
+)
+_ECO_LINK_RE2 = re.compile(
+    r'data-test-id="result-title"[^>]*>'
+    r"(.*?)</.*?<a[^>]+href=\"(https?://[^\"]+)\"",
+    re.DOTALL,
+)
+_ECO_SNIPPET_RE = re.compile(
+    r'data-test-id="web-result-description"[^>]*>'
+    r"(.*?)</",
+    re.DOTALL,
+)
+_ECO_BOT_SIGNALS = (
+    "Ecosia Firewall",
+    "_cf_chl_opt",
+    "/cdn-cgi/challenge-platform/",
+)
+
+
+class _EcosiaSearch(_SearchProvider):
+    name = "ecosia"
+
+    def search(
+        self,
+        query: str,
+        *,
+        max_results: int = 5,
+    ) -> list[WebSearchResult]:
+        with httpx.Client(
+            timeout=_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={
+                "User-Agent": _BROWSER_UA,
+                "Referer": "https://www.ecosia.org/",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        ) as client:
+            resp = client.get(
+                "https://www.ecosia.org/search",
+                params={"q": query},
+            )
+            resp.raise_for_status()
+
+        html = resp.text
+        if resp.status_code in (403, 429) or any(s in html for s in _ECO_BOT_SIGNALS):
+            raise ToolExecutionError("Ecosia bot detection triggered")
+
+        results: list[WebSearchResult] = []
+        for m in _ECO_RESULT_RE.finditer(html):
+            if len(results) >= max_results:
+                break
+            block = m.group(1)
+
+            link_m = _ECO_LINK_RE.search(block)
+            if link_m:
+                url, title_raw = link_m.group(1), link_m.group(2)
+            else:
+                link_m2 = _ECO_LINK_RE2.search(block)
+                if not link_m2:
+                    continue
+                title_raw, url = link_m2.group(1), link_m2.group(2)
+
+            if "ecosia.org" in url:
+                continue
+
+            title = _decode_html(title_raw)
+            snip_m = _ECO_SNIPPET_RE.search(block)
+            snippet = _decode_html(snip_m.group(1)) if snip_m else ""
+            results.append(
+                WebSearchResult(
+                    title=title,
+                    url=url,
+                    snippet=snippet,
+                ),
+            )
+        return results
+
+
+# -------------------------------------------------------------------
 # Shared helpers
 # -------------------------------------------------------------------
 
@@ -563,6 +781,8 @@ _DEFAULT_CHAIN: list[_SearchProvider] = [
     _ExaSearch(),
     _ParallelSearch(),
     _DuckDuckGoSearch(),
+    _StartpageSearch(),
+    _EcosiaSearch(),
 ]
 
 
