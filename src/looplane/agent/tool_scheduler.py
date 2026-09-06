@@ -18,6 +18,7 @@ from looplane.agent.ports import (
     EventEmitter,
     ExecutePreparedCall,
     HookCall,
+    InvokeSkill,
     MarkActionStarted,
     PreparedToolCall,
     PrepareToolCall,
@@ -187,6 +188,7 @@ async def execute_prepared_tool_call(
     hook: HookCall,
     mark_started: MarkActionStarted,
     dispatch: DispatchSubagents,
+    invoke_skill: InvokeSkill | None = None,
     deadline: float,
 ) -> ToolObservation:
     call = prepared.call
@@ -202,7 +204,9 @@ async def execute_prepared_tool_call(
         pending = persistence.manifest.pending_action
         if pending is not None and pending.request_id == request_id:
             await mark_started(request_id)
-    if call.name == "dispatch_subagents":
+    if call.name == "invoke_skill" and invoke_skill is not None:
+        observation = await invoke_skill(call, deadline=deadline)
+    elif call.name == "dispatch_subagents":
         observation = await dispatch(call, deadline=deadline)
     else:
         observation = await blocking(

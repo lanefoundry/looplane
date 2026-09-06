@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "import-linter>=2.1",
   "pytest>=8.3.0",
   "pytest-asyncio>=0.25.0",
   "ruff>=0.9.0",
@@ -61,3 +62,43 @@ extend-exclude = [".research/*-frozen"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+# --- Module boundary enforcement ---
+
+[tool.importlinter]
+root_packages = ["looplane"]
+include_external_packages = false
+
+[[tool.importlinter.contracts]]
+name = "runner-does-not-directly-import-domain-loaders"
+type = "forbidden"
+source_modules = ["looplane.agent.runner"]
+forbidden_modules = [
+  "looplane.skills",
+  "looplane.instructions",
+  "looplane.plugins",
+  "looplane.memory",
+]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "tooling-definitions-stays-pure"
+type = "forbidden"
+source_modules = ["looplane.tooling.definitions"]
+forbidden_modules = [
+  "looplane.skills",
+  "looplane.agent",
+  "looplane.prompts",
+]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "skill-dispatch-does-not-import-runner"
+type = "forbidden"
+source_modules = ["looplane.agent.skill_dispatch"]
+forbidden_modules = [
+  "looplane.agent.runner",
+  "looplane.agent.context",
+  "looplane.tooling.executor",
+]
+allow_indirect_imports = true

@@ -398,11 +398,13 @@ async def test_initial_prompt_injects_project_skills(tiny_bug_repo: Path, tmp_pa
         allow_unsafe_local_exec=True,
     ).run()
 
-    first_messages, _tools = model.calls[0]
+    first_messages, tools = model.calls[0]
     system = first_messages[0]
     assert isinstance(system, Message)
-    assert "Project skills from .looplane/skills" in (system.content or "")
-    assert "Check edge cases." in (system.content or "")
+    assert "reviewer - local review skill" in (system.content or "")
+    assert "Check edge cases." not in (system.content or "")
+    tool_names = [tool.name for tool in tools]
+    assert "invoke_skill" in tool_names
 
 
 @pytest.mark.asyncio
@@ -433,11 +435,15 @@ async def test_initial_prompt_injects_only_enabled_project_skills(
         allow_unsafe_local_exec=True,
     ).run()
 
-    first_messages, _tools = model.calls[0]
+    first_messages, tools = model.calls[0]
     system = first_messages[0]
     assert isinstance(system, Message)
-    assert "Write regression tests." in (system.content or "")
+    assert "test-writer" in (system.content or "")
     assert "Review changed code." not in (system.content or "")
+    assert "Write regression tests." not in (system.content or "")
+    invoke_skill_tools = [t for t in tools if t.name == "invoke_skill"]
+    assert len(invoke_skill_tools) == 1
+    assert "test-writer" in invoke_skill_tools[0].description
 
 
 @pytest.mark.asyncio
@@ -1064,9 +1070,7 @@ async def test_failed_modifying_tool_side_effect_still_requires_verification(
 
     assert result.status == RunStatus.COMPLETED, result.model_dump()
     assert result.terminal_reason == "verified"
-    assert any(
-        event["event_type"] == "verification.started" for event in read_events(result)
-    )
+    assert any(event["event_type"] == "verification.started" for event in read_events(result))
 
 
 @pytest.mark.asyncio
@@ -1260,8 +1264,7 @@ async def test_conversational_run_skips_verification_and_completes_without_chang
     assert "make the smallest correct patch, and verify it" not in task_request
     events = read_events(result)
     assert not any(
-        event["event_type"] == "tool.requested"
-        and event["data"].get("name") == "run_check"
+        event["event_type"] == "tool.requested" and event["data"].get("name") == "run_check"
         for event in events
     )
     assert not any(event["event_type"] == "verification.started" for event in events)
@@ -1299,9 +1302,7 @@ async def test_read_only_continuation_reuses_settled_workspace_without_verificat
     assert first_result.terminal_reason == "no_changes"
     assert second_result.terminal_reason == "no_changes"
     assert second_result.verification == ()
-    assert not any(
-        event["event_type"].startswith("verification.") for event in continuation_events
-    )
+    assert not any(event["event_type"].startswith("verification.") for event in continuation_events)
 
 
 @pytest.mark.asyncio
@@ -1875,7 +1876,8 @@ async def test_project_context_watch_reloads_skill_changes_as_injected_context(
     assert len(reloads) == 1
     assert "[project-context-reload-v1]" in reloads[0].content
     assert "- skills: .looplane/skills/review.md" in reloads[0].content
-    assert "Review the changed code." in reloads[0].content
+    assert "invoke_skill" in reloads[0].content
+    assert "reviewer" in reloads[0].content
     events = read_events(result)
     assert any(
         event["event_type"] == "project_context.reloaded"

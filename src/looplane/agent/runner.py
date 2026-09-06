@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
-from looplane.agent import completion, context, model_calls, subagent_dispatch, tool_scheduler
+from looplane.agent import (
+    completion,
+    context,
+    model_calls,
+    skill_dispatch,
+    subagent_dispatch,
+    tool_scheduler,
+)
 from looplane.agent.checkpoints import (
     RunPersistence,
     check_resume_identity,
@@ -238,6 +245,10 @@ class AgentRunner:
         self._turn_start_step = 0
         self._is_continuation_turn = False
         self._cancel_requested = asyncio.Event()
+        self._skills = context.resolve_project_skills(
+            task.repository,
+            task.enabled_skills,
+        )
 
     @property
     def model(self) -> ModelProvider:
@@ -812,9 +823,28 @@ class AgentRunner:
 
     def _provider_tool_definitions(self) -> tuple[ToolDefinition, ...]:
         assert self._executor is not None
-        if not self._enable_subagent_dispatch:
-            return self._executor.definitions
-        return (*self._executor.definitions, self._dispatch_subagents_definition())
+        defs: tuple[ToolDefinition, ...] = self._executor.definitions
+        if self._skills:
+            defs = (*defs, self._invoke_skill_definition())
+        if self._enable_subagent_dispatch:
+            defs = (*defs, self._dispatch_subagents_definition())
+        return defs
+
+    def _invoke_skill_definition(self) -> ToolDefinition:
+        pairs = tuple((s.name, s.description) for s in self._skills)
+        return skill_dispatch.invoke_skill_definition(pairs)
+
+    async def _execute_invoke_skill(
+        self,
+        call: ToolCall,
+        *,
+        deadline: float,
+    ) -> ToolObservation:
+        return await self._run_blocking_safely(
+            skill_dispatch.execute_invoke_skill,
+            call,
+            self._skills,
+        )
 
     @staticmethod
     def _dispatch_subagents_definition() -> ToolDefinition:
@@ -1057,6 +1087,7 @@ class AgentRunner:
             hook=self._run_hook,
             mark_started=self._mark_approved_action_started,
             dispatch=self._execute_dispatch_subagents,
+            invoke_skill=self._execute_invoke_skill if self._skills else None,
             deadline=deadline,
         )
         await verification.finish_manual_check(check, observation, call.tool_call_id)

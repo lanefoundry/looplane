@@ -58,9 +58,26 @@ from looplane.runtime_semantics import (
     should_inject_workspace_context_reminder,
     should_remind_context_pressure,
 )
-from looplane.skills import load_project_skills, render_skill_context, select_project_skills
+from looplane.skills import (
+    ProjectSkill,
+    load_project_skills,
+    render_skill_metadata,
+    select_project_skills,
+)
 
 BlockingResult = TypeVar("BlockingResult")
+
+
+def resolve_project_skills(
+    project_root: Path,
+    enabled_skills: tuple[str, ...] = (),
+) -> tuple[ProjectSkill, ...]:
+    """Load and filter project skills; the runner stores the result."""
+
+    return select_project_skills(
+        load_project_skills(project_root),
+        enabled_skills,
+    )
 
 
 class BlockingCall(Protocol):
@@ -200,7 +217,7 @@ def initial_messages(
         load_project_skills(task.repository),
         task.enabled_skills,
     )
-    skill_context = render_skill_context(skills)
+    skill_context = render_skill_metadata(skills) if skills else ""
     provider_tools = provider_tools if workspace is not None else ()
     tool_context_parts = [render_tool_prompt_context(provider_tools)]
     if enable_subagent_dispatch:
@@ -575,9 +592,9 @@ def project_context_reload(task: TaskContract, state: ContextState) -> ContextUp
     content = render_project_context_reload(previous, current, categories=non_instruction_changes)
     if {"skills", "plugins"} & set(non_instruction_changes):
         skills = select_project_skills(load_project_skills(task.repository), task.enabled_skills)
-        skill_context = render_skill_context(skills)
-        if skill_context:
-            content = f"{content}\n\nReloaded project skill context:\n{skill_context}"
+        skill_metadata = render_skill_metadata(skills)
+        if skill_metadata:
+            content = f"{content}\n\nReloaded project skills:\n{skill_metadata}"
     if content:
         additions.append(InjectedContext(source="project_context_reload", content=content))
     events.append(

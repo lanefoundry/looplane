@@ -123,6 +123,18 @@ def render_skill_context(skills: Sequence[ProjectSkill]) -> str:
     return bounded_text("\n\n".join(lines), MAX_SKILL_CONTEXT_CHARS)
 
 
+def render_skill_metadata(skills: Sequence[ProjectSkill]) -> str:
+    """Render skill names and descriptions for the invoke_skill tool definition."""
+
+    if not skills:
+        return ""
+    lines = ["Available project skills (use invoke_skill to load full instructions):"]
+    for skill in skills:
+        desc = f" - {skill.description}" if skill.description else ""
+        lines.append(f"  - {skill.name}{desc}")
+    return "\n".join(lines)
+
+
 def _parse_skill(path: Path, text: str) -> tuple[str, str, str]:
     body = text.strip()
     metadata: dict[str, str] = {}

@@ -32,6 +32,8 @@ class SlashCommand(StrEnum):
     USAGE = "usage"
     REMEMBER = "remember"
     PERMISSIONS = "permissions"
+    THINKING = "thinking"
+    SKILL = "skill"
     EXIT = "exit"
 
 
@@ -270,6 +272,18 @@ DEFAULT_COMMANDS: Final[tuple[CommandMetadata, ...]] = (
         "Inspect or change process-local tool permissions.",
         ArgumentExpectation.OPTIONAL,
         "ask|accept-edits|read-only|clear",
+    ),
+    CommandMetadata(
+        SlashCommand.THINKING,
+        "Adjust or disable extended thinking.",
+        ArgumentExpectation.OPTIONAL,
+        "off|minimal|low|medium|high|xhigh|max",
+    ),
+    CommandMetadata(
+        SlashCommand.SKILL,
+        "Load a project skill by name, or list available skills.",
+        ArgumentExpectation.OPTIONAL,
+        "name",
     ),
     CommandMetadata(
         SlashCommand.EXIT,

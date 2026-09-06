@@ -43,6 +43,9 @@ Tool-use policy:
 - Use apply_patch for multi-hunk or deletion changes. Hunk counts must match exactly and every
   hunk body line must start with '+', '-', or a space. Never append uncounted content.
 - Use search_text for literal repository search and read_file for file contents.
+- If invoke_skill is available, use it to load project skill instructions when a task matches a
+  skill's description. Available skill names and descriptions are listed in the invoke_skill tool
+  definition. Only use exact names from that list.
 - For a request that only needs repository reading or explanation, use read-only tools as needed,
   then answer without editing files or running checks.
 
@@ -239,9 +242,7 @@ def render_task_request(
     """Render one task without implying that every request requires a patch or check."""
 
     paths = "\n".join(f"- {pattern}" for pattern in allowed_paths)
-    checks = "\n".join(
-        f"- {command.name}: {list(command.argv)!r}" for command in verification
-    )
+    checks = "\n".join(f"- {command.name}: {list(command.argv)!r}" for command in verification)
     return (
         f"Task: {instruction}\n"
         f"Base commit: {base_sha}\n"

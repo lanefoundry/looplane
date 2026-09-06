@@ -36,6 +36,8 @@ def test_default_registry_exposes_discoverable_metadata() -> None:
         SlashCommand.USAGE,
         SlashCommand.REMEMBER,
         SlashCommand.PERMISSIONS,
+        SlashCommand.THINKING,
+        SlashCommand.SKILL,
         SlashCommand.EXIT,
     ]
     assert all(metadata.description for metadata in commands)

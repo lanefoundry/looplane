@@ -51,6 +51,10 @@ class MarkActionStarted(Protocol):
     async def __call__(self, request_id: str) -> None: ...
 
 
+class InvokeSkill(Protocol):
+    async def __call__(self, call: ToolCall, *, deadline: float) -> ToolObservation: ...
+
+
 class DispatchSubagents(Protocol):
     async def __call__(self, call: ToolCall, *, deadline: float) -> ToolObservation: ...
 
