@@ -171,6 +171,7 @@ if TYPE_CHECKING:
 _AUTOMATIC_MODEL = "__automatic__"
 _IDLE_CONFIRM_WINDOW_S = 0.8
 _INTERRUPT_ESCALATION_S = 5.0
+_UNDO_SEND_WINDOW_S = 1.5
 
 
 def _rewindable_prompts_from_events(
@@ -315,6 +316,16 @@ class looplaneApp(App[RunResult | None]):
             self._hide_command_menu()
             return
         if self._agent_running:
+            now = self._dependencies.clock()
+            if (
+                self._send_timestamp is not None
+                and now - self._send_timestamp <= _UNDO_SEND_WINDOW_S
+                and self._sent_instruction is not None
+                and not self._stop_requested
+                and self._stream_char_count == 0
+            ):
+                self._undo_send()
+                return
             self._request_interrupt()
             self._reset_idle_detectors()
             return
@@ -500,6 +511,10 @@ class looplaneApp(App[RunResult | None]):
         self._interrupt_requested_at: float | None = None
         self._force_stop_requested = False
         self._exit_after_stop = False
+        self._undo_send_requested = False
+        self._sent_instruction: str | None = None
+        self._send_timestamp: float | None = None
+        self._pre_turn_widget_count: int | None = None
         self._escape_idle_armed_at: float | None = None
         self._exit_confirm_key: str | None = None
         self._exit_confirm_at: float | None = None
@@ -1536,6 +1551,9 @@ class looplaneApp(App[RunResult | None]):
         self._history_index = None
         self._stop_requested = False
         self.initial_prompt = None
+        self._send_timestamp = self._dependencies.clock()
+        self._sent_instruction = instruction
+        self._undo_send_requested = False
         self._run_agent(instruction)
 
     def _dispatch_command(self, instruction: str) -> None:
@@ -1603,7 +1621,7 @@ class looplaneApp(App[RunResult | None]):
                 + "\n\nShortcuts\n"
                 + "Enter send · Shift+Enter newline · Ctrl+P/N prompt history\n"
                 + "PageUp/PageDown transcript (or approval preview) · Ctrl+O tool detail\n"
-                + "Esc close/interrupt · Cmd+C copies · "
+                + "Esc undo send (1.5s) / close / interrupt · Cmd+C copies · "
                 + "Ctrl+C copies a selection; otherwise stops\n"
                 + "Messages sent during a turn are queued FIFO; Ctrl+C restores them to the draft.",
             )
@@ -2287,6 +2305,8 @@ class looplaneApp(App[RunResult | None]):
         self.last_error = None
         self.query_one("#activity", RichLog).clear()
         self._set_activity_visible(False)
+        if self.query("#messages"):
+            self._pre_turn_widget_count = len(self.query_one("#messages", Vertical).children)
         self._write_turn("You" if self._mode == "ask" else "Task", instruction)
         self._set_loading(
             "Thinking…" if self._uses_native_conversation() else "Starting isolated workspace…",
@@ -2315,13 +2335,16 @@ class looplaneApp(App[RunResult | None]):
                     summary="Force-stopped during conversation startup.",
                     terminal_reason="user_cancelled",
                 )
-                self.query_one("#status", Static).update(
-                    "Force-stopped during conversation startup · draft restored"
-                )
                 self._set_running(False)
-                composer = self.query_one("#task", MessageComposer)
-                composer.set_text(original_instruction)
-                composer.focus()
+                if self._undo_send_requested:
+                    self._perform_undo_send_cleanup()
+                else:
+                    self.query_one("#status", Static).update(
+                        "Force-stopped during conversation startup · draft restored"
+                    )
+                    composer = self.query_one("#task", MessageComposer)
+                    composer.set_text(original_instruction)
+                    composer.focus()
                 return
             except Exception as exc:
                 try:
@@ -2350,13 +2373,16 @@ class looplaneApp(App[RunResult | None]):
                     summary="Cancelled before the runtime started.",
                     terminal_reason="user_cancelled",
                 )
-                await self._finish_conversation_turn(self._result)
-                self.query_one("#status", Static).update("Cancelled before runtime start")
+                with suppress(asyncio.CancelledError):
+                    await self._finish_conversation_turn(self._result)
                 self._set_running(False)
-                if self._exit_after_stop:
+                if self._undo_send_requested:
+                    self._perform_undo_send_cleanup()
+                elif self._exit_after_stop:
                     self._exit_after_stop = False
                     self.exit(self._result)
                 else:
+                    self.query_one("#status", Static).update("Cancelled before runtime start")
                     self.query_one("#task", MessageComposer).focus()
                 return
             if self._uses_native_conversation():
@@ -2502,19 +2528,22 @@ class looplaneApp(App[RunResult | None]):
                 self._resource = None
                 self._model = None
                 self._set_running(False)
-                await self._maybe_auto_compact_context()
-                if self._binding.current(token):
-                    if self._exit_after_stop:
-                        self._exit_after_stop = False
-                        self.exit(self._result)
-                    elif self._queued_prompts and not self._stop_requested:
-                        next_prompt = self._queued_prompts.popleft()
-                        self.query_one("#status", Static).update(
-                            f"Starting queued follow-up · {len(self._queued_prompts)} remaining"
-                        )
-                        self._after_current_refresh(lambda: self._run_agent(next_prompt))
-                    elif self.query("#task"):
-                        self.query_one("#task", MessageComposer).focus()
+                if self._undo_send_requested:
+                    self._perform_undo_send_cleanup()
+                else:
+                    await self._maybe_auto_compact_context()
+                    if self._binding.current(token):
+                        if self._exit_after_stop:
+                            self._exit_after_stop = False
+                            self.exit(self._result)
+                        elif self._queued_prompts and not self._stop_requested:
+                            next_prompt = self._queued_prompts.popleft()
+                            self.query_one("#status", Static).update(
+                                f"Starting queued follow-up · {len(self._queued_prompts)} remaining"
+                            )
+                            self._after_current_refresh(lambda: self._run_agent(next_prompt))
+                        elif self.query("#task"):
+                            self.query_one("#task", MessageComposer).focus()
 
     async def aclose_resources(self) -> None:
         await self._binding.close_resources()
@@ -2961,6 +2990,46 @@ class looplaneApp(App[RunResult | None]):
         self.query_one("#status", Static).update(
             status + suffix + " · press Ctrl+C again to force stop"
         )
+
+    def _undo_send(self) -> None:
+        """Cancel a just-submitted message and restore it to the composer."""
+
+        self._undo_send_requested = True
+        self._request_interrupt()
+        if self.query("#status"):
+            self.query_one("#status", Static).update("Cancelling message…")
+
+    def _perform_undo_send_cleanup(self) -> None:
+        """Remove transcript elements from the cancelled turn and restore the instruction."""
+
+        if self._pre_turn_widget_count is not None and self.query("#messages"):
+            messages = self.query_one("#messages", Vertical)
+            turn_widgets = list(messages.children)[self._pre_turn_widget_count :]
+            for widget in turn_widgets:
+                widget.remove()
+        if self._sent_instruction is not None and self.query("#task"):
+            composer = self.query_one("#task", MessageComposer)
+            composer.set_text(self._sent_instruction)
+            composer.focus()
+        if (
+            self._prompt_history
+            and self._sent_instruction is not None
+            and self._prompt_history[-1] == self._sent_instruction
+        ):
+            self._prompt_history.pop()
+        self._tool_actions = {k: v for k, v in self._tool_actions.items() if v.is_mounted}
+        self._runtime_text_blocks = {
+            k: v for k, v in self._runtime_text_blocks.items() if v.is_mounted
+        }
+        if self._active_tool_group is not None and not self._active_tool_group.is_mounted:
+            self._active_tool_group = None
+        self._undo_send_requested = False
+        self._sent_instruction = None
+        self._send_timestamp = None
+        self._pre_turn_widget_count = None
+        if self.query("#status"):
+            self.query_one("#status", Static).update("Message cancelled · restored to composer")
+        self._after_current_refresh(self._ensure_empty_state)
 
     def _force_interrupt(self, requested_at: float) -> None:
         """Escalate a still-active cooperative stop after one bounded grace period."""

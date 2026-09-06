@@ -80,6 +80,7 @@ from looplane.slash_commands import UnknownSlashCommand as UnknownSlashCommand
 from looplane.terminal.app import _AUTOMATIC_MODEL as _AUTOMATIC_MODEL
 from looplane.terminal.app import _IDLE_CONFIRM_WINDOW_S as _IDLE_CONFIRM_WINDOW_S
 from looplane.terminal.app import _INTERRUPT_ESCALATION_S as _INTERRUPT_ESCALATION_S
+from looplane.terminal.app import _UNDO_SEND_WINDOW_S as _UNDO_SEND_WINDOW_S
 from looplane.terminal.app import LOOPLANE_THEME as LOOPLANE_THEME
 from looplane.terminal.app import RecordingConversationEventSink as RecordingConversationEventSink
 from looplane.terminal.app import TerminalDependencies

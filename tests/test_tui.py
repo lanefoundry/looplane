@@ -4941,3 +4941,155 @@ async def test_usage_command_reports_session_totals(tmp_path: Path) -> None:
         assert "total 1,500" in detail
         assert "cached input 200 (20.0% hit)" in detail
         assert "3 turn(s)" in detail
+
+
+# ---------------------------------------------------------------------------
+# Undo-send (ESC within grace window)
+# ---------------------------------------------------------------------------
+
+
+class SlowRunner(FakeRunner):
+    """A runner that blocks until explicitly released — for undo-send tests."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._release = asyncio.Event()
+        self.started = asyncio.Event()
+
+    def release(self) -> None:
+        self._release.set()
+
+    async def run(self) -> RunResult:
+        self.started.set()
+        await self._release.wait()
+        return RunResult(
+            run_id="slow-run",
+            task_id="slow-task",
+            status=RunStatus.COMPLETED,
+            summary="Eventually done.",
+            terminal_reason="verified",
+        )
+
+
+async def test_esc_within_undo_window_restores_instruction_to_composer(
+    tmp_path: Path,
+) -> None:
+    """ESC within the grace window restores the sent text to the composer."""
+
+    runner_ref: list[SlowRunner] = []
+
+    def factory(request, approval_policy, event_sink):
+        runner = SlowRunner(approval_policy=approval_policy, event_sink=event_sink)
+        runner_ref.append(runner)
+        return runner, FakeModel()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("Fix the flaky test")
+        app._submit_current_task()
+
+        # Wait for the runner to start so we know _agent_running is True
+        await _wait_until(lambda: bool(runner_ref) and runner_ref[0].started.is_set())
+        assert app._agent_running
+
+        # Press ESC within the undo window (stream_char_count is still 0)
+        await pilot.press("escape")
+
+        # The cooperative cancel fires; release the runner so the turn finishes
+        runner_ref[0].release()
+        await _wait_until(lambda: not app._agent_running)
+
+        # The instruction should be restored to the composer
+        assert composer.text == "Fix the flaky test"
+        # The "You" message block should have been removed from the transcript
+        blocks = app.query(MessageBlock)
+        assert not any(b.role == "You" for b in blocks), (
+            "The 'You' message block should be removed after undo-send"
+        )
+        assert "Message cancelled" in app.query_one("#status", Static).render().plain
+
+
+async def test_esc_after_undo_window_does_regular_interrupt(tmp_path: Path) -> None:
+    """ESC after the grace window expires does a regular interrupt, not undo."""
+
+    runner_ref: list[SlowRunner] = []
+    clock_value = [0.0]
+
+    def factory(request, approval_policy, event_sink):
+        runner = SlowRunner(approval_policy=approval_policy, event_sink=event_sink)
+        runner_ref.append(runner)
+        return runner, FakeModel()
+
+    from looplane.terminal.app import TerminalDependencies, _UNDO_SEND_WINDOW_S
+    from looplane.terminal.app import looplaneApp as CanonicalApp
+
+    app = CanonicalApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+        dependencies=TerminalDependencies(clock=lambda: clock_value[0]),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("Fix tests")
+
+        clock_value[0] = 10.0
+        app._submit_current_task()
+
+        await _wait_until(lambda: bool(runner_ref) and runner_ref[0].started.is_set())
+        assert app._agent_running
+
+        # Advance clock past the undo window
+        clock_value[0] = 10.0 + _UNDO_SEND_WINDOW_S + 1.0
+
+        await pilot.press("escape")
+
+        # Should do a regular interrupt (not undo) — text is NOT restored
+        runner_ref[0].release()
+        await _wait_until(lambda: not app._agent_running)
+        # Regular interrupt: composer should be empty, not restored
+        assert composer.text.strip() == ""
+
+
+async def test_esc_after_streaming_does_regular_interrupt(tmp_path: Path) -> None:
+    """ESC within the window but after streaming output does a regular interrupt."""
+
+    runner_ref: list[SlowRunner] = []
+
+    def factory(request, approval_policy, event_sink):
+        runner = SlowRunner(approval_policy=approval_policy, event_sink=event_sink)
+        runner_ref.append(runner)
+        return runner, FakeModel()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        composer = app.query_one("#task", MessageComposer)
+        composer.load_text("Generate code")
+        app._submit_current_task()
+
+        await _wait_until(lambda: bool(runner_ref) and runner_ref[0].started.is_set())
+
+        # Simulate that the model has started streaming output
+        app._stream_char_count = 100
+
+        await pilot.press("escape")
+
+        runner_ref[0].release()
+        await _wait_until(lambda: not app._agent_running)
+        # Regular interrupt: composer should be empty
+        assert composer.text.strip() == ""
