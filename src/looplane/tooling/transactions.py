@@ -26,6 +26,7 @@ _TRANSACTION_OPERATIONS = frozenset(
         "replace_text",
         "apply_patch",
         "shell",
+        "run_check",
         "git_diff",
     }
 )
@@ -185,8 +186,9 @@ class StructuredPrograms:
                     )
                 elif op == "shell":
                     output = self.executor_shell(**arguments, timeout_seconds=timeout_seconds)
+                elif op == "run_check":
+                    output = self.checks.run_check(**arguments, timeout_seconds=timeout_seconds)
                 else:
-                    # The fixed operation set has already restricted this to git_diff.
                     output = self.git.git_diff(**arguments, timeout_seconds=timeout_seconds)
                 if isinstance(output, VerificationOutcome):
                     content = output.model_dump_json()
