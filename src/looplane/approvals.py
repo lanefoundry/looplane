@@ -146,6 +146,7 @@ TOOL_EFFECTS: dict[str, ToolEffect] = {
     "search_text": ToolEffect.READ,
     "git_diff": ToolEffect.READ,
     "dispatch_subagents": ToolEffect.READ,
+    "agent": ToolEffect.READ,
     "tool_program": ToolEffect.READ,
     "create_file": ToolEffect.MODIFY,
     "replace_text": ToolEffect.MODIFY,

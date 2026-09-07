@@ -45,7 +45,7 @@ def test_sdk_facade_exports_stable_replay_and_role_helpers() -> None:
     assert sdk.IdeOpenFilesSnapshot(files=()).files == ()
     assert sdk.render_prompt_sections((sdk.PromptSection("core", "rules"),))
     assert sdk.A10_SUBAGENT_PLANNER_POLICY_VERSION == "a10-subagent-planner-policy-v1"
-    assert "proposed_transaction" in sdk.render_subagent_planner_policy()
+    assert "agent tool" in sdk.render_subagent_planner_policy()
     assert sdk.render_tool_prompt_context((sdk.ToolDefinition(name="read_file", read_only=True),))
     assert sdk.render_workspace_prompt_context(
         base_sha="a" * 40,

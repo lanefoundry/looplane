@@ -558,6 +558,74 @@ def dispatch_subagents_definition(
     )
 
 
+def agent_tool_definition(
+    *,
+    project_root: Path | None = None,
+) -> ToolDefinition:
+    """Per-call agent tool — replaces batch dispatch_subagents."""
+    registry = _get_registry()
+    agent_names = registry.names()
+    agent_descriptions = []
+    for name in agent_names:
+        defn = registry.get(name)
+        if defn:
+            agent_descriptions.append(f"- {name}: {defn.description}")
+
+    return ToolDefinition(
+        name="agent",
+        description=(
+            "Spawn one subagent in an isolated workspace. Call multiple times in "
+            "one turn to run agents in parallel. Available agent types:\n"
+            + "\n".join(agent_descriptions)
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["fresh", "fork"],
+                    "default": "fresh",
+                    "description": (
+                        "fresh: zero context, uses agent_type definition. "
+                        "fork: inherits parent conversation, same model/tools."
+                    ),
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": (
+                        f"Agent type name (fresh mode only). Available: {', '.join(agent_names)}"
+                    ),
+                },
+                "prompt": {"type": "string", "minLength": 1},
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Stable label for this agent instance.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model override (ignored in fork mode).",
+                },
+                "max_steps": {"type": "integer", "minimum": 1, "maximum": 30},
+                "depends_on": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "description": "Names of agents that must complete first.",
+                },
+                "isolation": {
+                    "type": "string",
+                    "enum": ["worktree", "subdirectory"],
+                    "description": "Override the definition's isolation mode.",
+                },
+            },
+            "required": ["prompt"],
+            "additionalProperties": False,
+        },
+        read_only=True,
+    )
+
+
 async def run_dispatch_subagents(
     call: ToolCall,
     *,

@@ -841,7 +841,7 @@ class AgentRunner:
         if self._skills:
             defs = (*defs, self._invoke_skill_definition())
         if self._enable_subagent_dispatch:
-            defs = (*defs, self._dispatch_subagents_definition())
+            defs = (*defs, self._agent_tool_definition())
         defs = (*defs, *memory_dispatch.memory_tool_definitions())
         return defs
 
@@ -864,6 +864,10 @@ class AgentRunner:
     @staticmethod
     def _dispatch_subagents_definition() -> ToolDefinition:
         return subagent_dispatch.dispatch_subagents_definition()
+
+    @staticmethod
+    def _agent_tool_definition() -> ToolDefinition:
+        return subagent_dispatch.agent_tool_definition()
 
     def _execute_memory_tool(self, call: ToolCall) -> ToolObservation:
         if call.name == "save_memory":
@@ -1157,6 +1161,8 @@ class AgentRunner:
             )
 
     async def _run_dispatch_subagents(self, call: ToolCall, *, deadline: float) -> str:
+        if call.name == "agent":
+            call = self._adapt_agent_call_to_dispatch(call)
         return await subagent_dispatch.run_dispatch_subagents(
             call,
             task=self.task,
@@ -1173,6 +1179,27 @@ class AgentRunner:
             deadline=deadline,
             parent_messages=tuple(self._state.messages),
         )
+
+    @staticmethod
+    def _adapt_agent_call_to_dispatch(call: ToolCall) -> ToolCall:
+        """Convert per-call ``agent`` tool args to batch ``dispatch_subagents`` format."""
+        args = call.arguments
+        agent_id = args.get("name") or f"agent-{call.tool_call_id[:8]}"
+        agent_spec: dict[str, object] = {
+            "id": agent_id,
+            "instruction": args.get("prompt", ""),
+        }
+        if args.get("agent_type"):
+            agent_spec["agent_type"] = args["agent_type"]
+        elif args.get("mode") != "fork":
+            agent_spec["agent_type"] = "scout"
+        else:
+            agent_spec["agent_type"] = "scout"
+        if args.get("max_steps"):
+            agent_spec["max_steps"] = args["max_steps"]
+        if args.get("depends_on"):
+            agent_spec["depends_on"] = args["depends_on"]
+        return call.model_copy(update={"arguments": {"agents": [agent_spec]}})
 
     async def _execute_read_only_batch(
         self,

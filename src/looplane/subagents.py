@@ -30,6 +30,9 @@ from looplane.agent.subagent_dispatch import (
     _validate_subagent_id as _validate_subagent_id,
 )
 from looplane.agent.subagent_dispatch import (
+    agent_tool_definition as agent_tool_definition,
+)
+from looplane.agent.subagent_dispatch import (
     analyze_subagent_schedule_events as analyze_subagent_schedule_events,
 )
 from looplane.agent.subagent_dispatch import (
@@ -59,6 +62,10 @@ from looplane.agent.subagent_dispatch import (
 from looplane.agent.subagent_dispatch import (
     subagent_role_instruction as subagent_role_instruction,
 )
+from looplane.agent.worktree import cleanup_stale_worktrees as cleanup_stale_worktrees
+from looplane.agent.worktree import create_agent_worktree as create_agent_worktree
+from looplane.agent.worktree import has_worktree_changes as has_worktree_changes
+from looplane.agent.worktree import remove_agent_worktree as remove_agent_worktree
 from looplane.approvals import ApprovalPolicy
 from looplane.contracts import Limits, RunResult, TaskContract, VerificationCommand
 from looplane.events import EventSink

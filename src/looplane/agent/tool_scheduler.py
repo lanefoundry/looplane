@@ -207,7 +207,7 @@ async def execute_prepared_tool_call(
             await mark_started(request_id)
     if call.name == "invoke_skill" and invoke_skill is not None:
         observation = await invoke_skill(call, deadline=deadline)
-    elif call.name == "dispatch_subagents":
+    elif call.name in ("dispatch_subagents", "agent"):
         observation = await dispatch(call, deadline=deadline)
     elif call.name in ("save_memory", "recall_memory") and execute_memory is not None:
         observation = await blocking(execute_memory, call)
