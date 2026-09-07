@@ -109,6 +109,11 @@ def tool_preview(call: ToolCall, verification_commands: Mapping[str, Verificatio
         cmd = call.arguments.get("command")
         if isinstance(cmd, str):
             return "$ " + cmd
+    if call.name == "run_check":
+        check_name = call.arguments.get("name", "")
+        vc = verification_commands.get(check_name)
+        if vc is not None:
+            return "$ " + " ".join(vc.argv)
     return json.dumps(call.arguments, ensure_ascii=False, sort_keys=True, indent=2)
 
 

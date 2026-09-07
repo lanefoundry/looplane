@@ -64,7 +64,7 @@ def test_derive_subagent_task_rejects_unsafe_id(tiny_bug_repo: Path) -> None:
 def test_normalize_subagent_schedule_assigns_dependency_waves() -> None:
     schedule = normalize_subagent_schedule(
         [
-            {"id": "analysis", "role": "analyst", "instruction": "Inspect."},
+            {"id": "analysis", "role": "general", "instruction": "Inspect."},
             {
                 "id": "review",
                 "role": "reviewer",
@@ -87,7 +87,7 @@ def test_normalize_subagent_schedule_rejects_cycles() -> None:
             [
                 {
                     "id": "a",
-                    "role": "analyst",
+                    "role": "general",
                     "instruction": "A.",
                     "depends_on": ["b"],
                 },
@@ -111,7 +111,7 @@ def test_analyze_subagent_schedule_events_counts_roles_and_waves() -> None:
                     "agents": [
                         {
                             "id": "analysis",
-                            "role": "analyst",
+                            "role": "general",
                             "depends_on": [],
                             "wave": 0,
                             "max_steps": 1,
@@ -134,7 +134,7 @@ def test_analyze_subagent_schedule_events_counts_roles_and_waves() -> None:
     assert analysis.as_dict() == {
         "agent_count": 2,
         "max_wave_count": 2,
-        "role_counts": {"analyst": 1, "reviewer": 1},
+        "role_counts": {"general": 1, "reviewer": 1},
         "trace_count": 1,
         "transaction_agent_count": 1,
         "warnings": [],

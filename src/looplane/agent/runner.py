@@ -1206,17 +1206,17 @@ class AgentRunner:
     def _adapt_agent_call_to_dispatch(call: ToolCall) -> ToolCall:
         """Convert per-call ``agent`` tool args to batch ``dispatch_subagents`` format."""
         args = call.arguments
+        mode = args.get("mode", "fresh")
         agent_id = args.get("name") or f"agent-{call.tool_call_id[:8]}"
         agent_spec: dict[str, object] = {
             "id": agent_id,
             "instruction": args.get("prompt", ""),
+            "mode": mode,
         }
         if args.get("agent_type"):
             agent_spec["agent_type"] = args["agent_type"]
-        elif args.get("mode") != "fork":
-            agent_spec["agent_type"] = "scout"
         else:
-            agent_spec["agent_type"] = "scout"
+            agent_spec["agent_type"] = "general"
         if args.get("max_steps"):
             agent_spec["max_steps"] = args["max_steps"]
         if args.get("depends_on"):

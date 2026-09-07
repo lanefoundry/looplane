@@ -46,8 +46,8 @@ class SubagentRole(StrEnum):
     """Deprecated: use AgentDefinition via agent_definitions.load_agents() instead."""
 
     SCOUT = "scout"
-    ANALYST = "analyst"
     REVIEWER = "reviewer"
+    GENERAL = "general"
 
 
 _LEGACY_ROLE_INSTRUCTIONS: dict[str, str] = {
@@ -55,13 +55,13 @@ _LEGACY_ROLE_INSTRUCTIONS: dict[str, str] = {
         "Role: scout. Inspect the requested surface and report concrete files, facts, and risks. "
         "Do not propose broad rewrites."
     ),
-    "analyst": (
-        "Role: analyst. Synthesize evidence into implementation guidance, tradeoffs, and the "
-        "smallest next action."
-    ),
     "reviewer": (
         "Role: reviewer. Review prior findings for correctness, missed risks, and verification "
         "gaps. Prefer concise findings over repetition."
+    ),
+    "general": (
+        "You are a general-purpose agent. Execute the task directly using whatever tools are "
+        "needed. Report your findings or results concisely when done."
     ),
 }
 
@@ -203,6 +203,7 @@ class ScheduledSubagent:
     depends_on: tuple[str, ...]
     proposed_transaction: object | None
     wave: int
+    mode: str = "fresh"
 
     @property
     def role(self) -> SubagentRole:
@@ -246,8 +247,8 @@ def subagent_role_instruction(role: SubagentRole | str) -> str:
 def normalize_subagent_schedule(
     agents: object,
     *,
-    max_agents: int = 4,
-    max_steps: int = 6,
+    max_agents: int = 8,
+    max_steps: int = 30,
 ) -> tuple[ScheduledSubagent, ...]:
     """Validate and wave-schedule a model-requested subagent graph."""
 
@@ -268,7 +269,7 @@ def normalize_subagent_schedule(
         _validate_subagent_id(agent_id)
         if agent_id in specs:
             raise ValueError(f"duplicate subagent id: {agent_id}")
-        agent_type_raw = raw_agent.get("agent_type") or raw_agent.get("role")
+        agent_type_raw = raw_agent.get("agent_type") or raw_agent.get("role") or "general"
         if not isinstance(agent_type_raw, str) or not agent_type_raw:
             raise ValueError("subagent must have an agent_type (or role) string")
         try:
@@ -289,13 +290,16 @@ def normalize_subagent_schedule(
             if not isinstance(dependency, str) or not dependency:
                 raise ValueError("subagent depends_on entries must be non-empty strings")
             dependencies.append(dependency)
-        requested_steps = raw_agent.get("max_steps", 3)
-        if (
-            not isinstance(requested_steps, int)
-            or requested_steps < 1
-            or requested_steps > max_steps
-        ):
-            raise ValueError(f"subagent max_steps must be between 1 and {max_steps}")
+        definition = resolve_agent_type(agent_type_raw)
+        default_steps = definition.max_steps
+        requested_steps = raw_agent.get("max_steps", default_steps)
+        if not isinstance(requested_steps, int) or requested_steps < 1:
+            requested_steps = default_steps
+        if requested_steps > max_steps:
+            requested_steps = max_steps
+        mode_raw = raw_agent.get("mode", "fresh")
+        if mode_raw not in ("fresh", "fork"):
+            mode_raw = "fresh"
         specs[agent_id] = ScheduledSubagent(
             id=agent_id,
             agent_type=agent_type_raw,
@@ -305,6 +309,7 @@ def normalize_subagent_schedule(
             depends_on=tuple(dict.fromkeys(dependencies)),
             proposed_transaction=raw_agent.get("proposed_transaction"),
             wave=-1,
+            mode=mode_raw,
         )
 
     for agent_id, spec in specs.items():
@@ -336,6 +341,7 @@ def normalize_subagent_schedule(
                     depends_on=spec.depends_on,
                     proposed_transaction=spec.proposed_transaction,
                     wave=wave,
+                    mode=spec.mode,
                 )
             )
             completed.add(agent_id)
@@ -531,14 +537,12 @@ def dispatch_subagents_definition(
     return ToolDefinition(
         name="dispatch_subagents",
         description=(
-            "Dispatch one or more subagents in isolated looplane child workspaces. "
+            "Dispatch one or more subagents in isolated child workspaces. "
             "Use this for parallel investigation, staged handoff, or a child-reviewed "
-            "transaction proposal. Each agent needs an agent_type (one of: "
-            f"{', '.join(agent_names)}), an instruction, optional allowed_paths narrowed "
-            "from the parent, optional depends_on ids, and optional proposed_transaction "
-            "steps. Child agents cannot modify files, run checks, recurse, or bypass "
-            "parent approvals; proposed transactions are executed sequentially by the "
-            "parent through tool_transaction."
+            "transaction proposal. Each agent needs an instruction, optional agent_type "
+            f"(one of: {', '.join(agent_names)}; defaults to general), optional "
+            "allowed_paths, optional depends_on ids, and optional proposed_transaction "
+            "steps. Agent capabilities depend on their type definition."
         ),
         input_schema={
             "type": "object",
@@ -790,15 +794,21 @@ async def run_dispatch_subagents(
         agent_type = spec.agent_type
         instruction = spec.instruction
         dependencies = spec.depends_on
+        is_fork = spec.mode == "fork"
 
         definition = resolve_agent_type(agent_type)
 
-        handoff = handoff_context(dependencies, completed)
-        role_prompt = subagent_role_instruction(agent_type)
-        if handoff:
-            instruction = f"{role_prompt}\n\n{handoff}\n\nTask: {instruction}"
+        forked_messages: tuple[ConversationItem, ...] | None = None
+        if is_fork and parent_messages is not None:
+            forked_messages = build_forked_messages(parent_messages, instruction)
         else:
-            instruction = f"{role_prompt}\n\nTask: {instruction}"
+            handoff = handoff_context(dependencies, completed)
+            role_prompt = subagent_role_instruction(agent_type)
+            if handoff:
+                instruction = f"{role_prompt}\n\n{handoff}\n\nTask: {instruction}"
+            else:
+                instruction = f"{role_prompt}\n\nTask: {instruction}"
+
         allowed_paths = spec.allowed_paths
         if allowed_paths is not None:
             if not isinstance(allowed_paths, Sequence) or isinstance(allowed_paths, (str, bytes)):
@@ -813,6 +823,7 @@ async def run_dispatch_subagents(
             "subagents.agent_started",
             id=agent_id,
             agent_type=agent_type,
+            mode=spec.mode,
             can_spawn=child_can_spawn,
             depth=subagent_depth,
         )
@@ -832,6 +843,7 @@ async def run_dispatch_subagents(
                 allow_execute=definition.allow_execute,
             ),
             enable_subagent_dispatch=child_can_spawn,
+            initial_messages=forked_messages,
         )
         await emit(
             "subagents.agent_completed",

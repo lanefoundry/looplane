@@ -232,7 +232,7 @@ async def test_initial_prompt_injects_explicit_memory(
     system = first_messages[0]
     assert isinstance(system, Message)
     assert system.role == "system"
-    assert "Known context from explicit /remember entries" in (system.content or "")
+    assert "Known context from /remember entries" in (system.content or "")
     assert "prefer concise final answers" in (system.content or "")
 
 
@@ -283,9 +283,9 @@ async def test_initial_prompt_injects_tool_workspace_and_runtime_sections(
     assert "<section name='tool_policy' cache='stable'>" in content
     assert "[b1-tool-policy-v1]" in content
     assert "- read_file" in content
-    assert "- dispatch_subagents" in content
+    assert "- agent" in content
     assert "[a10-subagent-planner-policy-v1]" in content
-    assert "Use proposed_transaction" in content
+    assert "Use the agent tool" in content
     assert "<section name='interaction_policy' cache='stable'>" in content
     assert f"[{INTERACTION_CONTEXT_VERSION}]" in content
     assert "ask_mode: ask_only_when_required_or_high_risk" in content
@@ -1352,17 +1352,12 @@ async def test_native_loop_dispatches_read_only_scout_subagent(
             ModelTurn(
                 tool_calls=(
                     ToolCall(
-                        name="dispatch_subagents",
+                        name="agent",
                         arguments={
-                            "agents": [
-                                {
-                                    "id": "scout-a",
-                                    "role": "scout",
-                                    "instruction": "Inspect calculator only.",
-                                    "allowed_paths": ["src/tiny_python_bug/**"],
-                                    "max_steps": 1,
-                                }
-                            ]
+                            "prompt": "Inspect calculator only.",
+                            "agent_type": "scout",
+                            "name": "scout-a",
+                            "max_steps": 1,
                         },
                     ),
                 )
@@ -1381,11 +1376,11 @@ async def test_native_loop_dispatches_read_only_scout_subagent(
 
     assert result.status == RunStatus.COMPLETED, result.model_dump()
     parent_second_messages, parent_tools = model.calls[2]
-    assert "dispatch_subagents" in {tool.name for tool in parent_tools}
+    assert "agent" in {tool.name for tool in parent_tools}
     observations = [
         message
         for message in parent_second_messages
-        if isinstance(message, ToolObservation) and message.name == "dispatch_subagents"
+        if isinstance(message, ToolObservation) and message.name == "agent"
     ]
     assert len(observations) == 1
     assert "## scout-a" in observations[0].content
@@ -1410,7 +1405,7 @@ async def test_native_loop_dispatches_named_roles_with_handoff(
                             "agents": [
                                 {
                                     "id": "analysis",
-                                    "role": "analyst",
+                                    "role": "general",
                                     "instruction": "Inspect calculator behavior.",
                                     "allowed_paths": ["src/tiny_python_bug/**"],
                                     "max_steps": 1,
@@ -1464,7 +1459,7 @@ async def test_native_loop_dispatches_named_roles_with_handoff(
         for message in parent_messages
         if isinstance(message, ToolObservation) and message.name == "dispatch_subagents"
     ]
-    assert "role: analyst" in observations[0].content
+    assert "role: general" in observations[0].content
     assert "role: reviewer" in observations[0].content
     assert "depends_on: analysis" in observations[0].content
     assert "model: scripted/reviewer-routed" in observations[0].content
@@ -1475,7 +1470,7 @@ async def test_native_loop_dispatches_named_roles_with_handoff(
     assert schedule_events[0]["data"]["agents"] == [
         {
             "id": "analysis",
-            "role": "analyst",
+            "role": "general",
             "depends_on": [],
             "wave": 0,
             "max_steps": 1,
@@ -1508,7 +1503,7 @@ async def test_native_loop_executes_subagent_proposed_transaction(
                             "agents": [
                                 {
                                     "id": "fixer",
-                                    "role": "analyst",
+                                    "role": "general",
                                     "instruction": (
                                         "Review this transaction before parent applies it."
                                     ),

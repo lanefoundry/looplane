@@ -682,6 +682,7 @@ class ToolExecutor:
             "apply_patch": self.apply_patch,
             "shell": self.shell,
             "git_diff": self.git_diff,
+            "run_check": self.run_check,
             "tool_program": self.tool_program,
             "tool_transaction": self.tool_transaction,
             "web_fetch": self.web_fetch,
@@ -809,6 +810,7 @@ class ToolExecutor:
                 "apply_patch",
                 "shell",
                 "git_diff",
+                "run_check",
                 "tool_program",
                 "tool_transaction",
             }:

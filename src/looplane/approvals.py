@@ -148,6 +148,7 @@ TOOL_EFFECTS: dict[str, ToolEffect] = {
     "dispatch_subagents": ToolEffect.READ,
     "agent": ToolEffect.READ,
     "yield_result": ToolEffect.READ,
+    "run_check": ToolEffect.EXECUTE,
     "tool_program": ToolEffect.READ,
     "create_file": ToolEffect.MODIFY,
     "replace_text": ToolEffect.MODIFY,

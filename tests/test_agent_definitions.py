@@ -96,7 +96,7 @@ class TestLoadAgents:
     def test_bundled_agents_loaded(self):
         registry = load_agents()
         assert "scout" in registry
-        assert "analyst" in registry
+        assert "general" in registry
         assert "reviewer" in registry
         assert len(registry) >= 3
 
@@ -155,8 +155,8 @@ class TestSubagentRoleInstruction:
     def test_instruction_with_enum(self):
         from looplane.agent.subagent_dispatch import SubagentRole
 
-        instruction = subagent_role_instruction(SubagentRole.ANALYST)
-        assert "analyst" in instruction.lower()
+        instruction = subagent_role_instruction(SubagentRole.GENERAL)
+        assert "general-purpose" in instruction.lower()
 
 
 class TestBuildForkedMessages:
@@ -250,7 +250,7 @@ class TestCanSpawnAtDepth:
         assert can_spawn_at_depth(defn, 0) is True
 
     def test_bundled_agents_cannot_spawn(self):
-        for name in ("scout", "analyst", "reviewer", "coder"):
+        for name in ("scout", "general", "reviewer", "coder"):
             defn = resolve_agent_type(name)
             assert can_spawn_at_depth(defn, 0) is False
 

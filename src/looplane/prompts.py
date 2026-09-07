@@ -165,14 +165,11 @@ def render_subagent_planner_policy() -> str:
                 "Use the agent tool to spawn subagents when parallel or staged work is useful "
                 "enough to offset the extra turn cost. Call agent multiple times in one turn "
                 "for parallel execution.",
-                "- Use scout for bounded repository discovery across unclear files or ownership "
-                "areas.",
-                "- Use analyst after scout findings when a tradeoff, implementation plan, or "
-                "child-reviewed transaction proposal would reduce risk.",
-                "- Use reviewer after a proposed approach or patch when independent risk and "
-                "verification review matters.",
-                "- Use coder (isolation: worktree) for implementation tasks that need to write "
-                "code and run tests in a safe, isolated branch.",
+                "- Default agent_type is general (full tools, can modify files and run commands). "
+                "Omit agent_type unless you need a specialized role.",
+                "- Use scout for bounded read-only repository discovery across unclear files.",
+                "- Use reviewer for independent risk and verification review of patches.",
+                "- Use coder for implementation tasks in an isolated worktree branch.",
                 "- Use mode: fork to delegate a context-aware sub-task that needs the parent's "
                 "full conversation history.",
                 "- Use depends_on to pass bounded summaries between staged agents; do not rely on "
