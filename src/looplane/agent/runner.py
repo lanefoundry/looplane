@@ -200,9 +200,11 @@ class AgentRunner:
         enable_subagent_dispatch: bool = True,
         subagent_models: Mapping[str, ModelProvider] | None = None,
         thinking_level: str | None = None,
+        initial_messages: tuple[ConversationItem, ...] | None = None,
     ) -> None:
         self.task = task
         self._thinking_level = thinking_level
+        self._forked_messages = initial_messages
         self.model_retry_delay = self._retry_delay
         self._model_calls = model_calls.ModelCallState((model, *fallback_models))
         if thinking_level and thinking_level != "auto":
@@ -1169,6 +1171,7 @@ class AgentRunner:
             execute=self._execute_scheduled_call,
             runner_factory=type(self),
             deadline=deadline,
+            parent_messages=tuple(self._state.messages),
         )
 
     async def _execute_read_only_batch(
@@ -1379,7 +1382,10 @@ class AgentRunner:
                 except (OSError, ToolExecutionError, TimeoutError):
                     self._state.verified_workspace_fingerprint = None
 
-                self._state.messages = self._initial_messages(base_sha)
+                if self._forked_messages is not None:
+                    self._state.messages = list(self._forked_messages)
+                else:
+                    self._state.messages = self._initial_messages(base_sha)
                 await self._checkpoint(RunStatus.INSPECTING)
                 final_summary = ""
 

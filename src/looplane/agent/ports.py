@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from looplane.approvals import ApprovalDecision, ApprovalPolicy, ApprovalReason, ToolEffect
 from looplane.contracts import (
+    ConversationItem,
     RunResult,
     TaskContract,
     ToolCall,
@@ -106,4 +107,5 @@ class SubagentRunnerFactory(Protocol):
         approval_policy: ApprovalPolicy | None,
         event_sink: EventSink | None,
         enable_subagent_dispatch: bool,
+        initial_messages: tuple[ConversationItem, ...] | None = None,
     ) -> SubagentRunner: ...

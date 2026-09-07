@@ -114,13 +114,17 @@ from looplane.skills import (
     select_project_skills,
 )
 from looplane.subagents import (
+    AgentDefinition,
+    AgentRegistry,
     ScheduledSubagent,
     SubagentRole,
     SubagentScheduleTraceAnalysis,
     analyze_subagent_schedule_events,
     analyze_subagent_schedule_jsonl,
     derive_subagent_task,
+    load_agents,
     normalize_subagent_schedule,
+    resolve_agent_type,
     run_subagent_task,
 )
 
@@ -224,6 +228,8 @@ __all__ = [
     "RuntimeSkillsChangedEvent",
     "RunResult",
     "SDK_STABILITY",
+    "AgentDefinition",
+    "AgentRegistry",
     "ScheduledSubagent",
     "SubagentRole",
     "SubagentScheduleTraceAnalysis",
@@ -238,6 +244,7 @@ __all__ = [
     "cache_aware_prompt_ordering",
     "derive_subagent_task",
     "estimate_cost",
+    "load_agents",
     "fork_run_at_event",
     "load_project_ide_diagnostics",
     "load_project_context_provider_config",
@@ -247,6 +254,7 @@ __all__ = [
     "load_project_skills",
     "load_instruction_documents",
     "normalize_subagent_schedule",
+    "resolve_agent_type",
     "provider_cache_trace",
     "provider_cache_mapping",
     "project_context_watch_capabilities",

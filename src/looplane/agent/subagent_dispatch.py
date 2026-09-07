@@ -11,6 +11,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from uuid import uuid4
 
+from looplane.agent.agent_definitions import AgentDefinition, AgentRegistry, load_agents
 from looplane.agent.ports import (
     EventEmitter,
     ExecutePreparedCall,
@@ -21,7 +22,9 @@ from looplane.agent.ports import (
 from looplane.agent.state import TurnState
 from looplane.approvals import ApprovalDecision, ApprovalPolicy, HeadlessApprovalPolicy
 from looplane.contracts import (
+    ConversationItem,
     Limits,
+    Message,
     RunResult,
     RunStatus,
     TaskContract,
@@ -35,29 +38,116 @@ from looplane.execution.capture import bounded_text
 from looplane.models import ModelProvider
 from looplane.tooling.types import ToolExecutionError
 
+FORK_CONTEXT_MARKER = "<fork-context>agent-fork-child</fork-context>"
+
 
 class SubagentRole(StrEnum):
-    """Named read-only subagent roles supported by looplane-native dispatch."""
+    """Deprecated: use AgentDefinition via agent_definitions.load_agents() instead."""
 
     SCOUT = "scout"
     ANALYST = "analyst"
     REVIEWER = "reviewer"
 
 
-SUBAGENT_ROLE_INSTRUCTIONS: dict[SubagentRole, str] = {
-    SubagentRole.SCOUT: (
+_LEGACY_ROLE_INSTRUCTIONS: dict[str, str] = {
+    "scout": (
         "Role: scout. Inspect the requested surface and report concrete files, facts, and risks. "
         "Do not propose broad rewrites."
     ),
-    SubagentRole.ANALYST: (
+    "analyst": (
         "Role: analyst. Synthesize evidence into implementation guidance, tradeoffs, and the "
         "smallest next action."
     ),
-    SubagentRole.REVIEWER: (
+    "reviewer": (
         "Role: reviewer. Review prior findings for correctness, missed risks, and verification "
         "gaps. Prefer concise findings over repetition."
     ),
 }
+
+SUBAGENT_ROLE_INSTRUCTIONS: dict[SubagentRole, str] = {
+    SubagentRole(k): v for k, v in _LEGACY_ROLE_INSTRUCTIONS.items()
+}
+
+_DEFAULT_REGISTRY: AgentRegistry | None = None
+
+
+def _get_registry() -> AgentRegistry:
+    global _DEFAULT_REGISTRY
+    if _DEFAULT_REGISTRY is None:
+        _DEFAULT_REGISTRY = load_agents()
+    return _DEFAULT_REGISTRY
+
+
+def reset_registry() -> None:
+    """Force re-load on next access (useful for tests)."""
+    global _DEFAULT_REGISTRY
+    _DEFAULT_REGISTRY = None
+
+
+def is_in_fork(messages: Sequence[ConversationItem]) -> bool:
+    """Detect whether the current conversation is already inside a fork child."""
+    for item in messages:
+        if isinstance(item, Message) and item.content and FORK_CONTEXT_MARKER in item.content:
+            return True
+    return False
+
+
+def build_forked_messages(
+    parent_messages: Sequence[ConversationItem],
+    directive: str,
+) -> tuple[ConversationItem, ...]:
+    """Build a child's message list from the parent's conversation for fork mode.
+
+    Copies the parent's full conversation history and appends a user message
+    with the fork directive and anti-recursion marker.
+    """
+    fork_instruction = (
+        f"{FORK_CONTEXT_MARKER}\n\n"
+        "You are a forked child agent. Execute the task below directly — "
+        "do not re-delegate or spawn further forks.\n\n"
+        f"Task: {directive}"
+    )
+    return (
+        *parent_messages,
+        Message(role="user", content=fork_instruction),
+    )
+
+
+def resolve_agent_tools(
+    definition: AgentDefinition,
+    parent_tools: tuple[ToolDefinition, ...],
+) -> tuple[ToolDefinition, ...]:
+    """Filter parent's tools by the agent definition's allowlist.
+
+    - ``tools=None``: read-only defaults (tools marked ``read_only=True``)
+    - ``tools=["*"]``: all parent tools
+    - ``tools=["read_file", "grep"]``: only those named tools
+    """
+    if definition.tools is None:
+        return tuple(t for t in parent_tools if t.read_only)
+    if definition.tools == ["*"]:
+        return parent_tools
+    allowed = set(definition.tools)
+    return tuple(t for t in parent_tools if t.name in allowed)
+
+
+def resolve_agent_type(name: str) -> AgentDefinition:
+    """Resolve an agent type name to its definition.
+
+    Falls back to legacy role instructions for backward compatibility.
+    """
+    registry = _get_registry()
+    definition = registry.get(name)
+    if definition is not None:
+        return definition
+    if name in _LEGACY_ROLE_INSTRUCTIONS:
+        return AgentDefinition(
+            name=name,
+            description=f"Legacy {name} role",
+            system_prompt=_LEGACY_ROLE_INSTRUCTIONS[name],
+            source="legacy",
+        )
+    raise ValueError(f"unknown agent type: {name}")
 
 
 @dataclass(frozen=True)
@@ -65,13 +155,18 @@ class ScheduledSubagent:
     """Host-normalized subagent dispatch entry."""
 
     id: str
-    role: SubagentRole
+    agent_type: str
     instruction: str
     allowed_paths: object | None
     max_steps: int
     depends_on: tuple[str, ...]
     proposed_transaction: object | None
     wave: int
+
+    @property
+    def role(self) -> SubagentRole:
+        """Backward-compatible access — raises ValueError for non-legacy types."""
+        return SubagentRole(self.agent_type)
 
 
 @dataclass(frozen=True)
@@ -97,9 +192,14 @@ class SubagentScheduleTraceAnalysis:
 
 
 def subagent_role_instruction(role: SubagentRole | str) -> str:
-    """Return the bounded system-style instruction for one named subagent role."""
+    """Return the system-style instruction for a named agent type.
 
-    return SUBAGENT_ROLE_INSTRUCTIONS[SubagentRole(role)]
+    Looks up the agent definition from the registry first, falling back to the
+    legacy ``SUBAGENT_ROLE_INSTRUCTIONS`` dict for backward compatibility.
+    """
+    name = role.value if isinstance(role, SubagentRole) else role
+    definition = resolve_agent_type(name)
+    return definition.system_prompt
 
 
 def normalize_subagent_schedule(
@@ -127,10 +227,13 @@ def normalize_subagent_schedule(
         _validate_subagent_id(agent_id)
         if agent_id in specs:
             raise ValueError(f"duplicate subagent id: {agent_id}")
+        agent_type_raw = raw_agent.get("agent_type") or raw_agent.get("role")
+        if not isinstance(agent_type_raw, str) or not agent_type_raw:
+            raise ValueError("subagent must have an agent_type (or role) string")
         try:
-            role = SubagentRole(raw_agent.get("role"))
+            resolve_agent_type(agent_type_raw)
         except ValueError as exc:
-            raise ValueError("unsupported subagent role") from exc
+            raise ValueError(f"unknown agent type: {agent_type_raw}") from exc
         instruction = raw_agent.get("instruction")
         if not isinstance(instruction, str):
             raise ValueError("subagent instruction must be a string")
@@ -154,7 +257,7 @@ def normalize_subagent_schedule(
             raise ValueError(f"subagent max_steps must be between 1 and {max_steps}")
         specs[agent_id] = ScheduledSubagent(
             id=agent_id,
-            role=role,
+            agent_type=agent_type_raw,
             instruction=instruction,
             allowed_paths=raw_agent.get("allowed_paths"),
             max_steps=requested_steps,
@@ -185,7 +288,7 @@ def normalize_subagent_schedule(
             scheduled.append(
                 ScheduledSubagent(
                     id=spec.id,
-                    role=spec.role,
+                    agent_type=spec.agent_type,
                     instruction=spec.instruction,
                     allowed_paths=spec.allowed_paths,
                     max_steps=spec.max_steps,
@@ -349,6 +452,7 @@ async def run_subagent_task(
     approval_policy: ApprovalPolicy | None = None,
     sandbox_checks: bool = True,
     allow_unsafe_local_exec: bool = False,
+    initial_messages: tuple[ConversationItem, ...] | None = None,
 ) -> RunResult:
     """Run one child agent in a separate looplane run directory and workspace."""
 
@@ -371,20 +475,28 @@ async def run_subagent_task(
         approval_policy=approval_policy,
         event_sink=event_sink,
         enable_subagent_dispatch=False,
+        initial_messages=initial_messages,
     ).run()
 
 
-def dispatch_subagents_definition() -> ToolDefinition:
+def dispatch_subagents_definition(
+    *,
+    project_root: Path | None = None,
+) -> ToolDefinition:
+    registry = _get_registry()
+    agent_names = registry.names()
+
     return ToolDefinition(
         name="dispatch_subagents",
         description=(
-            "Dispatch one or more named-role subagents in isolated looplane child workspaces. "
+            "Dispatch one or more subagents in isolated looplane child workspaces. "
             "Use this for parallel investigation, staged handoff, or a child-reviewed "
-            "transaction proposal. Each agent must have role scout, analyst, or reviewer, an "
-            "instruction, optional allowed_paths narrowed from the parent, optional "
-            "depends_on ids, and optional proposed_transaction steps. Child agents cannot "
-            "modify files, run checks, recurse, or bypass parent approvals; proposed "
-            "transactions are executed sequentially by the parent through tool_transaction."
+            "transaction proposal. Each agent needs an agent_type (one of: "
+            f"{', '.join(agent_names)}), an instruction, optional allowed_paths narrowed "
+            "from the parent, optional depends_on ids, and optional proposed_transaction "
+            "steps. Child agents cannot modify files, run checks, recurse, or bypass "
+            "parent approvals; proposed transactions are executed sequentially by the "
+            "parent through tool_transaction."
         ),
         input_schema={
             "type": "object",
@@ -392,14 +504,22 @@ def dispatch_subagents_definition() -> ToolDefinition:
                 "agents": {
                     "type": "array",
                     "minItems": 1,
-                    "maxItems": 4,
+                    "maxItems": 8,
                     "items": {
                         "type": "object",
                         "properties": {
                             "id": {"type": "string", "minLength": 1, "maxLength": 64},
+                            "agent_type": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": (
+                                    "Agent type name from a loaded definition. "
+                                    f"Available: {', '.join(agent_names)}"
+                                ),
+                            },
                             "role": {
                                 "type": "string",
-                                "enum": ["scout", "analyst", "reviewer"],
+                                "description": "Deprecated alias for agent_type.",
                             },
                             "instruction": {"type": "string", "minLength": 1},
                             "depends_on": {
@@ -411,7 +531,7 @@ def dispatch_subagents_definition() -> ToolDefinition:
                                 "type": "array",
                                 "items": {"type": "string", "minLength": 1},
                             },
-                            "max_steps": {"type": "integer", "minimum": 1, "maximum": 6},
+                            "max_steps": {"type": "integer", "minimum": 1, "maximum": 30},
                             "proposed_transaction": {
                                 "type": "object",
                                 "properties": {
@@ -426,7 +546,7 @@ def dispatch_subagents_definition() -> ToolDefinition:
                                 "additionalProperties": False,
                             },
                         },
-                        "required": ["id", "role", "instruction"],
+                        "required": ["id", "instruction"],
                         "additionalProperties": False,
                     },
                 }
@@ -453,6 +573,7 @@ async def run_dispatch_subagents(
     execute: ExecutePreparedCall,
     runner_factory: SubagentRunnerFactory,
     deadline: float,
+    parent_messages: Sequence[ConversationItem] | None = None,
 ) -> str:
     scheduled = normalize_subagent_schedule(call.arguments.get("agents"))
     specs = {spec.id: spec for spec in scheduled}
@@ -463,7 +584,7 @@ async def run_dispatch_subagents(
         agents=[
             {
                 "id": spec.id,
-                "role": spec.role.value,
+                "role": spec.agent_type,
                 "depends_on": list(spec.depends_on),
                 "wave": spec.wave,
                 "max_steps": spec.max_steps,
@@ -555,14 +676,18 @@ async def run_dispatch_subagents(
         completed: dict[str, RunResult],
     ) -> tuple[str, RunResult, str, str]:
         agent_id = spec.id
-        role = spec.role
+        agent_type = spec.agent_type
         instruction = spec.instruction
         dependencies = spec.depends_on
+
+        definition = resolve_agent_type(agent_type)
+
         handoff = handoff_context(dependencies, completed)
+        role_prompt = subagent_role_instruction(agent_type)
         if handoff:
-            instruction = f"{subagent_role_instruction(role)}\n\n{handoff}\n\nTask: {instruction}"
+            instruction = f"{role_prompt}\n\n{handoff}\n\nTask: {instruction}"
         else:
-            instruction = f"{subagent_role_instruction(role)}\n\nTask: {instruction}"
+            instruction = f"{role_prompt}\n\nTask: {instruction}"
         allowed_paths = spec.allowed_paths
         if allowed_paths is not None:
             if not isinstance(allowed_paths, Sequence) or isinstance(allowed_paths, (str, bytes)):
@@ -570,7 +695,7 @@ async def run_dispatch_subagents(
             child_allowed_paths = tuple(str(path) for path in allowed_paths)
         else:
             child_allowed_paths = task.allowed_paths
-        child_model = subagent_models.get(agent_id) or subagent_models.get(role.value) or model
+        child_model = subagent_models.get(agent_id) or subagent_models.get(agent_type) or model
         result = await run_subagent_task(
             task,
             child_model,
@@ -581,10 +706,10 @@ async def run_dispatch_subagents(
             allowed_paths=child_allowed_paths,
             limits=task.limits.model_copy(update={"max_steps": spec.max_steps}),
             sandbox_checks=sandbox_checks,
-            allow_unsafe_local_exec=False,
+            allow_unsafe_local_exec=definition.allow_execute,
             approval_policy=HeadlessApprovalPolicy(
-                allow_modify=False,
-                allow_execute=False,
+                allow_modify=definition.allow_modify,
+                allow_execute=definition.allow_execute,
             ),
         )
         return agent_id, result, child_model.provider_name, child_model.model_id
@@ -640,7 +765,7 @@ async def run_dispatch_subagents(
     )
     lines = ["[subagents-v1]"]
     for agent_id, result, provider_name, model_id in results:
-        role = specs[agent_id].role
+        agent_type = specs[agent_id].agent_type
         depends_on = specs[agent_id].depends_on
         transaction_observation = transaction_observations.get(agent_id)
         transaction_status = (
@@ -652,7 +777,7 @@ async def run_dispatch_subagents(
             "\n".join(
                 (
                     f"## {agent_id}",
-                    f"role: {role.value}",
+                    f"role: {agent_type}",
                     f"depends_on: {', '.join(str(dep) for dep in depends_on) or '(none)'}",
                     f"model: {provider_name}/{model_id}",
                     f"status: {result.status.value}",

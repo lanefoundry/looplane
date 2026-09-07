@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from looplane.agent.agent_definitions import AgentDefinition as AgentDefinition
+from looplane.agent.agent_definitions import AgentRegistry as AgentRegistry
+from looplane.agent.agent_definitions import load_agents as load_agents
 from looplane.agent.ports import SubagentRunnerFactory
 from looplane.agent.subagent_dispatch import (
     SUBAGENT_ROLE_INSTRUCTIONS as SUBAGENT_ROLE_INSTRUCTIONS,
@@ -33,10 +36,22 @@ from looplane.agent.subagent_dispatch import (
     analyze_subagent_schedule_jsonl as analyze_subagent_schedule_jsonl,
 )
 from looplane.agent.subagent_dispatch import (
+    build_forked_messages as build_forked_messages,
+)
+from looplane.agent.subagent_dispatch import (
     derive_subagent_task as derive_subagent_task,
 )
 from looplane.agent.subagent_dispatch import (
+    is_in_fork as is_in_fork,
+)
+from looplane.agent.subagent_dispatch import (
     normalize_subagent_schedule as normalize_subagent_schedule,
+)
+from looplane.agent.subagent_dispatch import (
+    resolve_agent_tools as resolve_agent_tools,
+)
+from looplane.agent.subagent_dispatch import (
+    resolve_agent_type as resolve_agent_type,
 )
 from looplane.agent.subagent_dispatch import (
     run_subagent_task as _run_subagent_task,
