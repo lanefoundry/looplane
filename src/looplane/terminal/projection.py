@@ -574,6 +574,9 @@ class TerminalProjection:
         if name == "shell":
             cmd = values.get("command")
             return f"Run {cmd}" if isinstance(cmd, str) else "Run command"
+        if name == "run_check":
+            check_name = values.get("name", "")
+            return f"Run {check_name}" if check_name else "Run check"
         if name == "git_diff":
             return "Review changes"
         return name.replace("_", " ").capitalize()
@@ -656,7 +659,7 @@ class TerminalProjection:
             detail = data.get("preview") if ok else data.get("error")
             collapsed_detail = None
             detail_kind = "plain" if not ok else None
-            if name == "shell":
+            if name in ("shell", "run_check"):
                 structured = self.structured_verification(data.get("verification"))
                 if structured is None:
                     structured = self.structured_verification(data.get("preview"))
