@@ -39,6 +39,7 @@ from looplane.models import ModelProvider
 from looplane.tooling.types import ToolExecutionError
 
 FORK_CONTEXT_MARKER = "<fork-context>agent-fork-child</fork-context>"
+MAX_SUBAGENT_DEPTH = 2
 
 
 class SubagentRole(StrEnum):
@@ -129,6 +130,46 @@ def resolve_agent_tools(
         return parent_tools
     allowed = set(definition.tools)
     return tuple(t for t in parent_tools if t.name in allowed)
+
+
+def can_spawn_at_depth(definition: AgentDefinition, current_depth: int) -> bool:
+    """Check whether an agent is allowed to spawn children at the given depth."""
+    if definition.spawns is None:
+        return False
+    return current_depth < MAX_SUBAGENT_DEPTH
+
+
+def yield_result_definition() -> ToolDefinition:
+    """Tool definition for child agents to report structured intermediate results."""
+    return ToolDefinition(
+        name="yield_result",
+        description=(
+            "Report a structured intermediate result back to the parent agent. "
+            "Use this to send findings, summaries, or status updates before completion."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Brief summary of the result.",
+                },
+                "data": {
+                    "type": "object",
+                    "description": "Structured data payload.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["in_progress", "blocked", "complete"],
+                    "default": "in_progress",
+                },
+            },
+            "required": ["summary"],
+            "additionalProperties": False,
+        },
+        read_only=True,
+    )
 
 
 def resolve_agent_type(name: str) -> AgentDefinition:
@@ -453,6 +494,7 @@ async def run_subagent_task(
     sandbox_checks: bool = True,
     allow_unsafe_local_exec: bool = False,
     initial_messages: tuple[ConversationItem, ...] | None = None,
+    enable_subagent_dispatch: bool = False,
 ) -> RunResult:
     """Run one child agent in a separate looplane run directory and workspace."""
 
@@ -474,7 +516,7 @@ async def run_subagent_task(
         allow_unsafe_local_exec=allow_unsafe_local_exec,
         approval_policy=approval_policy,
         event_sink=event_sink,
-        enable_subagent_dispatch=False,
+        enable_subagent_dispatch=enable_subagent_dispatch,
         initial_messages=initial_messages,
     ).run()
 
@@ -642,6 +684,7 @@ async def run_dispatch_subagents(
     runner_factory: SubagentRunnerFactory,
     deadline: float,
     parent_messages: Sequence[ConversationItem] | None = None,
+    subagent_depth: int = 0,
 ) -> str:
     scheduled = normalize_subagent_schedule(call.arguments.get("agents"))
     specs = {spec.id: spec for spec in scheduled}
@@ -764,6 +807,15 @@ async def run_dispatch_subagents(
         else:
             child_allowed_paths = task.allowed_paths
         child_model = subagent_models.get(agent_id) or subagent_models.get(agent_type) or model
+        child_can_spawn = can_spawn_at_depth(definition, subagent_depth)
+
+        await emit(
+            "subagents.agent_started",
+            id=agent_id,
+            agent_type=agent_type,
+            can_spawn=child_can_spawn,
+            depth=subagent_depth,
+        )
         result = await run_subagent_task(
             task,
             child_model,
@@ -779,6 +831,15 @@ async def run_dispatch_subagents(
                 allow_modify=definition.allow_modify,
                 allow_execute=definition.allow_execute,
             ),
+            enable_subagent_dispatch=child_can_spawn,
+        )
+        await emit(
+            "subagents.agent_completed",
+            id=agent_id,
+            agent_type=agent_type,
+            status=result.status.value,
+            summary=bounded_text(result.summary, 500),
+            changed_files=list(result.changed_files),
         )
         return agent_id, result, child_model.provider_name, child_model.model_id
 

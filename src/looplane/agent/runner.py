@@ -842,6 +842,8 @@ class AgentRunner:
             defs = (*defs, self._invoke_skill_definition())
         if self._enable_subagent_dispatch:
             defs = (*defs, self._agent_tool_definition())
+        if self._forked_messages is not None or not self._enable_subagent_dispatch:
+            defs = (*defs, subagent_dispatch.yield_result_definition())
         defs = (*defs, *memory_dispatch.memory_tool_definitions())
         return defs
 
@@ -1144,6 +1146,8 @@ class AgentRunner:
         *,
         deadline: float,
     ) -> ToolObservation:
+        if call.name == "yield_result":
+            return await self._execute_yield_result(call)
         try:
             content = await self._run_dispatch_subagents(call, deadline=deadline)
             return ToolObservation(
@@ -1159,6 +1163,24 @@ class AgentRunner:
                 ok=False,
                 error=bounded_text(f"{type(exc).__name__}: {exc}", 2_000),
             )
+
+    async def _execute_yield_result(self, call: ToolCall) -> ToolObservation:
+        summary = call.arguments.get("summary", "")
+        data = call.arguments.get("data")
+        status = call.arguments.get("status", "in_progress")
+        await self._event(
+            "subagents.yield_result",
+            task_id=self.task.task_id,
+            summary=summary,
+            data=data,
+            status=status,
+        )
+        return ToolObservation(
+            tool_call_id=call.tool_call_id,
+            name=call.name,
+            ok=True,
+            content=f"Result yielded: {summary}",
+        )
 
     async def _run_dispatch_subagents(self, call: ToolCall, *, deadline: float) -> str:
         if call.name == "agent":

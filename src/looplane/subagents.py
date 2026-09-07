@@ -9,6 +9,9 @@ from looplane.agent.agent_definitions import AgentRegistry as AgentRegistry
 from looplane.agent.agent_definitions import load_agents as load_agents
 from looplane.agent.ports import SubagentRunnerFactory
 from looplane.agent.subagent_dispatch import (
+    MAX_SUBAGENT_DEPTH as MAX_SUBAGENT_DEPTH,
+)
+from looplane.agent.subagent_dispatch import (
     SUBAGENT_ROLE_INSTRUCTIONS as SUBAGENT_ROLE_INSTRUCTIONS,
 )
 from looplane.agent.subagent_dispatch import (
@@ -40,6 +43,9 @@ from looplane.agent.subagent_dispatch import (
 )
 from looplane.agent.subagent_dispatch import (
     build_forked_messages as build_forked_messages,
+)
+from looplane.agent.subagent_dispatch import (
+    can_spawn_at_depth as can_spawn_at_depth,
 )
 from looplane.agent.subagent_dispatch import (
     derive_subagent_task as derive_subagent_task,

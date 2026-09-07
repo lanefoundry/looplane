@@ -14,11 +14,14 @@ from looplane.agent.agent_definitions import (
 )
 from looplane.agent.subagent_dispatch import (
     FORK_CONTEXT_MARKER,
+    MAX_SUBAGENT_DEPTH,
     build_forked_messages,
+    can_spawn_at_depth,
     is_in_fork,
     resolve_agent_tools,
     resolve_agent_type,
     subagent_role_instruction,
+    yield_result_definition,
 )
 from looplane.contracts import Message, ToolDefinition
 
@@ -229,3 +232,34 @@ class TestResolveAgentTools:
         )
         result = resolve_agent_tools(defn, parent_tools)
         assert {t.name for t in result} == {"read_file", "grep"}
+
+
+class TestCanSpawnAtDepth:
+    def test_no_spawns_cannot_spawn(self):
+        defn = AgentDefinition(name="s", description="", system_prompt="")
+        assert can_spawn_at_depth(defn, 0) is False
+
+    def test_spawns_star_can_spawn_within_depth(self):
+        defn = AgentDefinition(name="o", description="", system_prompt="", spawns="*")
+        assert can_spawn_at_depth(defn, 0) is True
+        assert can_spawn_at_depth(defn, MAX_SUBAGENT_DEPTH - 1) is True
+        assert can_spawn_at_depth(defn, MAX_SUBAGENT_DEPTH) is False
+
+    def test_spawns_list_can_spawn(self):
+        defn = AgentDefinition(name="o", description="", system_prompt="", spawns=["scout"])
+        assert can_spawn_at_depth(defn, 0) is True
+
+    def test_bundled_agents_cannot_spawn(self):
+        for name in ("scout", "analyst", "reviewer", "coder"):
+            defn = resolve_agent_type(name)
+            assert can_spawn_at_depth(defn, 0) is False
+
+
+class TestYieldResultDefinition:
+    def test_tool_shape(self):
+        defn = yield_result_definition()
+        assert defn.name == "yield_result"
+        assert defn.read_only is True
+        assert "summary" in defn.input_schema["required"]
+        assert "data" in defn.input_schema["properties"]
+        assert "status" in defn.input_schema["properties"]
