@@ -92,24 +92,44 @@ class TestWebSearch:
         with pytest.raises(ToolExecutionError, match="non-empty"):
             web_search("")
 
-    @patch("looplane.tooling.web._search_duckduckgo")
-    def test_formats_results(self, mock_ddg):
-        from looplane.tooling.web import WebSearchResult
+    def test_formats_results(self):
+        from looplane.tooling.web import WebSearchResult, _SearchProvider
 
-        mock_ddg.return_value = [
-            WebSearchResult(
-                title="Python Docs", url="https://docs.python.org", snippet="Official docs"
-            ),
-        ]
-        result = web_search("python documentation")
+        class FakeProvider(_SearchProvider):
+            name = "fake"
+
+            def is_available(self):
+                return True
+
+            def search(self, query, *, max_results=5):
+                return [
+                    WebSearchResult(
+                        title="Python Docs",
+                        url="https://docs.python.org",
+                        snippet="Official docs",
+                    ),
+                ]
+
+        with patch("looplane.tooling.web._DEFAULT_CHAIN", [FakeProvider()]):
+            result = web_search("python documentation")
         assert "Python Docs" in result
         assert "https://docs.python.org" in result
         assert "Official docs" in result
 
-    @patch("looplane.tooling.web._search_duckduckgo")
-    def test_no_results(self, mock_ddg):
-        mock_ddg.return_value = []
-        result = web_search("xyznonexistent123456")
+    def test_no_results(self):
+        from looplane.tooling.web import _SearchProvider
+
+        class EmptyProvider(_SearchProvider):
+            name = "empty"
+
+            def is_available(self):
+                return True
+
+            def search(self, query, *, max_results=5):
+                return []
+
+        with patch("looplane.tooling.web._DEFAULT_CHAIN", [EmptyProvider()]):
+            result = web_search("xyznonexistent123456")
         assert "No results" in result
 
 
