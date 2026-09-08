@@ -93,6 +93,7 @@ async def run_subagent_task(
     sandbox_checks: bool = True,
     allow_unsafe_local_exec: bool = False,
     runner_factory: SubagentRunnerFactory | None = None,
+    allow_direct_repo_edit: bool = False,
 ) -> RunResult:
     """Supply the legacy default factory at the public boundary, never in a leaf."""
 
@@ -114,4 +115,5 @@ async def run_subagent_task(
         approval_policy=approval_policy,
         sandbox_checks=sandbox_checks,
         allow_unsafe_local_exec=allow_unsafe_local_exec,
+        allow_direct_repo_edit=allow_direct_repo_edit,
     )

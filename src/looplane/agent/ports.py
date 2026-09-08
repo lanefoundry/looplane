@@ -108,4 +108,5 @@ class SubagentRunnerFactory(Protocol):
         event_sink: EventSink | None,
         enable_subagent_dispatch: bool,
         initial_messages: tuple[ConversationItem, ...] | None = None,
+        allow_direct_repo_edit: bool = False,
     ) -> SubagentRunner: ...

@@ -204,6 +204,7 @@ class ScheduledSubagent:
     proposed_transaction: object | None
     wave: int
     mode: str = "fresh"
+    isolation: str | None = None
 
     @property
     def role(self) -> SubagentRole:
@@ -300,6 +301,9 @@ def normalize_subagent_schedule(
         mode_raw = raw_agent.get("mode", "fresh")
         if mode_raw not in ("fresh", "fork"):
             mode_raw = "fresh"
+        isolation_raw = raw_agent.get("isolation", definition.isolation)
+        if isolation_raw not in (None, "worktree", "subdirectory"):
+            isolation_raw = definition.isolation
         specs[agent_id] = ScheduledSubagent(
             id=agent_id,
             agent_type=agent_type_raw,
@@ -310,6 +314,7 @@ def normalize_subagent_schedule(
             proposed_transaction=raw_agent.get("proposed_transaction"),
             wave=-1,
             mode=mode_raw,
+            isolation=isolation_raw,
         )
 
     for agent_id, spec in specs.items():
@@ -342,6 +347,7 @@ def normalize_subagent_schedule(
                     proposed_transaction=spec.proposed_transaction,
                     wave=wave,
                     mode=spec.mode,
+                    isolation=spec.isolation,
                 )
             )
             completed.add(agent_id)
@@ -501,6 +507,7 @@ async def run_subagent_task(
     allow_unsafe_local_exec: bool = False,
     initial_messages: tuple[ConversationItem, ...] | None = None,
     enable_subagent_dispatch: bool = False,
+    allow_direct_repo_edit: bool = False,
 ) -> RunResult:
     """Run one child agent in a separate looplane run directory and workspace."""
 
@@ -524,6 +531,7 @@ async def run_subagent_task(
         event_sink=event_sink,
         enable_subagent_dispatch=enable_subagent_dispatch,
         initial_messages=initial_messages,
+        allow_direct_repo_edit=allow_direct_repo_edit,
     ).run()
 
 
@@ -818,12 +826,14 @@ async def run_dispatch_subagents(
             child_allowed_paths = task.allowed_paths
         child_model = subagent_models.get(agent_id) or subagent_models.get(agent_type) or model
         child_can_spawn = can_spawn_at_depth(definition, subagent_depth)
+        shared_workspace = spec.isolation is None
 
         await emit(
             "subagents.agent_started",
             id=agent_id,
             agent_type=agent_type,
             mode=spec.mode,
+            isolation=spec.isolation or "shared",
             can_spawn=child_can_spawn,
             depth=subagent_depth,
         )
@@ -844,6 +854,7 @@ async def run_dispatch_subagents(
             ),
             enable_subagent_dispatch=child_can_spawn,
             initial_messages=forked_messages,
+            allow_direct_repo_edit=shared_workspace,
         )
         await emit(
             "subagents.agent_completed",

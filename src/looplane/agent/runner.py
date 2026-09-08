@@ -1221,6 +1221,8 @@ class AgentRunner:
             agent_spec["max_steps"] = args["max_steps"]
         if args.get("depends_on"):
             agent_spec["depends_on"] = args["depends_on"]
+        if args.get("isolation"):
+            agent_spec["isolation"] = args["isolation"]
         return call.model_copy(update={"arguments": {"agents": [agent_spec]}})
 
     async def _execute_read_only_batch(
