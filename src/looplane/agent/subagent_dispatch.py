@@ -45,20 +45,10 @@ MAX_SUBAGENT_DEPTH = 2
 class SubagentRole(StrEnum):
     """Deprecated: use AgentDefinition via agent_definitions.load_agents() instead."""
 
-    SCOUT = "scout"
-    REVIEWER = "reviewer"
     GENERAL = "general"
 
 
 _LEGACY_ROLE_INSTRUCTIONS: dict[str, str] = {
-    "scout": (
-        "Role: scout. Inspect the requested surface and report concrete files, facts, and risks. "
-        "Do not propose broad rewrites."
-    ),
-    "reviewer": (
-        "Role: reviewer. Review prior findings for correctness, missed risks, and verification "
-        "gaps. Prefer concise findings over repetition."
-    ),
     "general": (
         "You are a general-purpose agent. Execute the task directly using whatever tools are "
         "needed. Report your findings or results concisely when done."
@@ -395,8 +385,6 @@ def analyze_subagent_schedule_events(
                 transaction_agent_count += 1
     if trace_count == 0:
         warnings.append("no subagents.schedule_normalized traces found")
-    elif agent_count and "reviewer" not in role_counts:
-        warnings.append("no reviewer role observed in schedule traces")
     return SubagentScheduleTraceAnalysis(
         trace_count=trace_count,
         agent_count=agent_count,

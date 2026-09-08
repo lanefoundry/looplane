@@ -95,33 +95,32 @@ class TestAgentRegistry:
 class TestLoadAgents:
     def test_bundled_agents_loaded(self):
         registry = load_agents()
-        assert "scout" in registry
         assert "general" in registry
-        assert "reviewer" in registry
-        assert len(registry) >= 3
+        assert "coder" in registry
+        assert len(registry) >= 2
 
-    def test_bundled_scout_definition(self):
+    def test_bundled_general_definition(self):
         registry = load_agents()
-        scout = registry.get("scout")
-        assert scout is not None
-        assert scout.source == "bundled"
-        assert scout.allow_modify is False
-        assert scout.allow_execute is False
-        assert scout.max_steps == 6
-        assert "scout" in scout.system_prompt.lower()
+        general = registry.get("general")
+        assert general is not None
+        assert general.source == "bundled"
+        assert general.allow_modify is True
+        assert general.allow_execute is True
+        assert general.max_steps == 20
+        assert "general-purpose" in general.system_prompt.lower()
 
     def test_project_agents_override_bundled(self, tmp_path: Path):
         agent_dir = tmp_path / ".looplane" / "agents"
         agent_dir.mkdir(parents=True)
-        (agent_dir / "scout.md").write_text(
-            "---\nname: scout\ndescription: custom\nmax_steps: 20\n---\nCustom scout."
+        (agent_dir / "general.md").write_text(
+            "---\nname: general\ndescription: custom\nmax_steps: 30\n---\nCustom general."
         )
         registry = load_agents(project_root=tmp_path)
-        scout = registry.get("scout")
-        assert scout is not None
-        assert scout.source == "project"
-        assert scout.max_steps == 20
-        assert scout.system_prompt == "Custom scout."
+        general = registry.get("general")
+        assert general is not None
+        assert general.source == "project"
+        assert general.max_steps == 30
+        assert general.system_prompt == "Custom general."
 
     def test_project_adds_new_agent(self, tmp_path: Path):
         agent_dir = tmp_path / ".looplane" / "agents"
@@ -139,8 +138,8 @@ class TestLoadAgents:
 
 class TestResolveAgentType:
     def test_resolve_bundled(self):
-        defn = resolve_agent_type("scout")
-        assert defn.name == "scout"
+        defn = resolve_agent_type("general")
+        assert defn.name == "general"
 
     def test_resolve_unknown_raises(self):
         with pytest.raises(ValueError, match="unknown agent type"):
@@ -149,8 +148,8 @@ class TestResolveAgentType:
 
 class TestSubagentRoleInstruction:
     def test_instruction_from_registry(self):
-        instruction = subagent_role_instruction("scout")
-        assert "scout" in instruction.lower()
+        instruction = subagent_role_instruction("general")
+        assert "general-purpose" in instruction.lower()
 
     def test_instruction_with_enum(self):
         from looplane.agent.subagent_dispatch import SubagentRole
@@ -250,7 +249,7 @@ class TestCanSpawnAtDepth:
         assert can_spawn_at_depth(defn, 0) is True
 
     def test_bundled_agents_cannot_spawn(self):
-        for name in ("scout", "general", "reviewer", "coder"):
+        for name in ("general", "coder"):
             defn = resolve_agent_type(name)
             assert can_spawn_at_depth(defn, 0) is False
 

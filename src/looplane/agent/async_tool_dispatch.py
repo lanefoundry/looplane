@@ -8,9 +8,10 @@ invoke_skill and dispatch_subagents.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
-from looplane.contracts import ToolCall, ToolObservation
+from looplane.contracts import ToolCall, ToolDefinition, ToolObservation
 from looplane.execution.capture import bounded_text
 from looplane.tooling.background import BackgroundProcessManager
 from looplane.tooling.lsp_tools import (
@@ -21,6 +22,11 @@ from looplane.tooling.lsp_tools import (
 )
 from looplane.tooling.pty_session import PtySessionManager
 from looplane.tooling.types import ToolExecutionError
+from looplane.tooling.validation import (
+    ValidationError,
+    build_schema_index,
+    validate_and_sanitize,
+)
 
 _ASYNC_TOOL_NAMES = frozenset(
     {
@@ -55,16 +61,22 @@ class AsyncToolDispatch:
         pty: PtySessionManager | None = None,
         lsp_server: Any | None = None,
         max_output_chars: int = 200_000,
+        definitions: Sequence[ToolDefinition] = (),
     ) -> None:
         self._background = background
         self._pty = pty
         self._lsp_server = lsp_server
         self._max_output_chars = max_output_chars
+        self._schema_index = build_schema_index(definitions)
 
     async def execute(self, call: ToolCall) -> ToolObservation:
         name = call.name
-        args = dict(call.arguments)
+        schema = self._schema_index.get(name)
         try:
+            if schema:
+                args = validate_and_sanitize(name, call.arguments, schema)
+            else:
+                args = dict(call.arguments)
             result = await self._dispatch(name, args)
             content = bounded_text(result, self._max_output_chars)
             return ToolObservation(
@@ -74,7 +86,7 @@ class AsyncToolDispatch:
                 content=content,
                 error=None,
             )
-        except (ToolExecutionError, OSError, TypeError) as exc:
+        except (ToolExecutionError, ValidationError, OSError, TypeError) as exc:
             error = bounded_text(f"{type(exc).__name__}: {exc}", self._max_output_chars)
             return ToolObservation(
                 tool_call_id=call.tool_call_id,

@@ -166,9 +166,7 @@ def render_subagent_planner_policy() -> str:
                 "enough to offset the extra turn cost. Call agent multiple times in one turn "
                 "for parallel execution.",
                 "- Default agent_type is general (full tools, can modify files and run commands). "
-                "Omit agent_type unless you need a specialized role.",
-                "- Use scout for bounded read-only repository discovery across unclear files.",
-                "- Use reviewer for independent risk and verification review of patches.",
+                "Omit agent_type unless you need worktree isolation.",
                 "- Use coder for implementation tasks in an isolated worktree branch.",
                 "- Use mode: fork to delegate a context-aware sub-task that needs the parent's "
                 "full conversation history.",

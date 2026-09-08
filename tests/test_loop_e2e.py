@@ -1343,9 +1343,7 @@ async def test_read_only_tool_calls_execute_as_parallel_batch(
 
 
 @pytest.mark.asyncio
-async def test_native_loop_dispatches_read_only_scout_subagent(
-    tiny_bug_repo: Path, tmp_path: Path
-) -> None:
+async def test_native_loop_dispatches_general_subagent(tiny_bug_repo: Path, tmp_path: Path) -> None:
     task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
     model = ScriptedModel(
         [
@@ -1355,14 +1353,13 @@ async def test_native_loop_dispatches_read_only_scout_subagent(
                         name="agent",
                         arguments={
                             "prompt": "Inspect calculator only.",
-                            "agent_type": "scout",
-                            "name": "scout-a",
+                            "name": "agent-a",
                             "max_steps": 1,
                         },
                     ),
                 )
             ),
-            ModelTurn(content="Scout found no required change."),
+            ModelTurn(content="Agent found no required change."),
             ModelTurn(content="Parent done."),
         ]
     )
@@ -1383,7 +1380,7 @@ async def test_native_loop_dispatches_read_only_scout_subagent(
         if isinstance(message, ToolObservation) and message.name == "agent"
     ]
     assert len(observations) == 1
-    assert "## scout-a" in observations[0].content
+    assert "## agent-a" in observations[0].content
     assert "status: completed" in observations[0].content
     events = read_events(result)
     assert any(event["event_type"] == "subagents.dispatch_started" for event in events)
@@ -1412,7 +1409,7 @@ async def test_native_loop_dispatches_named_roles_with_handoff(
                                 },
                                 {
                                     "id": "review",
-                                    "role": "reviewer",
+                                    "role": "general",
                                     "instruction": "Review the analyst report.",
                                     "depends_on": ["analysis"],
                                     "allowed_paths": ["src/tiny_python_bug/**"],
@@ -1438,7 +1435,7 @@ async def test_native_loop_dispatches_named_roles_with_handoff(
         model,
         tmp_path / "runs",
         allow_unsafe_local_exec=True,
-        subagent_models={"reviewer": reviewer_model},
+        subagent_models={"review": reviewer_model},
     ).run()
 
     assert result.status == RunStatus.COMPLETED, result.model_dump()
@@ -1449,7 +1446,7 @@ async def test_native_loop_dispatches_named_roles_with_handoff(
         for message in reviewer_messages
         if isinstance(message, Message) and message.role == "user"
     )
-    assert "Role: reviewer" in reviewer_user.content
+    assert "general-purpose" in reviewer_user.content.lower()
     assert "Prior subagent handoff reports:" in reviewer_user.content
     assert "[analysis] status=completed" in reviewer_user.content
     assert "Analyst says calculator subtracts." in reviewer_user.content
@@ -1460,7 +1457,6 @@ async def test_native_loop_dispatches_named_roles_with_handoff(
         if isinstance(message, ToolObservation) and message.name == "dispatch_subagents"
     ]
     assert "role: general" in observations[0].content
-    assert "role: reviewer" in observations[0].content
     assert "depends_on: analysis" in observations[0].content
     assert "model: scripted/reviewer-routed" in observations[0].content
     events = read_events(result)
@@ -1478,7 +1474,7 @@ async def test_native_loop_dispatches_named_roles_with_handoff(
         },
         {
             "id": "review",
-            "role": "reviewer",
+            "role": "general",
             "depends_on": ["analysis"],
             "wave": 1,
             "max_steps": 1,
@@ -1587,7 +1583,7 @@ async def test_native_loop_rejects_unknown_subagent_dependency(
                             "agents": [
                                 {
                                     "id": "review",
-                                    "role": "reviewer",
+                                    "role": "general",
                                     "instruction": "Review missing analysis.",
                                     "depends_on": ["analysis"],
                                 }

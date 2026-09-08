@@ -53,6 +53,7 @@ from looplane.tooling.snapshots import AtomicFileWriter, WorkspaceSnapshots
 from looplane.tooling.timeouts import effective_timeout
 from looplane.tooling.transactions import ProgramLimits, StructuredPrograms
 from looplane.tooling.types import ReviewablePatch, ToolExecutionError, _PathSnapshot
+from looplane.tooling.validation import ValidationError, build_schema_index, validate_and_sanitize
 from looplane.tooling.verification import AuthorizedChecks, VerificationSandboxSettings
 from looplane.tooling.web import http_request as _http_request
 from looplane.tooling.web import web_fetch as _web_fetch
@@ -217,6 +218,7 @@ class ToolExecutor:
             bound=self._bound,
         )
         self.definitions = self._build_definitions()
+        self._schema_index = build_schema_index(self.definitions)
 
     # Static hooks are functions, not callbacks retaining this composition object.
     # Defaults are canonical; the old facade supplies explicit legacy wrappers.
@@ -350,6 +352,7 @@ class ToolExecutor:
             if definition.name.startswith(("mcp__", "mcp_resource__", "mcp_prompt__"))
         )
         self.definitions = self._build_definitions()
+        self._schema_index = build_schema_index(self.definitions)
         after = tuple(
             definition.model_dump(mode="json")
             for definition in self.definitions
@@ -801,7 +804,11 @@ class ToolExecutor:
                 error=f"unknown tool: {name}",
             )
         try:
-            call_arguments = dict(arguments)
+            schema = self._schema_index.get(name)
+            if schema:
+                call_arguments = validate_and_sanitize(name, arguments, schema)
+            else:
+                call_arguments = dict(arguments)
             if "timeout_seconds" in call_arguments:
                 raise ToolExecutionError("timeout_seconds is controlled by the harness")
             if name in {
@@ -820,6 +827,7 @@ class ToolExecutor:
         except (
             PathPolicyError,
             ToolExecutionError,
+            ValidationError,
             OSError,
             TypeError,
             UnicodeError,

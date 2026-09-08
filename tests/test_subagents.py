@@ -67,7 +67,7 @@ def test_normalize_subagent_schedule_assigns_dependency_waves() -> None:
             {"id": "analysis", "role": "general", "instruction": "Inspect."},
             {
                 "id": "review",
-                "role": "reviewer",
+                "role": "general",
                 "instruction": "Review.",
                 "depends_on": ["analysis"],
                 "max_steps": 2,
@@ -91,14 +91,16 @@ def test_normalize_subagent_schedule_rejects_cycles() -> None:
                     "instruction": "A.",
                     "depends_on": ["b"],
                 },
-                {"id": "b", "role": "reviewer", "instruction": "B.", "depends_on": ["a"]},
+                {"id": "b", "role": "general", "instruction": "B.", "depends_on": ["a"]},
             ]
         )
 
 
 def test_normalize_subagent_schedule_rejects_unsafe_ids() -> None:
     with pytest.raises(ValueError, match="safe identifier"):
-        normalize_subagent_schedule([{"id": "../bad", "role": "scout", "instruction": "Inspect."}])
+        normalize_subagent_schedule(
+            [{"id": "../bad", "role": "general", "instruction": "Inspect."}]
+        )
 
 
 def test_analyze_subagent_schedule_events_counts_roles_and_waves() -> None:
@@ -119,7 +121,7 @@ def test_analyze_subagent_schedule_events_counts_roles_and_waves() -> None:
                         },
                         {
                             "id": "review",
-                            "role": "reviewer",
+                            "role": "general",
                             "depends_on": ["analysis"],
                             "wave": 1,
                             "max_steps": 1,
@@ -134,7 +136,7 @@ def test_analyze_subagent_schedule_events_counts_roles_and_waves() -> None:
     assert analysis.as_dict() == {
         "agent_count": 2,
         "max_wave_count": 2,
-        "role_counts": {"general": 1, "reviewer": 1},
+        "role_counts": {"general": 2},
         "trace_count": 1,
         "transaction_agent_count": 1,
         "warnings": [],

@@ -1262,7 +1262,7 @@ def test_sessions_analyze_subagents_prints_schedule_analysis(tmp_path: Path) -> 
                     },
                     {
                         "id": "review",
-                        "role": "reviewer",
+                        "role": "general",
                         "depends_on": ["analysis"],
                         "wave": 1,
                         "max_steps": 1,
@@ -1286,7 +1286,7 @@ def test_sessions_analyze_subagents_prints_schedule_analysis(tmp_path: Path) -> 
     payload = json.loads(result.output)
     assert payload["trace_count"] == 1
     assert payload["agent_count"] == 2
-    assert payload["role_counts"] == {"general": 1, "reviewer": 1}
+    assert payload["role_counts"] == {"general": 2}
     assert payload["transaction_agent_count"] == 1
     assert payload["warnings"] == []
 

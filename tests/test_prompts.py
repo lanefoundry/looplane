@@ -136,9 +136,7 @@ def test_subagent_planner_policy_is_versioned_and_actionable() -> None:
 
     assert prompt.startswith(f"[{A10_SUBAGENT_PLANNER_POLICY_VERSION}]")
     assert "agent tool" in prompt
-    assert "scout" in prompt
     assert "general" in prompt
-    assert "reviewer" in prompt
     assert "depends_on" in prompt
     assert "coder" in prompt
     assert "fork" in prompt
