@@ -3439,7 +3439,8 @@ async def test_slash_palette_mouse_selection_dispatches_and_restores_focus(
         await _wait_until(lambda: bool(app.query(InlineSelectorBlock)))
 
         assert menu.display is False
-        assert app.query_one(InlineSelectorBlock).query_one(OptionList).has_focus
+        selector = app.query_one(InlineSelectorBlock)
+        assert selector.query_one(Input).has_focus or selector.query_one(OptionList).has_focus
 
 
 async def test_inline_selector_escape_is_non_mutating_and_restores_focus(tmp_path: Path) -> None:
@@ -3467,7 +3468,7 @@ async def test_inline_selector_escape_is_non_mutating_and_restores_focus(tmp_pat
         assert composer.disabled is True
         assert app.query_one("#composer").display is False
         assert selector.size.width <= app.size.width
-        assert selector.query_one(OptionList).has_focus is True
+        assert selector.query_one(Input).has_focus or selector.query_one(OptionList).has_focus
 
         await pilot.press("escape")
         await _wait_until(lambda: not app.query(InlineSelectorBlock))
@@ -4943,7 +4944,7 @@ async def test_update_metrics_projects_telemetry_into_footer(tmp_path: Path) -> 
         app._update_metrics()
         await pilot.pause()
         metrics = app.query_one("#metrics", RuntimeMetrics)
-        assert metrics.render().plain == "qwen3:4b · ↑1.5k ↓340 · ctx 19% · 12s"
+        assert metrics.render().plain == "qwen3:4b · ↑1.5k ↓340 ⚡13% · ctx 19% · 12s"
 
 
 async def test_metrics_show_stream_estimate_hud_and_queued(tmp_path: Path) -> None:

@@ -48,6 +48,10 @@ class TextualApprovalPolicy:
                 cmd = request.tool_call.arguments.get("command")
                 if isinstance(cmd, str) and cmd.strip():
                     return f"shell:{cmd.strip()}"[:4_096]
+            if request.tool_call.name == "run_check":
+                name = request.tool_call.arguments.get("name")
+                if isinstance(name, str) and name.strip():
+                    return f"run_check:{name.strip()}"[:4_096]
         if request.command is not None:
             return "command:" + "\u0000".join(request.command.argv)[:4_088]
         return None
