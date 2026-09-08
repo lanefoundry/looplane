@@ -307,14 +307,26 @@ async def test_lifecycle_restores_consumed_time_and_returns_engine_result(
     assert lifecycle.clock.active_started_at is None
 
 
-@pytest.mark.parametrize("field", ["provider_name", "model_id", "protocol"])
-async def test_resume_identity_rejects_each_mismatched_dimension(
+async def test_resume_identity_rejects_protocol_mismatch(
+    persisted: tuple[RunPersistence, RecordingSink],
+) -> None:
+    persistence, _sink = persisted
+    assert persistence.manifest is not None
+    identity = {"provider_name": "fixture", "model_id": "fixture", "protocol": "fixture"}
+    assert check_resume_identity(persistence.manifest, **identity) is None
+    identity["protocol"] = "different"
+    with pytest.raises(SessionValidationError, match="protocol mismatch"):
+        check_resume_identity(persistence.manifest, **identity)
+
+
+@pytest.mark.parametrize("field", ["provider_name", "model_id"])
+async def test_resume_identity_allows_model_change(
     persisted: tuple[RunPersistence, RecordingSink], field: str
 ) -> None:
     persistence, _sink = persisted
     assert persistence.manifest is not None
     identity = {"provider_name": "fixture", "model_id": "fixture", "protocol": "fixture"}
-    check_resume_identity(persistence.manifest, **identity)
     identity[field] = "different"
-    with pytest.raises(SessionValidationError, match="must match"):
-        check_resume_identity(persistence.manifest, **identity)
+    note = check_resume_identity(persistence.manifest, **identity)
+    assert note is not None
+    assert "changed" in note.lower()

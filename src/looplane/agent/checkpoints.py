@@ -21,15 +21,26 @@ from looplane.session import (
 
 def check_resume_identity(
     manifest: SessionManifest, *, provider_name: str, model_id: str, protocol: str
-) -> None:
-    if (
-        manifest.provider_name != provider_name
-        or manifest.model_id != model_id
-        or manifest.protocol != protocol
-    ):
+) -> str | None:
+    """Validate resume compatibility. Returns a model-change note or None.
+
+    Only protocol mismatches are fatal (different wire formats). Provider and
+    model changes are allowed — every other major coding agent treats model
+    identity and conversation history as orthogonal.
+    """
+    if manifest.protocol != protocol:
         raise SessionValidationError(
-            "resume provider/protocol/model must match the persisted session"
+            f"resume protocol mismatch: session uses {manifest.protocol!r}, "
+            f"caller uses {protocol!r}"
         )
+    changes: list[str] = []
+    if manifest.provider_name != provider_name:
+        changes.append(f"provider: {manifest.provider_name} → {provider_name}")
+    if manifest.model_id != model_id:
+        changes.append(f"model: {manifest.model_id} → {model_id}")
+    if changes:
+        return "Model changed since the previous turn: " + ", ".join(changes) + "."
+    return None
 
 
 def session_phase(status: RunStatus) -> SessionPhase:

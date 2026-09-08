@@ -333,8 +333,8 @@ class AgentRunner:
             raise
 
     @staticmethod
-    def _check_resume_identity(manifest: SessionManifest, model: ModelProvider) -> None:
-        check_resume_identity(
+    def _check_resume_identity(manifest: SessionManifest, model: ModelProvider) -> str | None:
+        return check_resume_identity(
             manifest,
             provider_name=model.provider_name,
             model_id=model.model_id,
@@ -392,7 +392,7 @@ class AgentRunner:
             claimed.task,
         )
         try:
-            self._check_resume_identity(manifest, self.model)
+            model_change_note = self._check_resume_identity(manifest, self.model)
             new_instruction = self.task.instruction
             self.task = persisted_task
             self._restore_state_from_manifest(manifest)
@@ -412,21 +412,30 @@ class AgentRunner:
                     self._verification_state_fingerprint(workspace_fingerprint)
                     != self._state.verified_workspace_fingerprint
                 )
+            if model_change_note:
+                self._state.messages.append(
+                    Message(role="user", content=f"[system] {model_change_note}")
+                )
             self._state.messages.append(Message(role="user", content=new_instruction))
             self._turn_start_step = self._state.step
             self._state.repeat_count = 0
             self._state.last_fingerprint = None
             assert self._persistence.manifest is not None
+            manifest_update: dict[str, object] = {
+                "phase": SessionPhase.RUNNING,
+                "terminal": False,
+                "messages": tuple(self._state.messages),
+                "repeat_count": 0,
+                "last_action_fingerprint": None,
+                "active_wall_time_seconds": 0.0,
+                "active_started_at": None,
+            }
+            if model_change_note:
+                manifest_update["provider_name"] = self.model.provider_name
+                manifest_update["model_id"] = self.model.model_id
+                manifest_update["protocol"] = str(self.model.protocol)
             self._persistence.manifest = self._persistence.manifest.model_copy(
-                update={
-                    "phase": SessionPhase.RUNNING,
-                    "terminal": False,
-                    "messages": tuple(self._state.messages),
-                    "repeat_count": 0,
-                    "last_action_fingerprint": None,
-                    "active_wall_time_seconds": 0.0,
-                    "active_started_at": None,
-                }
+                update=manifest_update
             )
             self._persistence.store = store
             self._persistence.lease = lease
