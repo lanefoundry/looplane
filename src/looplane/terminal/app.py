@@ -3605,6 +3605,8 @@ class looplaneApp(App[RunResult | None]):
     def _copy_on_select(self) -> None:
         """Deferred copy after mouse-up so Textual finalises the selection."""
 
+        if not self._screen_stack:
+            return
         selected = self.screen.get_selected_text()
         if not selected:
             return
