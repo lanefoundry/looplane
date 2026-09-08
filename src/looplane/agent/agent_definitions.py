@@ -42,7 +42,7 @@ class AgentDefinition:
     system_prompt: str
     tools: list[str] | None = None
     model: str | None = None
-    max_steps: int = 12
+    max_steps: int = 30
     allow_modify: bool = False
     allow_execute: bool = False
     isolation: str | None = None
@@ -156,9 +156,9 @@ def _load_definition_file(path: Path, source: str) -> AgentDefinition | None:
     if tools is not None and not isinstance(tools, list):
         tools = None
     model = meta.get("model")
-    max_steps = meta.get("max_steps", 12)
+    max_steps = meta.get("max_steps", 30)
     if not isinstance(max_steps, int) or max_steps < 1:
-        max_steps = 12
+        max_steps = 30
     allow_modify = bool(meta.get("allow_modify", False))
     allow_execute = bool(meta.get("allow_execute", False))
     isolation = meta.get("isolation")

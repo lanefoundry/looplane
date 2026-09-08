@@ -322,7 +322,7 @@ def run(
     base_sha: str | None = None,
     base_url: str | None = None,
     run_root: Path = _paths.DEFAULT_RUN_ROOT,
-    max_steps: int = 12,
+    max_steps: int = 30,
     wall_time_seconds: float = 900,
     tool_calling: bool = False,
     allow_custom_provider_endpoint: bool = False,

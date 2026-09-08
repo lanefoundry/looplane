@@ -65,10 +65,10 @@ def test_sdk_facade_exports_stable_replay_and_role_helpers() -> None:
     assert sdk.PluginDiscoveryMetadata(keywords=("review",)).keywords == ("review",)
     assert sdk.ProjectPlugin is not None
     assert sdk.BackendTurnLimiter(max_active_turns=1).max_active_turns == 1
-    assert sdk.SubagentRole.REVIEWER.value == "reviewer"
+    assert sdk.SubagentRole.GENERAL.value == "general"
     assert (
         sdk.normalize_subagent_schedule(
-            [{"id": "scout", "role": "scout", "instruction": "Inspect."}]
+            [{"id": "helper", "role": "general", "instruction": "Inspect."}]
         )[0].wave
         == 0
     )

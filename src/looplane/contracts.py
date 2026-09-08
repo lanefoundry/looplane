@@ -46,7 +46,7 @@ class VerificationCommand(ContractModel):
 class Limits(ContractModel):
     """Deterministic limits enforced by the harness rather than the prompt."""
 
-    max_steps: int = Field(default=12, ge=1)
+    max_steps: int = Field(default=30, ge=1)
     wall_time_seconds: float = Field(default=900.0, gt=0)
     max_tool_output_bytes: int = Field(default=200_000, ge=1)
     max_patch_bytes: int = Field(default=100_000, ge=1)

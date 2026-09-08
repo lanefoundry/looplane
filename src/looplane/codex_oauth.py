@@ -36,7 +36,7 @@ from looplane.contracts import (
     ToolObservation,
     Usage,
 )
-from looplane.models import ProviderError, ProviderErrorKind
+from looplane.models import ProviderError, ProviderErrorKind, _parse_arguments
 
 AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
 TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -388,22 +388,7 @@ def _codex_tools(tools: Sequence[ToolDefinition]) -> list[dict[str, Any]]:
 
 
 def _parse_tool(item: Mapping[str, Any]) -> ToolCall:
-    arguments = item.get("arguments", "{}")
-    if isinstance(arguments, str):
-        try:
-            arguments = json.loads(arguments)
-        except json.JSONDecodeError as exc:
-            raise ProviderError(
-                "Codex returned malformed tool arguments",
-                kind=ProviderErrorKind.PROVIDER,
-                provider_name="openai-codex",
-            ) from exc
-    if not isinstance(arguments, dict):
-        raise ProviderError(
-            "Codex returned non-object tool arguments",
-            kind=ProviderErrorKind.PROVIDER,
-            provider_name="openai-codex",
-        )
+    arguments = _parse_arguments(item.get("arguments", "{}"), provider_name="openai-codex")
     call_id = item.get("call_id")
     name = item.get("name")
     if not isinstance(call_id, str) or not isinstance(name, str):

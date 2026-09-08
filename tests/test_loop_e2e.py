@@ -883,7 +883,7 @@ async def test_agent_runner_continues_conversation_with_prior_messages_and_works
 
 
 @pytest.mark.asyncio
-async def test_agent_runner_continuation_falls_back_to_fresh_run_on_model_mismatch(
+async def test_agent_runner_continuation_allows_model_change(
     tiny_bug_repo: Path, tmp_path: Path
 ) -> None:
     run_root = tmp_path / "runs"
@@ -913,9 +913,9 @@ async def test_agent_runner_continuation_falls_back_to_fresh_run_on_model_mismat
     result2 = await runner2.run()
 
     assert result2.status == RunStatus.COMPLETED, result2.model_dump()
-    assert result2.run_id != runner1.run_id
+    assert result2.run_id == runner1.run_id
     events = read_events(result2)
-    assert any(event["event_type"] == "run.continuation_fallback" for event in events)
+    assert any(event["event_type"] == "session.continued" for event in events)
 
 
 @pytest.mark.asyncio

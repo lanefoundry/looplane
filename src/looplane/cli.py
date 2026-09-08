@@ -1201,7 +1201,7 @@ def run(
         typer.Option("--api-url", "--base-url", envvar=["LOOPLANE_API_URL", "PCA_API_URL"]),
     ] = None,
     run_root: Annotated[Path, typer.Option("--run-root")] = DEFAULT_RUN_ROOT,
-    max_steps: Annotated[int, typer.Option("--max-steps", min=1)] = 12,
+    max_steps: Annotated[int, typer.Option("--max-steps", min=1)] = 30,
     wall_time_seconds: Annotated[float, typer.Option("--wall-time", min=1)] = 900,
     tool_calling: Annotated[
         bool,

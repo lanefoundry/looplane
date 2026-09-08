@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
@@ -310,25 +312,48 @@ async def _post_json(
     return body
 
 
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+_INVALID_ESCAPE_RE = re.compile(r'\\([^"\\/bfnrtu])')
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f]")
+
+_log = logging.getLogger(__name__)
+
+
+def _repair_json(text: str) -> str:
+    """Best-effort repair of common JSON glitches from LLM output."""
+    repaired = _TRAILING_COMMA_RE.sub(r"\1", text)
+    repaired = _INVALID_ESCAPE_RE.sub(r"\\\\\1", repaired)
+    repaired = _CONTROL_CHAR_RE.sub(lambda m: f"\\u{ord(m.group()):04x}", repaired)
+    if repaired.rstrip().endswith("\\"):
+        repaired = repaired.rstrip()[:-1]
+    return repaired
+
+
 def _parse_arguments(value: Any, *, provider_name: str) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise ProviderError(
-                f"{provider_name} returned malformed tool arguments",
-                kind=ProviderErrorKind.PROVIDER,
-                provider_name=provider_name,
-            ) from exc
-        if isinstance(parsed, dict):
-            return parsed
-    raise ProviderError(
-        f"{provider_name} returned non-object tool arguments",
-        kind=ProviderErrorKind.PROVIDER,
-        provider_name=provider_name,
+        for attempt, text in enumerate((value, _repair_json(value))):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                if attempt > 0:
+                    _log.warning("%s: repaired malformed tool arguments JSON", provider_name)
+                return parsed
+        _log.warning(
+            "%s: malformed tool arguments, falling back to empty object: %.200s",
+            provider_name,
+            value,
+        )
+        return {}
+    _log.warning(
+        "%s: non-object tool arguments (type=%s), falling back to empty object",
+        provider_name,
+        type(value).__name__,
     )
+    return {}
 
 
 def _observation_content(observation: ToolObservation) -> str:

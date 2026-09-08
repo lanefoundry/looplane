@@ -115,6 +115,19 @@ class UnsafeLocalExecutionError(RuntimeError):
 BlockingResult = TypeVar("BlockingResult")
 READ_ONLY_STALL_THRESHOLD = 4
 
+MAX_STEPS_PROMPT = (
+    "CRITICAL — MAXIMUM STEPS REACHED\n\n"
+    "The maximum number of steps allowed for this task has been reached. "
+    "Tools are disabled until next user input. Respond with text only.\n\n"
+    "Your response MUST include:\n"
+    "- A statement that maximum steps have been reached\n"
+    "- A summary of what has been accomplished so far\n"
+    "- A list of any remaining tasks that were not completed\n"
+    "- Recommendations for what should be done next"
+)
+
+BUDGET_REMINDER_THRESHOLDS = (0.5, 0.8)
+
 
 class AgentRunner:
     """Run one bounded task and persist an auditable artifact bundle."""
@@ -252,6 +265,7 @@ class AgentRunner:
         self._lifecycle = BoundedRunLifecycle(self._persistence)
         self._run_dir_initialized = False
         self._consecutive_read_only_steps = 0
+        self._budget_reminders_sent: set[float] = set()
         self._verification_cache = VerificationCache()
         self._executor: ToolExecutor | None = None
         self._wall_time_phase = "task execution"
@@ -897,6 +911,27 @@ class AgentRunner:
             f"> limit {max_total_tokens:,}."
         )
 
+    def _maybe_inject_budget_reminder(self, steps_used: int, steps_total: int) -> None:
+        if steps_total < 6:
+            return
+        fraction = steps_used / steps_total
+        for threshold in BUDGET_REMINDER_THRESHOLDS:
+            if fraction >= threshold and threshold not in self._budget_reminders_sent:
+                self._budget_reminders_sent.add(threshold)
+                remaining = steps_total - steps_used
+                self._state.messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            f"Budget reminder: you have used {steps_used} of "
+                            f"{steps_total} steps ({fraction:.0%}). "
+                            f"{remaining} steps remaining. "
+                            "Prioritize completing the most important changes "
+                            "before your budget runs out."
+                        ),
+                    )
+                )
+
     async def _maybe_inject_context_pressure_reminder(self) -> None:
         await self._apply_context_update(
             context.context_pressure_reminder(self.task, self._context_state, self._state.usage)
@@ -1486,6 +1521,11 @@ class AgentRunner:
                         ],
                     )
                 self._state.step += 1
+                steps_used = self._state.step - self._turn_start_step
+                steps_total = self.task.limits.max_steps
+
+                self._maybe_inject_budget_reminder(steps_used, steps_total)
+
                 if self._thinking_level == "auto":
                     classification = classify_thinking(
                         self._state.messages,
@@ -1864,15 +1904,8 @@ class AgentRunner:
                 )
                 await self._checkpoint(RunStatus.VERIFYING, verification_passed=False)
 
-            # -- wind-down: give the model one last toolless call to summarize --
-            wind_down_message = Message(
-                role="user",
-                content=(
-                    "You have used all available steps. Tools are now disabled. "
-                    "Provide a brief text summary of what you accomplished and what remains."
-                ),
-            )
-            self._state.messages.append(wind_down_message)
+            # -- wind-down: one toolless call for a structured summary --
+            self._state.messages.append(Message(role="user", content=MAX_STEPS_PROMPT))
             try:
                 await self._event("loop.wind_down_started", step=self._state.step)
                 wind_down_turn = await self._complete_model_wind_down(deadline)
