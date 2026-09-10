@@ -33,7 +33,8 @@ The project provides a provider-neutral `ModelProvider` contract with canonical 
 - External runtime adapters for official Claude Code, official Codex CLI, OpenCode, Pi, and OMP, all operating inside disposable clones.
 - Repository-local `.looplane/skills/*.md`, opt-in blocking hooks, plugin manifests, IDE/LSP snapshots, and a VS Code bridge scaffold under `editors/vscode`.
 - Native MCP client support with looplane-owned OAuth grants and approval classification for MCP tools/resources.
-- Programmatic subagent dispatch and native bounded `dispatch_subagents` fan-out for scout, analyst, and reviewer child workspaces.
+- Programmatic subagent dispatch and native bounded `dispatch_subagents` fan-out for general and coder child workspaces.
+- Cross-session memory with `save_memory` and `recall_memory` tools, automatic memory extraction from conversations, and memory-aware prompt assembly via `agent/context.py`.
 - Conversation persistence, WebSocket attach with multi-session tab support (per-tab isolated controllers, shared read-only workspace context, session resume on reconnect), deterministic replay/fork helpers, SDK facade, session usage summaries, cost estimates, and OpenTelemetry GenAI export.
 - Cloudflare Worker/Sandbox control plane under `cloudflare/` for asynchronous, text-source-map remote runs with durable status, event, approval, cancel, and artifact routes.
 
@@ -43,7 +44,7 @@ The project provides a provider-neutral `ModelProvider` contract with canonical 
 - `looplane exec` 和 `looplane -p` 可做 headless run，保留 path allowlist、精準 check command、run bundle 與可恢復的 non-terminal session。
 - 原生 loop 支援 OpenAI-compatible、Ollama、Anthropic、Gemini、Cloudflare Workers AI，以及明確標成 experimental 的 app-owned ChatGPT/Codex OAuth。
 - 外部 runtime 可接 Claude Code、Codex CLI、OpenCode、Pi、OMP；它們只改 disposable clone，looplane 仍負責 patch audit 和 final checks。
-- 目前也有 repository-local skills/hooks/plugins、IDE/LSP snapshot、VS Code bridge、MCP client、subagents、conversation persistence（含多 tab 獨立 session、共享唯讀 workspace context、斷線 resume）、SDK、usage/cost、OTel export，以及 `cloudflare/` remote control plane。
+- 目前也有 repository-local skills/hooks/plugins、IDE/LSP snapshot、VS Code bridge、MCP client、subagents（general + coder）、跨 session memory（`save_memory`/`recall_memory` + 自動萃取）、conversation persistence（含多 tab 獨立 session、共享唯讀 workspace context、斷線 resume）、SDK、usage/cost、OTel export，以及 `cloudflare/` remote control plane。
 
 ## Tool Surface / 工具一覽
 
@@ -541,17 +542,11 @@ Backlog items in `docs/agent-diff-report.md` are not implementation proof. Befor
 
 ## Documentation / 文件
 
-- [Configuration](docs/configuration.md)
-- [Architecture](docs/architecture.md)
 - [Cloudflare deployment](cloudflare/README.md)
-- [Open-source foundations](docs/open-source-foundations.md)
-- [Reader benchmark](docs/research/reader-benchmark.md)
-- [Parser benchmark](docs/research/parser-benchmark.md)
-- [Research archive](docs/research/README.md)
 
 ## Contributing and support
 
-Use [GitHub Issues](https://github.com/lanefoundry/looplane/issues) for bugs and feature proposals. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md) before opening a pull request. Report security vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Use [GitHub Issues](https://github.com/lanefoundry/looplane/issues) for bugs and feature proposals.
 
 ## License
 

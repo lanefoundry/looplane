@@ -32,7 +32,8 @@ looplane 可當作互動式的日常 CLI 使用，同時保持有界、可稽核
 - 外部 runtime adapters 支援官方 Claude Code、官方 Codex CLI、OpenCode、Pi、OMP，都在 disposable clones 內運行。
 - 儲存庫本地的 `.looplane/skills/*.md`、opt-in blocking hooks、plugin manifests、IDE/LSP snapshots，以及 `editors/vscode` 下的 VS Code bridge 雛形。
 - 原生 MCP client 支援 looplane 擁有的 OAuth grants 與 MCP tools/resources 的 approval 分類。
-- 程式化 subagent 派遣與原生有界 `dispatch_subagents` fan-out，適用於 scout、analyst 與 reviewer 子工作空間。
+- 程式化 subagent 派遣與原生有界 `dispatch_subagents` fan-out，適用於 general 與 coder 子工作空間。
+- 跨 session memory，提供 `save_memory` 與 `recall_memory` 工具、自動從對話萃取 memory，並透過 `agent/context.py` 組裝進 prompt。
 - 對話持久化、WebSocket attach（含多 tab 獨立 session、共享唯讀 workspace context、斷線 resume）、deterministic replay/fork helpers、SDK facade、session usage summaries、cost estimates 與 OpenTelemetry GenAI export。
 - `cloudflare/` 下的 Cloudflare Worker/Sandbox 控制平面，支援非同步、text-source-map 遠端執行，提供 durable status、event、approval、cancel 與 artifact routes。
 
@@ -415,17 +416,11 @@ TUI 改動除了測試，也要產生寬版、窄版與 loading 狀態截圖，�
 
 ## Documentation / 文件
 
-- [設定](docs/configuration.md)
-- [架構](docs/architecture.md)
 - [Cloudflare 部署](cloudflare/README.md)
-- [開源技術基礎](docs/open-source-foundations.md)
-- [Reader benchmark](docs/research/reader-benchmark.md)
-- [Parser benchmark](docs/research/parser-benchmark.md)
-- [研究封存](docs/research/README.md)
 
 ## Contributing and support
 
-一般 bug 與功能提案請使用 [GitHub Issues](https://github.com/lanefoundry/looplane/issues)。送出 pull request 前請閱讀 [CONTRIBUTING.md](CONTRIBUTING.md) 與[行為準則](CODE_OF_CONDUCT.md)。安全漏洞請依 [SECURITY.md](SECURITY.md) 私下通報。
+一般 bug 與功能提案請使用 [GitHub Issues](https://github.com/lanefoundry/looplane/issues)。
 
 ## 授權
 
