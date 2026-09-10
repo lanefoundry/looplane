@@ -401,22 +401,17 @@ uv run python scripts/render_tui_screenshot.py --state thinking --name loading
 
 TUI 改動除了測試，也要產生寬版、窄版與 loading 狀態截圖，實際看過 `.artifacts/tui/*.png` 後才算完成。
 
-## Documentation Map / 文件地圖
-
-- [docs/progress.md](docs/progress.md)：里程碑狀態、acceptance criteria 與專案邊界。
-- [docs/stages](docs/stages/README.md)：可重複的里程碑記錄與驗證證據。
-- [docs/sdk.md](docs/sdk.md)：SDK facade、WebSocket attach、replay/fork API、role lanes 與 policy boundaries。
-- [docs/session-format.md](docs/session-format.md)：run events、session schema 與使用量指標。
-- [docs/startup-performance-playbook.md](docs/startup-performance-playbook.md)：啟動預算與 lazy-import 指引。
-- [docs/agent-diff-report.md](docs/agent-diff-report.md)：對參考 coding-agent 架構的目前能力差距/backlog。
-
-`docs/agent-diff-report.md` 中的 backlog 項目不是實作證據。在宣稱某個能力已完成之前，請先檢查實際程式路徑、測試結果，以及目前 stage/progress record。
-
-`docs/agent-diff-report.md` 是 backlog，不是完成證據。要宣稱某個能力已完成，請先檢查實際程式路徑、測試結果，以及目前 stage/progress record。
-
 ## Documentation / 文件
 
-- [Cloudflare 部署](cloudflare/README.md)
+- [進度](docs/progress.md)：里程碑狀態、acceptance criteria 與專案邊界。
+- [Stages](docs/stages/README.md)：可重複的里程碑記錄與驗證證據。
+- [SDK](docs/sdk.md)：SDK facade、WebSocket attach、replay/fork API、role lanes 與 policy boundaries。
+- [Session 格式](docs/session-format.md)：run events、session schema 與使用量指標。
+- [啟動效能](docs/startup-performance-playbook.md)：啟動預算與 lazy-import 指引。
+- [Agent diff report](docs/agent-diff-report.md)：對參考 coding-agent 架構的目前能力差距/backlog。
+- [Cloudflare 部署](cloudflare/README.md)：Worker/Sandbox 控制平面 API 與部署。
+
+`docs/agent-diff-report.md` 是 backlog，不是完成證據。要宣稱某個能力已完成，請先檢查實際程式路徑、測試結果，以及目前 stage/progress record。
 
 ## Contributing and support
 

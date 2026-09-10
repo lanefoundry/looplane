@@ -527,22 +527,19 @@ Review the generated `.artifacts/tui/*.png` images before treating a TUI change 
 
 TUI 改動除了測試，也要產生寬版、窄版與 loading 狀態截圖，實際看過 `.artifacts/tui/*.png` 後才算完成。
 
-## Documentation Map / 文件地圖
+## Documentation / 文件
 
-- [docs/progress.md](docs/progress.md): milestone status, acceptance criteria, and project boundaries.
-- [docs/stages](docs/stages/README.md): reproducible milestone records and verification evidence.
-- [docs/sdk.md](docs/sdk.md): SDK facade, WebSocket attach, replay/fork API, role lanes, and policy boundaries.
-- [docs/session-format.md](docs/session-format.md): run events, session schema, and usage metrics.
-- [docs/startup-performance-playbook.md](docs/startup-performance-playbook.md): startup budget and lazy-import guidance.
-- [docs/agent-diff-report.md](docs/agent-diff-report.md): current capability gap/backlog against reference coding-agent architectures.
+- [Progress](docs/progress.md): milestone status, acceptance criteria, and project boundaries.
+- [Stages](docs/stages/README.md): reproducible milestone records and verification evidence.
+- [SDK](docs/sdk.md): SDK facade, WebSocket attach, replay/fork API, role lanes, and policy boundaries.
+- [Session format](docs/session-format.md): run events, session schema, and usage metrics.
+- [Startup performance](docs/startup-performance-playbook.md): startup budget and lazy-import guidance.
+- [Agent diff report](docs/agent-diff-report.md): current capability gap/backlog against reference coding-agent architectures.
+- [Cloudflare deployment](cloudflare/README.md): Worker/Sandbox control plane API and deployment.
 
 Backlog items in `docs/agent-diff-report.md` are not implementation proof. Before claiming a capability is done, verify the code path, tests, and current stage/progress record.
 
 `docs/agent-diff-report.md` 是 backlog，不是完成證據。要宣稱某個能力已完成，請先檢查實際程式路徑、測試結果，以及目前 stage/progress record。
-
-## Documentation / 文件
-
-- [Cloudflare deployment](cloudflare/README.md)
 
 ## Contributing and support
 
