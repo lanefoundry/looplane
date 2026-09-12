@@ -271,7 +271,6 @@ class AgentRunner:
         self._wall_time_phase = "task execution"
         self._resume_ready = False
         self._continuation = continuation
-        self._continuation_fallback_reason: str | None = None
         self._turn_start_step = 0
         self._is_continuation_turn = False
         self._cancel_requested = asyncio.Event()
@@ -1356,23 +1355,22 @@ class AgentRunner:
                 try:
                     await self._open_continuation()
                 except (SessionValidationError, SessionBusyError, OSError) as exc:
-                    self._continuation_fallback_reason = str(exc)
-                    self._continuation = False
-                    self._resume_ready = False
-                    self._is_continuation_turn = False
+                    # A failed restore must not turn a follow-up into a fresh task.
+                    # Leave the existing conversation and workspace available for recovery.
                     self.task = original_task
-                    self._persistence.manifest = None
-                    self._persistence.store = None
-                    self._persistence.lease = None
-                    self._state.messages = []
-                    self._state.made_changes = False
-                    self._run_dir_initialized = False
-                    self._state.step = 0
-                    self._turn_start_step = 0
-                    self._state.repeat_count = 0
-                    self._state.last_fingerprint = None
-                    self._executor = None
-                    self._rebind_run_location(self._new_id().hex)
+                    error = (
+                        f"Could not continue the previous conversation: {exc}. "
+                        "No new task was started. Retry after resolving the session error, "
+                        "or explicitly start a new conversation."
+                    )
+                    return RunResult(
+                        run_id=self.run_id,
+                        task_id=original_task.task_id,
+                        status=RunStatus.FAILED,
+                        terminal_reason="continuation_failed",
+                        summary=error,
+                        error=error,
+                    )
             if self._resume_ready:
                 if self.task.base_sha is None or self._persistence.manifest is None:
                     raise SessionValidationError("resumed session has no pinned base commit")
@@ -1410,13 +1408,6 @@ class AgentRunner:
                     prompt_version=CODING_AGENT_PROMPT_VERSION,
                     base_sha=base_sha,
                 )
-                if self._continuation_fallback_reason is not None:
-                    await self._event(
-                        "run.continuation_fallback",
-                        reason=self._continuation_fallback_reason,
-                    )
-                    self._continuation_fallback_reason = None
-
                 if self.allow_direct_repo_edit:
                     workspace_path = self.task.repository.resolve(strict=True)
                     preexisting_dirty_paths = self._preexisting_dirty_paths(deadline)

@@ -2892,9 +2892,14 @@ class looplaneApp(App[RunResult | None]):
                 self._native_session_has_context = True
             if self._mode == "agent" and not self._uses_native_conversation():
                 run_dir = getattr(self._runner, "run_dir", None)
-                self._active_agent_run_dir = (
-                    run_dir if self._result.status == RunStatus.COMPLETED else None
-                )
+                if self._result.terminal_reason == "continuation_failed":
+                    # Retrying must keep the original context instead of silently
+                    # starting a fresh conversation after a failed restore.
+                    self._active_agent_run_dir = request.continuation_run_dir
+                else:
+                    self._active_agent_run_dir = (
+                        run_dir if self._result.status == RunStatus.COMPLETED else None
+                    )
             if self._binding.current(token) and self.query("#status"):
                 self._apply_view_commands(
                     self._terminal_projection.finish_result(

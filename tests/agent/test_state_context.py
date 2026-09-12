@@ -114,6 +114,47 @@ async def test_manifest_precedes_events_and_failed_delivery_keeps_sequence(
     assert persistence.sequence == 2
 
 
+async def test_concurrent_events_preserve_journal_and_manifest_order(
+    persisted: tuple[RunPersistence, RecordingSink],
+    task: TaskContract,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persistence, sink = persisted
+    save = persistence.save
+    deliver = sink.emit
+
+    async def yielding_save() -> None:
+        # Force overlap even when the filesystem happens to finish immediately.
+        await asyncio.sleep(0)
+        await save()
+
+    async def yielding_deliver(event: RunEvent) -> None:
+        await asyncio.sleep(0)
+        await deliver(event)
+
+    monkeypatch.setattr(persistence, "save", yielding_save)
+    monkeypatch.setattr(sink, "emit", yielding_deliver)
+    state = TurnState(messages=[Message(role="user", content="keep this context")], step=4)
+    await asyncio.gather(
+        *(
+            persistence.emit(
+                task.task_id, state, ActiveRunClock(), "tool.started", tool_call_id=str(index)
+            )
+            for index in range(20)
+        )
+    )
+
+    assert [event.sequence for event in sink.events] == list(range(20))
+    assert {event.data["tool_call_id"] for event in sink.events} == {str(i) for i in range(20)}
+    assert persistence.sequence == 20
+    manifest = SessionManifest.model_validate_json(
+        (persistence.run_dir / "session.json").read_text()
+    )
+    assert manifest.last_event_sequence == 19
+    assert manifest.messages == tuple(state.messages)
+    assert manifest.step == state.step
+
+
 async def test_manifest_failure_prevents_event_delivery(
     persisted: tuple[RunPersistence, RecordingSink],
     task: TaskContract,

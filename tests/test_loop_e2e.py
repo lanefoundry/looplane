@@ -919,8 +919,9 @@ async def test_agent_runner_continuation_allows_model_change(
 
 
 @pytest.mark.asyncio
-async def test_agent_runner_continuation_falls_back_when_workspace_missing(
-    tiny_bug_repo: Path, tmp_path: Path
+@pytest.mark.parametrize("failure", ["missing_workspace", "duplicate_sequence", "busy", "protocol"])
+async def test_agent_runner_continuation_failure_preserves_previous_conversation(
+    tiny_bug_repo: Path, tmp_path: Path, failure: str
 ) -> None:
     run_root = tmp_path / "runs"
     task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
@@ -934,9 +935,26 @@ async def test_agent_runner_continuation_falls_back_when_workspace_missing(
     result1 = await runner1.run()
     assert result1.status == RunStatus.COMPLETED, result1.model_dump()
 
-    shutil.rmtree(runner1.run_dir / "workspace")
+    events_path = runner1.run_dir / "events.jsonl"
+    session_path = runner1.run_dir / "session.json"
+    lease = None
+    if failure == "missing_workspace":
+        shutil.rmtree(runner1.run_dir / "workspace")
+    elif failure == "duplicate_sequence":
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[1]["sequence"] = events[0]["sequence"]
+        events_path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    elif failure == "busy":
+        lease = SessionStore(runner1.run_dir).acquire_writer()
+    else:
+        manifest = json.loads(session_path.read_text())
+        manifest["protocol"] = "openai_chat"
+        session_path.write_text(json.dumps(manifest))
+    previous_events = events_path.read_bytes()
+    previous_messages = json.loads(session_path.read_text())["messages"]
+    previous_request = (runner1.run_dir / "request.json").read_bytes()
 
-    model2 = ScriptedModel(turns=[ModelTurn(content="Starting fresh.")])
+    model2 = ScriptedModel(turns=[ModelTurn(content="Must not be called.")])
     followup_task = make_task(tiny_bug_repo, limits=Limits(max_steps=2, wall_time_seconds=30))
     runner2 = AgentRunner(
         task=followup_task,
@@ -948,10 +966,17 @@ async def test_agent_runner_continuation_falls_back_when_workspace_missing(
     )
     result2 = await runner2.run()
 
-    assert result2.status == RunStatus.COMPLETED, result2.model_dump()
-    assert result2.run_id != runner1.run_id
-    events = read_events(result2)
-    assert any(event["event_type"] == "run.continuation_fallback" for event in events)
+    if lease is not None:
+        lease.release()
+    assert result2.status == RunStatus.FAILED, result2.model_dump()
+    assert result2.terminal_reason == "continuation_failed"
+    assert result2.error and "No new task was started" in result2.error
+    assert result2.run_id == runner1.run_id
+    assert model2.calls == []
+    assert events_path.read_bytes() == previous_events
+    assert json.loads(session_path.read_text())["messages"] == previous_messages
+    assert (runner1.run_dir / "request.json").read_bytes() == previous_request
+    assert list(run_root.iterdir()) == [runner1.run_dir]
 
 
 @pytest.mark.asyncio
@@ -2868,3 +2893,58 @@ async def test_openai_no_choices_exhaustion_fails_with_provider_retryable(
     assert [e["data"]["attempt"] for e in retry_events] == [1, 2, 3, 4]
     failed = [e for e in events if e["event_type"] == "model.failed"]
     assert failed and failed[0]["data"]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_parallel_reads_preserve_history_for_followup(
+    tiny_bug_repo: Path, tmp_path: Path
+) -> None:
+    task = make_task(tiny_bug_repo, limits=Limits(max_steps=3, wall_time_seconds=30))
+    first_model = ScriptedModel(
+        turns=[
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="read_file", arguments={"path": "src/tiny_python_bug/calculator.py"}
+                    ),
+                    ToolCall(name="list_files", arguments={"path": "src"}),
+                )
+            ),
+            ModelTurn(content="The calculator currently subtracts; next we can fix it."),
+        ]
+    )
+    first = AgentRunner(
+        task=task,
+        model=first_model,
+        run_root=tmp_path / "runs",
+        allow_unsafe_local_exec=True,
+    )
+    result = await first.run()
+    assert result.status == RunStatus.COMPLETED, result.model_dump()
+    events = read_events(result)
+    assert any(event["event_type"] == "tool.batch_started" for event in events)
+    assert [event["sequence"] for event in events] == list(range(len(events)))
+
+    second_model = ScriptedModel(turns=[ModelTurn(content="I remember the calculator.")])
+    second = AgentRunner(
+        task=task.model_copy(update={"instruction": "Please do that."}),
+        model=second_model,
+        run_root=first.run_dir.parent,
+        run_id=first.run_id,
+        continuation=True,
+        allow_unsafe_local_exec=True,
+    )
+    continued = await second.run()
+    assert continued.status == RunStatus.COMPLETED, continued.model_dump()
+    assert continued.run_id == first.run_id
+    messages, _ = second_model.calls[0]
+    assert any(
+        isinstance(m, Message)
+        and m.content == "The calculator currently subtracts; next we can fix it."
+        for m in messages
+    )
+    assert any(isinstance(m, ToolObservation) and m.name == "read_file" for m in messages)
+    assert any(isinstance(m, Message) and m.content == "Please do that." for m in messages)
+    events = read_events(continued)
+    assert any(event["event_type"] == "session.continued" for event in events)
+    assert [event["sequence"] for event in events] == list(range(len(events)))

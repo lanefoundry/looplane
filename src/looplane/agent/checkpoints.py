@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,7 @@ class RunPersistence:
         self.run_dir = run_dir
         self.event_sink = event_sink
         self.sequence = 0
+        self._emit_lock = asyncio.Lock()
         self.writer_token = uuid4().hex
         self.store: SessionStore | None = None
         self.lease: SessionWriterLease | None = None
@@ -132,31 +134,33 @@ class RunPersistence:
         event_type: str,
         **data: Any,
     ) -> None:
-        event = RunEvent(
-            event_type=event_type,
-            run_id=self.run_id,
-            task_id=task_id,
-            sequence=self.sequence,
-            data=data,
-        )
-        if self.manifest is not None:
-            self.manifest = self.manifest.model_copy(
-                update={
-                    "last_event_sequence": event.sequence,
-                    "step": state.step,
-                    "messages": tuple(state.messages),
-                    "usage": state.usage,
-                    "model_usage": tuple(state.model_usage),
-                    "last_action_fingerprint": state.last_fingerprint,
-                    "repeat_count": state.repeat_count,
-                    "verification": state.last_verification,
-                    "active_wall_time_seconds": clock.active_wall_time_base,
-                    "active_started_at": clock.active_started_at,
-                }
+        # Parallel tool calls share one journal and must commit events in order.
+        async with self._emit_lock:
+            event = RunEvent(
+                event_type=event_type,
+                run_id=self.run_id,
+                task_id=task_id,
+                sequence=self.sequence,
+                data=data,
             )
-            await self.save()
-        await self.event_sink.emit(event)
-        self.sequence += 1
+            if self.manifest is not None:
+                self.manifest = self.manifest.model_copy(
+                    update={
+                        "last_event_sequence": event.sequence,
+                        "step": state.step,
+                        "messages": tuple(state.messages),
+                        "usage": state.usage,
+                        "model_usage": tuple(state.model_usage),
+                        "last_action_fingerprint": state.last_fingerprint,
+                        "repeat_count": state.repeat_count,
+                        "verification": state.last_verification,
+                        "active_wall_time_seconds": clock.active_wall_time_base,
+                        "active_started_at": clock.active_started_at,
+                    }
+                )
+                await self.save()
+            await self.event_sink.emit(event)
+            self.sequence += 1
 
     async def checkpoint(
         self, task_id: str, state: TurnState, status: RunStatus, **metadata: Any

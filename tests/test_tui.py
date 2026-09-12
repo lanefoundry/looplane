@@ -295,6 +295,55 @@ async def test_agent_mode_threads_continuation_run_dir_across_turns_and_resets_o
         await _wait_until(lambda: app._active_agent_run_dir is None)
 
 
+async def test_agent_mode_retains_failed_continuation_for_retry_until_new(tmp_path: Path) -> None:
+    requests: list[object] = []
+    run_dir = tmp_path / "runs" / "abc123"
+
+    class FailedContinuationRunner(FakeRunner):
+        async def run(self) -> RunResult:
+            return RunResult(
+                run_id="tui-run",
+                task_id="tui-task",
+                status=RunStatus.FAILED,
+                summary="Could not restore the previous conversation.",
+                terminal_reason="continuation_failed",
+            )
+
+    def factory(request, approval_policy, event_sink):
+        requests.append(request)
+        if len(requests) == 1:
+            return RunDirRunner(run_dir=run_dir), FakeModel()
+        return FailedContinuationRunner(), FakeModel()
+
+    app = looplaneApp(
+        repository=tmp_path,
+        config=CliConfig(provider="ollama", model="qwen3:4b"),
+        runner_factory=factory,
+        providers=(("ollama", "Ollama local"),),
+    )
+
+    async with app.run_test(size=(100, 30)):
+        task = app.query_one("#task", MessageComposer)
+        for index, instruction in enumerate(("Fix tests", "Continue", "Retry"), start=1):
+            task.load_text(instruction)
+            app._submit_current_task()
+            await _wait_until(lambda index=index: len(requests) == index and not app._agent_running)
+            assert requests[-1].continuation_run_dir == (None if index == 1 else run_dir)
+            assert app._active_agent_run_dir == run_dir
+            if index > 1:
+                assert app._result is not None
+                assert app._result.status == RunStatus.FAILED
+
+        task.load_text("/new")
+        app._submit_current_task()
+        await _wait_until(lambda: app._active_agent_run_dir is None)
+
+        task.load_text("Start again")
+        app._submit_current_task()
+        await _wait_until(lambda: len(requests) == 4 and not app._agent_running)
+        assert requests[-1].continuation_run_dir is None
+
+
 async def test_persistent_resource_closes_on_textual_event_loop(tmp_path: Path) -> None:
     resources: list[LoopBoundPersistentResource] = []
 
