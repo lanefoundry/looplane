@@ -727,9 +727,8 @@ async def test_onboarding_model_step_uses_fetched_list_from_verification(
         assert fetched.value == "claude-sonnet-5"
         fetched.value = "claude-opus-5"
         await pilot.click("#save")
-        await _wait_until(lambda: not isinstance(app.screen, OnboardingModal))
+        await _wait_until(lambda: app.config.provider == "anthropic")
         assert app.config.model == "claude-opus-5"
-        assert app.config.provider == "anthropic"
 
 
 async def test_onboarding_model_step_falls_back_to_free_input_when_list_empty(

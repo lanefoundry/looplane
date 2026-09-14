@@ -9,7 +9,7 @@
 [![PyPI](https://img.shields.io/pypi/v/looplane.svg)](https://pypi.org/project/looplane/)
 ![Status](https://img.shields.io/badge/status-early_preview-orange.svg)
 
-[Tools](#tool-surface--工具一覽) · [Install](#install) · [Quick start](#quick-start) · [Usage](#daily-cli) · [Cloudflare](#cloudflare-control-plane) · [Docs](#documentation)
+[Tools](#tool-surface) · [Install](#install) · [Quick start](#quick-start) · [Usage](#daily-cli) · [Cloudflare](#cloudflare-control-plane) · [Docs](#documentation)
 
 [English](README.md) · [繁體中文](README.zh-TW.md)
 
@@ -24,7 +24,7 @@ looplane is usable as an interactive daily CLI while keeping a bounded, auditabl
 
 The project provides a provider-neutral `ModelProvider` contract with canonical messages, tool calls, capabilities, usage, and classified errors. It supports OpenAI-compatible APIs, Ollama, Anthropic, Gemini, Cloudflare Workers AI, and the explicit experimental app-owned ChatGPT/Codex OAuth transport. External runtimes are opt-in local delegation — they own their own login and agent loop, but looplane still provides the conversation UI, disposable clone, patch audit, and final checks.
 
-## What Works Today / 目前能力
+## What Works Today
 
 - Full-screen `looplane` TUI with runtime/model selection, inline slash commands, approvals, streaming tool activity, transcript scrollback, `/new`, `/resume`, `/history`, `/usage`, `/context`, and cooperative stop. The native `looplane-agent` runtime carries conversation history and the same disposable workspace across follow-up turns within one session, falling back to a fresh run if the model/provider changes or the prior workspace is gone.
 - Headless `looplane exec` / `looplane -p` runs with path allowlists, exact check commands, deterministic run bundles, and `looplane resume` for validated non-terminal runs.
@@ -38,15 +38,7 @@ The project provides a provider-neutral `ModelProvider` contract with canonical 
 - Conversation persistence, WebSocket attach with multi-session tab support (per-tab isolated controllers, shared read-only workspace context, session resume on reconnect), deterministic replay/fork helpers, SDK facade, session usage summaries, cost estimates, and OpenTelemetry GenAI export.
 - Cloudflare Worker/Sandbox control plane under `cloudflare/` for asynchronous, text-source-map remote runs with durable status, event, approval, cancel, and artifact routes.
 
-中文摘要：
-
-- `looplane` 會開全螢幕 TUI，支援 runtime/model 選擇、slash commands、approval、tool stream、scrollback、resume/history、usage/context 與可控停止。native `looplane-agent` runtime 在同一個 session 裡的後續訊息會延續對話歷史與同一份 disposable workspace；若 model/provider 換了或前一份 workspace 不在了，會自動 fallback 成全新的一輪。
-- `looplane exec` 和 `looplane -p` 可做 headless run，保留 path allowlist、精準 check command、run bundle 與可恢復的 non-terminal session。
-- 原生 loop 支援 OpenAI-compatible、Ollama、Anthropic、Gemini、Cloudflare Workers AI，以及明確標成 experimental 的 app-owned ChatGPT/Codex OAuth。
-- 外部 runtime 可接 Claude Code、Codex CLI、OpenCode、Pi、OMP；它們只改 disposable clone，looplane 仍負責 patch audit 和 final checks。
-- 目前也有 repository-local skills/hooks/plugins、IDE/LSP snapshot、VS Code bridge、MCP client、subagents（general + coder）、跨 session memory（`save_memory`/`recall_memory` + 自動萃取）、conversation persistence（含多 tab 獨立 session、共享唯讀 workspace context、斷線 resume）、SDK、usage/cost、OTel export，以及 `cloudflare/` remote control plane。
-
-## Tool Surface / 工具一覽
+## Tool Surface
 
 The native `looplane-agent` runtime exposes a bounded tool surface to the model. Core workspace tools (`read_file`, `create_file`, `replace_text`, `apply_patch`, `search_text`, `shell`, `git_diff`) are always available. Additional tool families are registered conditionally:
 
@@ -62,9 +54,7 @@ The native `looplane-agent` runtime exposes a bounded tool surface to the model.
 
 `tool_transaction` bundles edits and checks into an atomic unit — if any step fails, touched files are rolled back automatically. `tool_program` batches up to 8 read-only steps in a single model call with `repeat` and `if_contains` control flow. These two are unique to looplane; mainstream coding agents do not offer atomic rollback or batched read orchestration.
 
-工具分為核心（永遠可用）與擴充（依設定條件載入）。`tool_transaction`（原子事務：改壞自動回滾）與 `tool_program`（批量只讀編排：一次 tool call 跑多步讀取含控制流）是 looplane 的差異化設計，主流 coding agent 均無此能力。
-
-### Optional dependencies / 可選依賴
+### Optional dependencies
 
 ```bash
 pip install looplane[web]      # web_fetch + web_search (trafilatura, duckduckgo-search)
@@ -72,7 +62,7 @@ pip install looplane[media]    # view_image + take_screenshot (Pillow, playwrigh
 pip install looplane[all]      # all optional dependencies
 ```
 
-### Project configuration / 專案配置
+### Project configuration
 
 Place a `looplane.toml` at the repository root to configure LSP servers, verification tools, web domain policies, and auto-approve rules. See `.research/capability-roadmap.md` for the full schema.
 
@@ -87,8 +77,6 @@ command = ["pyright-langserver", "--stdio"]
 lint = "ruff check ."
 test = "pytest -x -q"
 ```
-
-在 repo 根目錄放一份 `looplane.toml` 即可配置 LSP server、verification tool、web domain 白黑名單與自動核准規則。`agent/context.py` 會在組裝 prompt 時自動載入。
 
 ## Install
 
@@ -131,8 +119,6 @@ pip install looplane
 looplane update
 ```
 
-安裝方式擇一即可。推薦 `uv tool install`（自動隔離、不汙染系統 Python）。macOS 使用者也可用 `brew install`。`looplane update` 會自動偵測安裝管道並升級。
-
 ## Quick start (contributors)
 
 For development and contributing, clone the repo and use `uv`:
@@ -156,27 +142,21 @@ The editable command reads source changes immediately, but its isolated tool env
 
 There is no `requirements.txt`; dependencies are declared in `pyproject.toml` and locked in `uv.lock`.
 
-開發環境使用 `uv`。`.venv/` 由 `uv` 管理；如果改了 `pyproject.toml` 或 `uv.lock`，重新跑 `scripts/install-dev-cli`，讓全域 `looplane` 指令同步到目前 lock 檔。
-
-## Daily CLI / 日常使用
+## Daily CLI
 
 ```bash
 # Open the full-screen conversation in the current Git repository.
-# 在目前 Git repository 開啟全螢幕對話。
 looplane
 
 # Ask or act from the command line.
-# 從命令列提問或執行任務。
 looplane "Explain the failing test."
 looplane "Fix the failing test without changing its intent." --check "pytest -q"
 looplane -C /path/to/repo "Explain and fix the failure."
 
 # Non-interactive JSON output.
-# 非互動模式，輸出 JSON。
 looplane -p "Summarize this repository."
 
 # Headless coding run with explicit verification.
-# Headless coding run，明確指定驗證命令。
 looplane exec "Fix the bounded bug and keep existing behavior." \
   -C /absolute/path/to/repo \
   --allowed-path "src/**" \
@@ -186,25 +166,18 @@ looplane exec "Fix the bounded bug and keep existing behavior." \
   --unsafe-local-exec
 
 # Fallback for limited terminals and SSH troubleshooting.
-# 給受限 terminal 或 SSH troubleshooting 使用的 plain mode。
 looplane --plain
 
 # Keep the interactive UI in the normal terminal buffer so native scrollback
 # remains available. The default remains the alternate-screen UI.
-# 把互動 UI 留在 terminal 的 normal buffer，保留原生 scrollback；預設仍是
-# alternate-screen UI。
 looplane --no-alt-screen
 
 # Edit this repository's real working tree directly instead of a disposable
 # clone (native `looplane-agent` runtime only; see Safety Boundary below).
-# 直接編輯這個 repo 的真實 working tree，而不是 disposable clone（只影響
-# native `looplane-agent` runtime；見下方 Safety Boundary）。
 looplane --edit-real-repo "Fix the failing test."
 ```
 
 `looplane [PROMPT]` is interactive. `looplane -p [PROMPT]` and `looplane exec [PROMPT]` are non-interactive. `looplane run`, `--task`, and `--repo` remain compatibility aliases. `-p` means `--print`; use `--provider` or `looplane config` to choose the provider.
-
-`looplane [PROMPT]` 走互動式流程；`looplane -p [PROMPT]` 和 `looplane exec [PROMPT]` 是非互動模式。`looplane run`、`--task`、`--repo` 仍保留作相容 alias。`-p` 現在是 `--print`，provider 請用 `--provider` 或 `looplane config` 設定。
 
 Useful commands:
 
@@ -273,7 +246,7 @@ app = ConversationWebSocketApp(
 app = ConversationWebSocketApp(my_session)
 ```
 
-## Runtime And Provider Setup / Runtime 與 Provider 設定
+## Runtime And Provider Setup
 
 Configure non-secret defaults:
 
@@ -307,8 +280,6 @@ Supported native providers:
 
 The ChatGPT/Codex subscription path is explicit and experimental:
 
-Provider/model/API URL 等非 secret 設定存在 looplane config；API key 和 OAuth grant 則由 looplane 自己的 auth store 或環境變數提供。ChatGPT/Codex subscription 路徑是 explicit experimental 功能，和官方 Codex CLI runtime 不是同一條路。
-
 ```bash
 looplane auth login-codex
 looplane auth status-codex
@@ -318,7 +289,7 @@ looplane --provider openai-codex --model <supported-codex-model> \
 
 looplane creates its own credential for that path. It does not read `~/.codex`, Claude Code, Pi, OpenCode, OMP, or other CLI credential files.
 
-## External Coding Runtimes / 外部 Coding Runtime
+## External Coding Runtimes
 
 External runtimes are opt-in local delegation. The child CLI edits only the disposable clone; looplane independently audits the path-bounded patch and runs the declared final verification.
 
@@ -353,9 +324,7 @@ looplane backend opencode \
 
 External runtime support is designed for trusted local repositories. It is not a hostile-code sandbox. Codex CLI adds its own `workspace-write` sandbox; the Claude Code path limits enabled file tools, but the official child still uses its own local authentication environment.
 
-外部 runtime 是明確 opt-in 的本機 delegation。Claude Code、Codex CLI、OpenCode、Pi、OMP 各自擁有登入與 agent loop；looplane 只交給它們 disposable clone，並在結束後重新檢查 path-bounded patch 與 verification。這是 trusted local repo 的工作流，不是 hostile-code sandbox。
-
-## Safety Boundary / 安全邊界
+## Safety Boundary
 
 looplane's default local boundary is a disposable Git workspace plus Python policy checks:
 
@@ -387,40 +356,17 @@ looplane chat --dangerous --edit-real-repo "fix the failing tests"
 LOOPLANE_ACCEPT_DANGEROUS_MODE=1 looplane chat --dangerous -p "update deps"
 ```
 
-本機預設安全邊界是 disposable Git workspace 加上 Python policy checks。互動模式下修改與執行需要 approval；verification command 是 exact argv，不是 shell string；provider credential 留在 coordinator process，不會轉交給 repository checks。`--unsafe-local-exec` 表示你同意在 host 上跑 trusted repo 的檢查。
-
-`--edit-real-repo`（只影響 native `looplane-agent` runtime）是明確的 opt-in：關掉 disposable clone，讓 agent 直接改這個 repo 的真實 working tree，改完立刻反映在 `git status`/`git diff`，不用再手動 `git apply` run 結束後的 `changes.patch`。每次檔案變更前仍會顯示 diff 給你核准；repo 原本就有的未提交變更會被排除在回報的 patch 之外、也不會被 allowed-path policy 卡住，並會在丟給 model 的 context 裡加一段警告。`--edit-real-repo` 跟 `--dangerous` 疊加使用時，需要額外一次獨立的互動確認（或設定 `LOOPLANE_ACCEPT_DANGEROUS_MODE=1`）。外部 runtime（Claude Code、Codex CLI、OpenCode、Pi、OMP）與 Cloudflare 遠端 sandbox 不受這個 flag 影響，仍維持上述 disposable clone／patch audit 邊界。
-
-`--dangerous` 自動核准 read 與 modify 等級的工具呼叫，不再逐一詢問——等同 Claude Code 的 `--dangerously-skip-permissions`。首次使用需要互動確認對話框，接受後記錄到 `~/.local/state/looplane/dangerous-mode-accepted`，之後不再詢問。非互動環境可設定 `LOOPLANE_ACCEPT_DANGEROUS_MODE=1` 跳過對話框。`--dangerous` 下仍然生效的防護：
-
-- **Deny rules 是權威層。** `--deny-tool` 規則（如 `--deny-tool 'shell(rm *)'`）與 forbidden-operation pattern 在 auto-approve 分支之前被評估，無法被覆蓋。
-- **EXECUTE 等級仍需核准。** 只有 READ 與 MODIFY 等級被自動核准；EXECUTE 等級一律詢問。
-- **Root/sudo 直接拒絕。** 以 root 身份執行 `--dangerous` 會直接退出，除非在 sandbox 內（`LOOPLANE_SANDBOX=1`）。
-
-```bash
-# 自動核准 read/modify 動作
-looplane chat --dangerous "重構 auth 模組"
-
-# 搭配直接編輯 repo（需額外一次確認）
-looplane chat --dangerous --edit-real-repo "修復失敗的測試"
-
-# 非互動 / CI
-LOOPLANE_ACCEPT_DANGEROUS_MODE=1 looplane chat --dangerous -p "更新依賴"
-```
-
-## Cloudflare Control Plane / Cloudflare 控制平面
+## Cloudflare Control Plane
 
 `cloudflare/` packages the Python runtime behind a Worker and Cloudflare Sandbox. The Worker owns HTTP auth and provider credentials, stages a bounded text-only source tree, starts an asynchronous run, exposes durable status and events, handles approvals/cancel, and serves bounded artifacts.
 
 It deliberately does not accept Git URLs, archives, shell strings, provider credentials, consumer subscription tokens, custom caller-selected upstreams, or arbitrary model IDs. See [cloudflare/README.md](cloudflare/README.md) and [docs/stages/m6-cloudflare-sandbox-service.md](docs/stages/m6-cloudflare-sandbox-service.md) for the exact API and evidence boundary.
 
-`cloudflare/` 是遠端 Worker/Sandbox control plane。Worker 負責 HTTP auth 與 provider credential，Sandbox 收到的是 bounded text-source-map 和 run-scoped capability。它不接受 Git URL、archive、shell string、caller provider credential、subscription token、任意 upstream 或任意 model ID。
+### Hosted provider setup
 
-### Hosted provider 快速設定
+The hosted control plane uses operator-managed profiles. Users select a `modelProfile` when starting a run; they cannot specify endpoints, API keys, or arbitrary models. Operators configure all providers at once with a manifest and a secrets file, without answering prompts or running multiple `wrangler secret put` commands.
 
-Hosted control plane 使用 operator-managed profiles。使用者呼叫 run 時只能選 `modelProfile`，不能指定 endpoint、API key 或任意 model。管理者則可以用一份 manifest 和一份 secrets 檔，一次設定全部 providers，不必逐筆回答問題或執行多次 `wrangler secret put`。
-
-先安裝 Cloudflare 子專案依賴；建置 Sandbox image 時也需要可用的 Docker runtime，正式套用前則要先完成 Wrangler authentication：
+Install Cloudflare sub-project dependencies first; building the Sandbox image also requires a working Docker runtime, and applying secrets requires Wrangler authentication:
 
 ```bash
 npm --prefix cloudflare ci
@@ -428,7 +374,7 @@ npm --prefix cloudflare ci
 cp cloudflare/providers.example.json cloudflare/providers.json
 ```
 
-`cloudflare/providers.json` 是可追蹤的非機密設定。已知 provider 只需填 `provider` 和 `model`：
+`cloudflare/providers.json` is a trackable, non-secret configuration. Known providers only need `provider` and `model`:
 
 ```json
 {
@@ -446,10 +392,10 @@ cp cloudflare/providers.example.json cloudflare/providers.json
 }
 ```
 
-把所有 keys 集中放進已由 `.gitignore` 排除的 `cloudflare/.env.cloudflare`：
+Collect all keys in `cloudflare/.env.cloudflare` (already in `.gitignore`):
 
 ```dotenv
-# 新 Worker 第一次設定時一併提供；既有部署可以省略這兩項。
+# Required for first-time Worker setup; existing deployments can omit these.
 CONTROL_PLANE_TOKEN=replace-with-at-least-16-bytes
 RUN_TOKEN_SECRET=replace-with-at-least-32-bytes
 
@@ -457,7 +403,7 @@ OPENROUTER_API_KEY=replace-me
 GROQ_API_KEY=replace-me
 ```
 
-限制檔案權限後，先 dry-run，再用相同 manifest 一次套用：
+Restrict file permissions, dry-run first, then apply with the same manifest:
 
 ```bash
 chmod 600 cloudflare/.env.cloudflare
@@ -468,9 +414,9 @@ uv run looplane cloudflare providers apply cloudflare/providers.json \
   --secrets-env cloudflare/.env.cloudflare
 ```
 
-`apply` 會先完整驗證 manifest 與所有必要 keys，再透過 stdin 執行一次 `wrangler secret bulk`，接著建置 runtime 並部署 profile catalog。Secret 不會寫進 manifest、process arguments 或暫存檔。缺少多個 keys 時會一次列出全部缺項，而且不會先做部分遠端修改。`--dry-run` 仍會讀取並檢查 manifest 中所有 provider keys，但不會把它們送到 Cloudflare。
+`apply` validates the manifest and all required keys first, then pipes a single `wrangler secret bulk` via stdin, builds the runtime, and deploys the profile catalog. Secrets never appear in the manifest, process arguments, or temporary files. When multiple keys are missing, all are listed at once without making partial remote changes. `--dry-run` still reads and validates all provider keys in the manifest but does not send them to Cloudflare.
 
-內建快速格式支援 `openrouter`、`deepseek`、`groq`、`moonshotai`、`zai`、`xai`、`nvidia-nim`、`opencode-zen`、`ollama-cloud`；endpoint 與 Worker binding 會由 looplane 固定推導。自訂 OpenAI-compatible endpoint 必須提供完整 routing 欄位，並明確加上 `--allow-custom-endpoint`。Hosted phase 1 僅支援 OpenAI-compatible Chat Completions；Anthropic Messages、Gemini native API 和 Responses API 仍需要個別 protocol adapter。
+Built-in shorthand providers: `openrouter`, `deepseek`, `groq`, `moonshotai`, `zai`, `xai`, `nvidia-nim`, `opencode-zen`, `ollama-cloud` — endpoint and Worker binding are derived automatically. Custom OpenAI-compatible endpoints must supply full routing fields and pass `--allow-custom-endpoint`. Hosted phase 1 supports OpenAI-compatible Chat Completions only; Anthropic Messages, Gemini native API, and Responses API still require individual protocol adapters.
 
 | `provider` | dotenv key |
 | --- | --- |
@@ -484,11 +430,11 @@ uv run looplane cloudflare providers apply cloudflare/providers.json \
 | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | `ollama-cloud` | `OLLAMA_CLOUD_API_KEY` |
 
-部署後先呼叫 authenticated `GET /v1/model-profiles`，確認選用的 profile 顯示 `ready: true`。這只代表 secret binding 非空；仍需再送一個實際 `/v1/runs` smoke run，才能確認 API key、model ID 與 provider endpoint 確實可用。
+After deploying, call the authenticated `GET /v1/model-profiles` endpoint and confirm the selected profile shows `ready: true`. This only means the secret binding is non-empty; you still need to send an actual `/v1/runs` smoke run to confirm the API key, model ID, and provider endpoint are functional.
 
-完整 API、named Wrangler environment 與安全邊界見 [cloudflare/README.md](cloudflare/README.md)。
+See [cloudflare/README.md](cloudflare/README.md) for the full API, named Wrangler environments, and security boundary.
 
-## Development Checks / 開發檢查
+## Development Checks
 
 General checks:
 
@@ -525,9 +471,7 @@ uv run python scripts/render_tui_screenshot.py --state thinking --name loading
 
 Review the generated `.artifacts/tui/*.png` images before treating a TUI change as complete.
 
-TUI 改動除了測試，也要產生寬版、窄版與 loading 狀態截圖，實際看過 `.artifacts/tui/*.png` 後才算完成。
-
-## Documentation Map / 文件地圖
+## Documentation Map
 
 - [docs/progress.md](docs/progress.md): milestone status, acceptance criteria, and project boundaries.
 - [docs/stages](docs/stages/README.md): reproducible milestone records and verification evidence.
@@ -538,9 +482,7 @@ TUI 改動除了測試，也要產生寬版、窄版與 loading 狀態截圖，�
 
 Backlog items in `docs/agent-diff-report.md` are not implementation proof. Before claiming a capability is done, verify the code path, tests, and current stage/progress record.
 
-`docs/agent-diff-report.md` 是 backlog，不是完成證據。要宣稱某個能力已完成，請先檢查實際程式路徑、測試結果，以及目前 stage/progress record。
-
-## Documentation / 文件
+## Documentation
 
 - [Cloudflare deployment](cloudflare/README.md)
 
