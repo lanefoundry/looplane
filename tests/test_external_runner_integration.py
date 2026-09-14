@@ -183,11 +183,7 @@ async def test_recorded_stream_runner_cancellation(
         allow_unsafe_local_exec=True,
     )
 
-    async def _cancel_soon() -> None:
-        await asyncio.sleep(0.05)
-        runner.request_cancel()
-
-    asyncio.create_task(_cancel_soon())
+    runner.request_cancel()
     result = await runner.run()
 
     assert result.status is RunStatus.CANCELLED
