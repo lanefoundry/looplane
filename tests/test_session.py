@@ -195,14 +195,37 @@ async def test_resume_rejects_non_contiguous_event_log(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_rejects_workspace_at_wrong_commit(tmp_path: Path) -> None:
+async def test_resume_reanchors_workspace_after_agent_commit(tmp_path: Path) -> None:
     store, manifest, _ = make_run(tmp_path)
     workspace = store.run_dir / "workspace"
     (workspace / "other.txt").write_text("other\n")
+    (workspace / "hello.txt").write_text("changed\n")
     git(workspace, "config", "user.email", "test@example.com")
     git(workspace, "config", "user.name", "Test")
-    git(workspace, "add", "other.txt")
+    git(workspace, "add", "-A")
     git(workspace, "commit", "-qm", "other")
+    with store.acquire_writer() as lease:
+        await store.initialize(manifest, lease)
+    with store.acquire_writer() as lease:
+        await store.claim_and_validate_resume(lease)
+
+    assert git(workspace, "rev-parse", "HEAD") == manifest.base_sha
+    assert git(workspace, "rev-parse", "--symbolic-full-name", "HEAD") == "HEAD"
+    # The committed edits survive as uncommitted changes visible to `git diff`.
+    assert git(workspace, "diff", "--name-only").splitlines() == ["hello.txt", "other.txt"]
+    assert (workspace / "other.txt").read_text() == "other\n"
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_workspace_missing_base_commit(tmp_path: Path) -> None:
+    store, manifest, _ = make_run(tmp_path)
+    workspace = store.run_dir / "workspace"
+    subprocess.run(("rm", "-rf", str(workspace / ".git")), check=True)
+    git(workspace, "init", "-q")
+    git(workspace, "config", "user.email", "test@example.com")
+    git(workspace, "config", "user.name", "Test")
+    git(workspace, "add", "-A")
+    git(workspace, "commit", "-qm", "unrelated")
     with store.acquire_writer() as lease:
         await store.initialize(manifest, lease)
     with store.acquire_writer() as lease, pytest.raises(SessionValidationError, match="HEAD"):

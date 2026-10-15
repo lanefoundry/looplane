@@ -73,6 +73,7 @@ class ToolExecutor:
         *,
         git_dir: Path | None = None,
         base_sha: str | None = None,
+        anchor_sha: str | None = None,
         task_home: Path | None = None,
         preexisting_dirty_paths: frozenset[str] = frozenset(),
         mcp_servers: Sequence[NativeMcpServerConfig] = (),
@@ -145,6 +146,9 @@ class ToolExecutor:
             task_home=self._task_home,
             git_dir=self.git_dir,
             base_sha=self.base_sha,
+            anchor_sha=(
+                workspace.base_sha if isinstance(workspace, LocalGitWorkspace) else anchor_sha
+            ),
             preexisting_dirty_paths=self._preexisting_dirty_paths,
             run_command=self._run_command,
             environment=self._environment,
@@ -573,7 +577,18 @@ class ToolExecutor:
             sections.append(f"exit {result.returncode} (no output)")
         else:
             sections.insert(0, f"exit {result.returncode}")
-        return self._bound("\n".join(sections), self.max_output_chars)
+        notice = self._restore_base_anchor_notice()
+        output = self._bound("\n".join(sections), self.max_output_chars)
+        return f"{output}\n{notice}" if notice else output
+
+    def _restore_base_anchor_notice(self) -> str | None:
+        """Re-anchor a disposable workspace after a shell command moved HEAD or the index."""
+
+        try:
+            restored = self.git.restore_base_anchor()
+        except ToolExecutionError as exc:
+            return f"looplane warning: could not restore the base commit: {exc}"
+        return restored.describe() if restored is not None else None
 
     def reviewable_patch(
         self,

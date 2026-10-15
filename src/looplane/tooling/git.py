@@ -16,6 +16,9 @@ from looplane.tooling.filesystem import OutputLimits
 from looplane.tooling.patch_validation import PatchLimits
 from looplane.tooling.timeouts import effective_timeout
 from looplane.tooling.types import ReviewablePatch, ToolExecutionError
+from looplane.workspace.base_anchor import BaseAnchorError, BaseAnchorRestore, restore_base_anchor
+
+_ANCHOR_MAX_OUTPUT_BYTES = 20_000_000
 
 
 class GitProcess(Protocol):
@@ -82,6 +85,7 @@ class WorkspaceGit:
         task_home: Path,
         git_dir: Path | None = None,
         base_sha: str | None = None,
+        anchor_sha: str | None = None,
         preexisting_dirty_paths: frozenset[str] = frozenset(),
         run_command: GitProcess = run_local_process,
         environment: TaskEnvironment = sanitized_subprocess_env,
@@ -97,6 +101,9 @@ class WorkspaceGit:
         if self.git_dir is not None and not self.git_dir.is_dir():
             raise ValueError("git_dir must be an existing directory")
         self.base_sha = base_sha
+        # Disposable workspaces only: the commit HEAD must stay detached at. Never set for
+        # a direct-edit run, because restoring would rewrite the user's own repository.
+        self.anchor_sha = anchor_sha
         self.preexisting_dirty_paths = frozenset(preexisting_dirty_paths)
         self.run_command = run_command
         self.environment = environment
@@ -134,6 +141,33 @@ class WorkspaceGit:
             stdin=stdin,
         )
 
+    def restore_base_anchor(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> BaseAnchorRestore | None:
+        """Undo HEAD/index drift caused by agent Git commands; work-tree files are kept."""
+
+        if self.anchor_sha is None:
+            return None
+        budget = effective_timeout(30.0, timeout_seconds)
+        deadline = self.clock() + budget
+
+        def git(argv: Sequence[str]) -> CommandResult:
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise ToolExecutionError("restoring the base commit exceeded the harness timeout")
+            return self.run(
+                argv,
+                timeout_seconds=remaining,
+                max_output_bytes=_ANCHOR_MAX_OUTPUT_BYTES,
+            )
+
+        try:
+            return restore_base_anchor(git, self.anchor_sha, self.workspace)
+        except BaseAnchorError as exc:
+            raise ToolExecutionError(str(exc)) from exc
+
     def reset_paths(
         self,
         paths: Sequence[str],
@@ -156,6 +190,9 @@ class WorkspaceGit:
             return self._reviewable_patch_pinned(timeout_seconds=timeout_seconds)
         budget = effective_timeout(30.0, timeout_seconds)
         deadline = self.clock() + budget
+        # The unpinned diff compares the work tree with the index, so a commit or
+        # `git add` would otherwise hide changes from the final patch.
+        self.restore_base_anchor(timeout_seconds=budget)
 
         def remaining() -> float:
             value = deadline - self.clock()
@@ -210,6 +247,7 @@ class WorkspaceGit:
 
         budget = effective_timeout(30.0, timeout_seconds)
         deadline = self.clock() + budget
+        self.restore_base_anchor(timeout_seconds=budget)
 
         def remaining() -> float:
             value = deadline - self.clock()
