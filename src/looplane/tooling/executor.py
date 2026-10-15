@@ -73,6 +73,7 @@ class ToolExecutor:
         *,
         git_dir: Path | None = None,
         base_sha: str | None = None,
+        clone_base_sha: str | None = None,
         task_home: Path | None = None,
         preexisting_dirty_paths: frozenset[str] = frozenset(),
         mcp_servers: Sequence[NativeMcpServerConfig] = (),
@@ -145,6 +146,9 @@ class ToolExecutor:
             task_home=self._task_home,
             git_dir=self.git_dir,
             base_sha=self.base_sha,
+            clone_base_sha=(
+                workspace.base_sha if isinstance(workspace, LocalGitWorkspace) else clone_base_sha
+            ),
             preexisting_dirty_paths=self._preexisting_dirty_paths,
             run_command=self._run_command,
             environment=self._environment,

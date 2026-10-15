@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -16,6 +17,9 @@ from looplane.tooling.filesystem import OutputLimits
 from looplane.tooling.patch_validation import PatchLimits
 from looplane.tooling.timeouts import effective_timeout
 from looplane.tooling.types import ReviewablePatch, ToolExecutionError
+
+_STAGE_CHUNK = 200
+_INDEX_LIST_MAX_BYTES = 20_000_000
 
 
 class GitProcess(Protocol):
@@ -82,6 +86,7 @@ class WorkspaceGit:
         task_home: Path,
         git_dir: Path | None = None,
         base_sha: str | None = None,
+        clone_base_sha: str | None = None,
         preexisting_dirty_paths: frozenset[str] = frozenset(),
         run_command: GitProcess = run_local_process,
         environment: TaskEnvironment = sanitized_subprocess_env,
@@ -97,6 +102,10 @@ class WorkspaceGit:
         if self.git_dir is not None and not self.git_dir.is_dir():
             raise ValueError("git_dir must be an existing directory")
         self.base_sha = base_sha
+        # Disposable clones: the commit the clone was created from. Reviews diff against
+        # it instead of HEAD/index, so agent commits, staging or branch switches inside
+        # the clone can neither hide edits nor break the harness.
+        self.clone_base_sha = clone_base_sha
         self.preexisting_dirty_paths = frozenset(preexisting_dirty_paths)
         self.run_command = run_command
         self.environment = environment
@@ -154,6 +163,12 @@ class WorkspaceGit:
     ) -> ReviewablePatch:
         if self.base_sha is not None:
             return self._reviewable_patch_pinned(timeout_seconds=timeout_seconds)
+        if self.clone_base_sha is not None:
+            return self._review_against(
+                self.clone_base_sha,
+                stage_untracked=False,
+                timeout_seconds=timeout_seconds,
+            )
         budget = effective_timeout(30.0, timeout_seconds)
         deadline = self.clock() + budget
 
@@ -268,6 +283,27 @@ class WorkspaceGit:
         """Review against base_sha, excluding whole preexisting dirty paths."""
 
         assert self.base_sha is not None
+        return self._review_against(
+            self.base_sha,
+            stage_untracked=True,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _review_against(
+        self,
+        base_sha: str,
+        *,
+        stage_untracked: bool,
+        timeout_seconds: float | None = None,
+    ) -> ReviewablePatch:
+        """Diff the work tree against ``base_sha`` through an isolated index.
+
+        ``stage_untracked`` stages every work-tree file, including ignored ones (direct-edit
+        mode). Otherwise only base-tracked files plus new files registered in the real index
+        (``create_file``/``apply_patch`` intent-to-add entries, or agent commits) are staged,
+        which matches what the work-tree diff of a disposable clone has always reported.
+        """
+
         budget = effective_timeout(30.0, timeout_seconds)
         deadline = self.clock() + budget
 
@@ -287,7 +323,7 @@ class WorkspaceGit:
         extra_env = {"GIT_INDEX_FILE": str(review_index)}
         try:
             read_tree = self.run(
-                ("read-tree", self.base_sha),
+                ("read-tree", base_sha),
                 timeout_seconds=remaining(),
                 extra_env=extra_env,
             )
@@ -295,19 +331,25 @@ class WorkspaceGit:
                 raise ToolExecutionError(
                     "could not initialize the isolated review index: " + read_tree.stderr.strip()
                 )
-            added = self.run(
-                ("add", "-A", "-f", "--", "."),
-                timeout_seconds=remaining(),
-                extra_env=extra_env,
-                max_output_bytes=20_000,
-            )
-            if not added.ok:
-                raise ToolExecutionError(
-                    f"could not index workspace changes: {added.stderr.strip()}"
+            if stage_untracked:
+                self._stage(("-A", "-f", "--", "."), extra_env, remaining)
+            else:
+                registered = self._index_paths({}, remaining) - self._index_paths(
+                    extra_env, remaining
                 )
+                self._stage(("-u", "--", "."), extra_env, remaining)
+                new_paths = sorted(
+                    path for path in registered if os.path.lexists(self.workspace / path)
+                )
+                for start in range(0, len(new_paths), _STAGE_CHUNK):
+                    self._stage(
+                        ("-f", "--", *new_paths[start : start + _STAGE_CHUNK]),
+                        extra_env,
+                        remaining,
+                    )
 
             names = self.run(
-                ("diff", "--cached", "--name-only", "--no-renames", "-z", self.base_sha, "--"),
+                ("diff", "--cached", "--name-only", "--no-renames", "-z", base_sha, "--"),
                 timeout_seconds=remaining(),
                 extra_env=extra_env,
                 max_output_bytes=self.output_limits.max_output_chars,
@@ -338,7 +380,7 @@ class WorkspaceGit:
                     "--no-textconv",
                     "--no-color",
                     "--no-renames",
-                    self.base_sha,
+                    base_sha,
                     "--",
                     *changed_paths,
                 ),
@@ -360,6 +402,36 @@ class WorkspaceGit:
             return ReviewablePatch(content=result.stdout, changed_paths=changed_paths)
         finally:
             review_index.unlink(missing_ok=True)
+
+    def _stage(
+        self,
+        args: Sequence[str],
+        extra_env: Mapping[str, str],
+        remaining: Callable[[], float],
+    ) -> None:
+        added = self.run(
+            ("add", *args),
+            timeout_seconds=remaining(),
+            extra_env=extra_env,
+            max_output_bytes=20_000,
+        )
+        if not added.ok:
+            raise ToolExecutionError(f"could not index workspace changes: {added.stderr.strip()}")
+
+    def _index_paths(
+        self,
+        extra_env: Mapping[str, str],
+        remaining: Callable[[], float],
+    ) -> set[str]:
+        listed = self.run(
+            ("ls-files", "-z"),
+            timeout_seconds=remaining(),
+            extra_env=extra_env,
+            max_output_bytes=_INDEX_LIST_MAX_BYTES,
+        )
+        if not listed.ok or listed.stdout_truncated:
+            raise ToolExecutionError(f"could not list index paths: {listed.stderr.strip()}")
+        return {path for path in listed.stdout.split("\x00") if path}
 
     def git_diff(self, *, timeout_seconds: float | None = None) -> str:
         return self.reviewable_patch(timeout_seconds=timeout_seconds).content

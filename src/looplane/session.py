@@ -375,5 +375,12 @@ class SessionStore:
         top_level = Path(git("rev-parse", "--show-toplevel")).resolve()
         if top_level != workspace.resolve():
             raise SessionValidationError("workspace Git root does not match the session workspace")
-        if git("rev-parse", "HEAD").lower() != manifest.base_sha.lower():
-            raise SessionValidationError("workspace HEAD does not match the recorded base_sha")
+        # Patches are always reviewed against base_sha, so HEAD may legitimately move
+        # (e.g. the agent ran `git commit` in its disposable clone). Only require that
+        # the pinned base commit is still present.
+        try:
+            resolved = git("rev-parse", "--verify", f"{manifest.base_sha}^{{commit}}")
+        except SessionValidationError:
+            resolved = ""
+        if resolved.lower() != manifest.base_sha.lower():
+            raise SessionValidationError("workspace no longer contains the recorded base_sha")
