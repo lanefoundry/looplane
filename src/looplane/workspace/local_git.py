@@ -119,6 +119,17 @@ class LocalGitWorkspace:
         )
         if not checked_out.ok:
             raise WorkspacePreparationError(f"git checkout failed: {checked_out.stderr.strip()}")
+        # The clone's origin is the user's real repository. Drop it so an agent `git push`
+        # (or fetch-based tricks) cannot write back to the source through the remote.
+        detached = self._git(
+            ("remote", "remove", "origin"),
+            cwd=self.workspace_path,
+            timeout_seconds=remaining(),
+        )
+        if not detached.ok:
+            raise WorkspacePreparationError(
+                f"could not remove source origin from disposable clone: {detached.stderr.strip()}"
+            )
         head = self._git(
             ("rev-parse", "HEAD"),
             cwd=self.workspace_path,

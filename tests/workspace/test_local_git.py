@@ -36,3 +36,11 @@ def test_facade_git_calls_keep_legacy_runner_patch(tmp_path, monkeypatch):
     assert calls[0][0] == ("git", "status")
     assert calls[0][1]["timeout_seconds"] == 0.25
     assert Path(calls[0][1]["env"]["TMPDIR"]).is_dir()
+
+
+def test_prepared_workspace_has_no_remote_back_to_source(tiny_bug_repo, tmp_path):
+    sha = run_git(tiny_bug_repo, "rev-parse", "HEAD")
+    workspace = LocalGitWorkspace(tiny_bug_repo, tmp_path / "run", sha).prepare()
+
+    assert run_git(workspace, "remote") == ""
+    assert run_git(workspace, "rev-parse", "HEAD") == sha

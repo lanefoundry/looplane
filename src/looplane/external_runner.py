@@ -491,6 +491,8 @@ class ExternalCodingRunner:
         if source_git_dir.is_symlink() or not source_git_dir.is_dir() or git_dir.exists():
             raise WorkspacePreparationError("disposable clone has unsafe Git metadata")
         os.replace(source_git_dir, git_dir)
+        # LocalGitWorkspace.prepare already removed the source origin; confirm no remote
+        # can write back to the user's repository before handing the clone to a backend.
         result = run_bounded_command(
             (
                 "git",
@@ -501,16 +503,14 @@ class ExternalCodingRunner:
                 "-c",
                 "core.hooksPath=/dev/null",
                 "remote",
-                "remove",
-                "origin",
             ),
             cwd=workspace,
             timeout_seconds=min(30.0, deadline_remaining),
             max_output_chars=2_000,
             env=sanitized_subprocess_env(task_home=workspace.parent / ".task-env"),
         )
-        if not result.ok:
-            raise WorkspacePreparationError("could not remove source origin from disposable clone")
+        if not result.ok or result.stdout.strip():
+            raise WorkspacePreparationError("disposable clone still has a Git remote")
         return git_dir
 
     @staticmethod

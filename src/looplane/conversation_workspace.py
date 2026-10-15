@@ -161,8 +161,8 @@ class ConversationWorkspace:
                 raise WorkspacePreparationError("disposable clone has unsafe Git metadata")
             os.replace(source_clone_git, git_dir)
             env = sanitized_subprocess_env(task_home=root / ".task-env")
+            # LocalGitWorkspace.prepare already removed the source origin.
             for argv in (
-                ("remote", "remove", "origin"),
                 ("config", "--local", "core.hooksPath", os.devnull),
                 ("config", "--local", "core.fsmonitor", "false"),
             ):
