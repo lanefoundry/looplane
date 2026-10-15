@@ -7,7 +7,6 @@ import fcntl
 import json
 import os
 import subprocess
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -27,11 +26,8 @@ from looplane.contracts import (
     VerificationOutcome,
 )
 from looplane.events import RunEvent, atomic_write_json
-from looplane.execution.local_process import run_local_process
-from looplane.execution.types import CommandResult
 from looplane.prompts import CODING_AGENT_PROMPT_VERSION
 from looplane.runtime import sanitized_subprocess_env
-from looplane.workspace.base_anchor import BaseAnchorError, restore_base_anchor
 
 _MAX_JSON_BYTES = 16 * 1024 * 1024
 _SCHEMA_VERSION = 1
@@ -188,24 +184,6 @@ def _read_json(path: Path) -> object:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SessionValidationError(f"invalid JSON session artifact: {path.name}") from exc
-
-
-def _reanchor_workspace(workspace: Path, base_sha: str, env: dict[str, str]) -> None:
-    def git(argv: Sequence[str]) -> CommandResult:
-        return run_local_process(
-            ("git", "-C", str(workspace), *argv),
-            cwd=workspace,
-            timeout_seconds=10,
-            max_output_chars=20_000_000,
-            env=env,
-        )
-
-    try:
-        restore_base_anchor(git, base_sha, workspace)
-    except (BaseAnchorError, OSError) as exc:
-        raise SessionValidationError(
-            f"workspace HEAD does not match the recorded base_sha ({exc})"
-        ) from exc
 
 
 class SessionStore:
@@ -398,9 +376,4 @@ class SessionStore:
         if top_level != workspace.resolve():
             raise SessionValidationError("workspace Git root does not match the session workspace")
         if git("rev-parse", "HEAD").lower() != manifest.base_sha.lower():
-            # The agent's own shell commands (e.g. `git commit`) can move HEAD in the
-            # disposable clone. Re-anchor without touching work-tree files so the edits
-            # survive as uncommitted changes and the conversation can continue.
-            _reanchor_workspace(workspace, manifest.base_sha, env)
-            if git("rev-parse", "HEAD").lower() != manifest.base_sha.lower():
-                raise SessionValidationError("workspace HEAD does not match the recorded base_sha")
+            raise SessionValidationError("workspace HEAD does not match the recorded base_sha")

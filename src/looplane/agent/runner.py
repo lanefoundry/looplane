@@ -366,8 +366,6 @@ class AgentRunner:
             policy=SafePathPolicy(workspace_path, self.task.allowed_paths),
             verification_commands=self.task.verification,
             limits=self.task.limits,
-            # Resumed sessions always use the disposable run_dir/workspace clone.
-            anchor_sha=self.task.base_sha,
             mcp_servers=self._load_mcp_configs(self.task.repository),
             sandbox_checks=self._sandbox_checks,
             sandbox_profile=self._sandbox_profile,
