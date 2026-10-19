@@ -518,6 +518,7 @@ async def run_subagent_task(
         approval_policy=approval_policy,
         event_sink=event_sink,
         enable_subagent_dispatch=enable_subagent_dispatch,
+        enable_host_publication=False,
         initial_messages=initial_messages,
         allow_direct_repo_edit=allow_direct_repo_edit,
     ).run()

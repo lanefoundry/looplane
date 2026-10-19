@@ -193,6 +193,7 @@ async def execute_prepared_tool_call(
     mark_started: MarkActionStarted,
     dispatch: DispatchSubagents,
     invoke_skill: InvokeSkill | None = None,
+    publish_changes: InvokeSkill | None = None,
     async_dispatch: AsyncToolDispatch | None = None,
     execute_memory: ExecuteMemoryTool | None = None,
     deadline: float,
@@ -210,7 +211,9 @@ async def execute_prepared_tool_call(
         pending = persistence.manifest.pending_action
         if pending is not None and pending.request_id == request_id:
             await mark_started(request_id)
-    if call.name == "invoke_skill" and invoke_skill is not None:
+    if call.name == "publish_changes" and publish_changes is not None:
+        observation = await publish_changes(call, deadline=deadline)
+    elif call.name == "invoke_skill" and invoke_skill is not None:
         observation = await invoke_skill(call, deadline=deadline)
     elif call.name in ("dispatch_subagents", "agent") or call.name == "yield_result":
         observation = await dispatch(call, deadline=deadline)

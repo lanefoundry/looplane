@@ -335,6 +335,23 @@ looplane's default local boundary is a disposable Git workspace plus Python poli
 - run bundles contain request, events, checkpoint, session, verification, patch, test log, result, and workspace artifacts;
 - provider credentials stay in the coordinator process and are not forwarded to repository checks.
 
+For an explicitly requested push, the local native runtime provides `publish_changes` through
+the existing EXECUTE approval policy. The tool takes a branch and a configured remote name
+(default `origin`), resolves the push target from the source repository, and applies the audited
+patch in a separate temporary checkout. It creates a commit, runs every declared verification
+command again against that commit, then pushes the exact commit to the named branch without
+force. Detached HEAD and the missing remote in the agent's disposable workspace are expected;
+the source worktree and its branches remain untouched. Only the host Git publication process
+uses host authentication; repository checks receive a sanitized environment. A missing remote,
+failed check, or rejected push is reported as such. A successful push is not proof of remote CI
+or deployment. Start `looplane` normally in the local native runtime and ask it to push to a
+named branch; no extra publication flags are required. Publication checks retain the session's
+sandbox profile, backend, and read roots. If the sandbox cannot run a check, publication stops
+without retrying it unsandboxed. Only the final authenticated Git operation runs on the host.
+The configured checks must be runnable in a fresh checkout, including any required dependency
+setup. Host publication remains unavailable to remote Cloudflare runs, subagents, and external
+CLI runtimes.
+
 `--unsafe-local-exec` allows trusted repository checks to run on the host. Use `--sandbox-checks` where available for additional verification-command containment. On macOS this uses the platform sandbox wrapper; on Linux, `sandbox_backend` can select `auto`, `bubblewrap`, or `landlock`.
 
 `--edit-real-repo` (native `looplane-agent` runtime only) is an explicit opt-in that turns off the disposable clone and lets the agent edit this repository's real working tree directly, so changes are visible in `git status`/`git diff` immediately instead of requiring a manual `git apply` of the run's `changes.patch` artifact afterward. Approvals still show a diff before every file change; a pre-existing dirty repository is left alone (its files are excluded from the reported patch and never checked against the allowed-path policy) and a warning is injected into the model's context. Combining `--edit-real-repo` with `--dangerous` requires one extra one-time interactive acknowledgment (or `LOOPLANE_ACCEPT_DANGEROUS_MODE=1`), separate from `--dangerous`'s own acknowledgment. External runtimes (Claude Code, Codex CLI, OpenCode, Pi, OMP) and the Cloudflare remote sandbox are unaffected; they keep the disposable-clone/patch-audit boundary described above regardless of this flag.

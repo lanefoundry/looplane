@@ -151,6 +151,7 @@ TOOL_EFFECTS: dict[str, ToolEffect] = {
     "save_memory": ToolEffect.MODIFY,
     "recall_memory": ToolEffect.READ,
     "invoke_skill": ToolEffect.READ,
+    "publish_changes": ToolEffect.EXECUTE,
     "run_check": ToolEffect.EXECUTE,
     "tool_program": ToolEffect.READ,
     "create_file": ToolEffect.MODIFY,

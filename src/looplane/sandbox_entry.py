@@ -346,6 +346,7 @@ async def run_sandbox_request(
             selected_model,
             runs,
             allow_unsafe_local_exec=True,
+            enable_host_publication=False,
             approval_policy=approval_policy,
             event_sink=event_sink,
         ).run()

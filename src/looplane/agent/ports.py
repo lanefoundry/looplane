@@ -107,6 +107,7 @@ class SubagentRunnerFactory(Protocol):
         approval_policy: ApprovalPolicy | None,
         event_sink: EventSink | None,
         enable_subagent_dispatch: bool,
+        enable_host_publication: bool,
         initial_messages: tuple[ConversationItem, ...] | None = None,
         allow_direct_repo_edit: bool = False,
     ) -> SubagentRunner: ...

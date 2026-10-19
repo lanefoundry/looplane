@@ -14,6 +14,7 @@ from looplane.agent import (
     memory_dispatch,
     memory_extraction,
     model_calls,
+    publish_dispatch,
     skill_dispatch,
     subagent_dispatch,
     tool_scheduler,
@@ -211,6 +212,7 @@ class AgentRunner:
         hook_runner: HookRunner | None = None,
         context_provider_runner: ContextProviderRunner | None = None,
         enable_subagent_dispatch: bool = True,
+        enable_host_publication: bool = True,
         subagent_models: Mapping[str, ModelProvider] | None = None,
         thinking_level: str | None = None,
         initial_messages: tuple[ConversationItem, ...] | None = None,
@@ -247,6 +249,7 @@ class AgentRunner:
         self._context_provider_runner = context_provider_runner or self._load_context_providers(
             self.task.repository
         )
+        self._enable_host_publication = enable_host_publication
         self._enable_subagent_dispatch = enable_subagent_dispatch
         self._subagent_models = dict(subagent_models or {})
         self.approvals = approval_policy or HeadlessApprovalPolicy(
@@ -862,6 +865,8 @@ class AgentRunner:
     def _provider_tool_definitions(self) -> tuple[ToolDefinition, ...]:
         assert self._executor is not None
         defs: tuple[ToolDefinition, ...] = self._executor.definitions
+        if self._can_publish_changes():
+            defs = (*defs, publish_dispatch.publish_changes_definition())
         if self._skills:
             defs = (*defs, self._invoke_skill_definition())
         if self._enable_subagent_dispatch:
@@ -870,6 +875,38 @@ class AgentRunner:
             defs = (*defs, subagent_dispatch.yield_result_definition())
         defs = (*defs, *memory_dispatch.memory_tool_definitions())
         return defs
+
+    def _can_publish_changes(self) -> bool:
+        return self._enable_host_publication and self._forked_messages is None
+
+    async def _execute_publish_changes(self, call: ToolCall, *, deadline: float) -> ToolObservation:
+        assert self._executor is not None
+        if not self._can_publish_changes() or self.task.base_sha is None:
+            return ToolObservation(
+                tool_call_id=call.tool_call_id,
+                name=call.name,
+                ok=False,
+                content="",
+                error="Host publication is unavailable for this runner.",
+            )
+        patch = await self._run_blocking_safely(
+            self._executor.reviewable_patch,
+            timeout_seconds=self._remaining(deadline),
+        )
+        return await self._run_blocking_safely(
+            publish_dispatch.execute_publish_changes,
+            call,
+            source_repo=self.task.repository,
+            workspace=self._executor.workspace,
+            base_sha=self.task.base_sha,
+            verification=tuple(self.task.verification),
+            patch=patch.content,
+            timeout_seconds=self._remaining(deadline),
+            sandbox_checks=self._sandbox_checks,
+            sandbox_profile=self._sandbox_profile,
+            sandbox_backend=self._sandbox_backend,
+            sandbox_read_roots=self._sandbox_read_roots,
+        )
 
     def _invoke_skill_definition(self) -> ToolDefinition:
         pairs = tuple((s.name, s.description) for s in self._skills)
@@ -1172,6 +1209,7 @@ class AgentRunner:
             mark_started=self._mark_approved_action_started,
             dispatch=self._execute_dispatch_subagents,
             invoke_skill=self._execute_invoke_skill if self._skills else None,
+            publish_changes=self._execute_publish_changes,
             execute_memory=self._execute_memory_tool,
             deadline=deadline,
         )

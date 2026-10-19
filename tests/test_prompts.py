@@ -24,12 +24,21 @@ from looplane.prompts import (
 
 
 def test_m3_prompt_versions_the_observed_exact_edit_guidance() -> None:
-    assert CODING_AGENT_PROMPT_VERSION == "m3-exact-edit-v6"
+    assert CODING_AGENT_PROMPT_VERSION == "m3-exact-edit-v7"
     assert "read a file before editing" in CODING_AGENT_SYSTEM_PROMPT
     assert "Prefer replace_text" in CODING_AGENT_SYSTEM_PROMPT
     assert "Use apply_patch for multi-hunk" in CODING_AGENT_SYSTEM_PROMPT
     assert "Correct replace_text flow" in CODING_AGENT_SYSTEM_PROMPT
     assert "Incorrect replace_text flow" in CODING_AGENT_SYSTEM_PROMPT
+
+
+def test_publication_policy_uses_host_capability_instead_of_blanket_refusal() -> None:
+    assert "NEVER attempt Git remote writes" not in CODING_AGENT_SYSTEM_PROMPT
+    assert "only when the user has requested publication" in CODING_AGENT_SYSTEM_PROMPT
+    assert "do not refuse merely because" in CODING_AGENT_SYSTEM_PROMPT
+    assert "Do not add a remote to the clone" in CODING_AGENT_SYSTEM_PROMPT
+    assert "Do not use shell commands to bypass" in CODING_AGENT_SYSTEM_PROMPT
+    assert "Never read or expose credentials" in CODING_AGENT_SYSTEM_PROMPT
 
 
 def test_prompt_directs_conversational_input_to_a_plain_reply() -> None:

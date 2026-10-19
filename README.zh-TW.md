@@ -263,6 +263,10 @@ looplane 的預設本地邊界是 disposable Git workspace 加上 Python policy 
 
 本機預設安全邊界是 disposable Git workspace 加上 Python policy checks。互動模式下修改與執行需要 approval；verification command 是 exact argv，不是 shell string；provider credential 留在 coordinator process，不會轉交給 repository checks。`--unsafe-local-exec` 表示你同意在 host 上跑 trusted repo 的檢查。
 
+使用者明確要求 push 時，本機原生 runtime 可透過 `publish_changes` 發布，沿用 EXECUTE approval policy。工具只接受分支與已設定的 remote 名稱（預設 `origin`），從來源 repository 解析推送目標，再將稽核過的 patch 套用到另一個臨時 checkout、建立 commit、重跑全部宣告的檢查，通過後才推送指定 commit 與分支，不使用 force push。副本的 detached HEAD 與沒有 remote 是正常隔離狀態；來源工作區與本機分支維持原狀。只有 host Git 發布程序使用主機認證，repository checks 使用清理過的環境。缺少 remote、檢查失敗與推送失敗會分別回報；push 成功也不代表遠端 CI 或部署完成。遠端 Cloudflare 執行、子代理與外部 CLI runtime 不提供這個工具。
+
+一般啟動 `looplane`，使用本機原生 runtime 後就能要求推送到指定分支，不需要額外旗標。發布檢查沿用 session 的 sandbox profile、backend 與 read roots；sandbox 無法執行時會停止發布，不會改成無 sandbox 重試。只有最後使用認證的 Git 操作在 host 執行。宣告的檢查必須能在乾淨 checkout 執行，包含所需的依賴安裝步驟。
+
 `--edit-real-repo`（只影響 native `looplane-agent` runtime）是明確的 opt-in：關掉 disposable clone，讓 agent 直接改這個 repo 的真實 working tree，改完立刻反映在 `git status`/`git diff`，不用再手動 `git apply` run 結束後的 `changes.patch`。每次檔案變更前仍會顯示 diff 給你核准；repo 原本就有的未提交變更會被排除在回報的 patch 之外、也不會被 allowed-path policy 卡住，並會在丟給 model 的 context 裡加一段警告。`--edit-real-repo` 跟 `--dangerous` 疊加使用時，需要額外一次獨立的互動確認（或設定 `LOOPLANE_ACCEPT_DANGEROUS_MODE=1`）。外部 runtime（Claude Code、Codex CLI、OpenCode、Pi、OMP）與 Cloudflare 遠端 sandbox 不受這個 flag 影響，仍維持上述 disposable clone／patch audit 邊界。
 
 `--dangerous` 自動核准 read 與 modify 等級的工具呼叫，不再逐一詢問——等同 Claude Code 的 `--dangerously-skip-permissions`。首次使用需要互動確認對話框，接受後記錄到 `~/.local/state/looplane/dangerous-mode-accepted`，之後不再詢問。非互動環境可設定 `LOOPLANE_ACCEPT_DANGEROUS_MODE=1` 跳過對話框。`--dangerous` 下仍然生效的防護：
